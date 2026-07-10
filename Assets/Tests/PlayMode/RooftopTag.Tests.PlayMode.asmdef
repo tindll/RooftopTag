@@ -1,0 +1,28 @@
+{
+    "name": "RooftopTag.Tests.PlayMode",
+    "rootNamespace": "",
+    "references": [
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner",
+        "Game.Movement",
+        "Game.Camera",
+        "Game.Rules",
+        "Game.AI",
+        "Game.MapGeometry",
+        "UnityEditor"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false,
+    "testAssembly": true
+}

@@ -1,0 +1,329 @@
+#nullable enable
+
+using System;
+using System.Collections;
+using Game.Movement;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+namespace Game.Rules;
+
+/// <summary>
+/// Per-agent tag state: role, conversion grace, lunge, and contact-based tag detection. Works
+/// identically for the human player and bots — only <see cref="Configure"/>'s isLocalPlayer flag
+/// changes whether it reads its own lunge input (bots call <see cref="TryLunge"/> from AI logic
+/// instead), matching the "bots use the same abilities, no cheating" architecture constraint.
+/// Also owns a few small presentation touches (lunge arms, a tag "boop", a local-player-only
+/// debug reach ring) — kept here rather than split into a separate presentation class since the
+/// role-color telegraph already lives on this component and these are similarly small.
+/// </summary>
+public sealed class TagAgent : MonoBehaviour
+{
+    // Chest height is calibrated against the *visible mesh*, not the CapsuleCollider: the default
+    // primitive capsule mesh is always 2 units tall centered on the pivot (-1..+1) regardless of
+    // CharacterMotor's runtime collider height/center, so a collider-relative offset (~0.9-1.3)
+    // put the arms well above the visible model, reading as disconnected floating boxes.
+    private const float ArmShoulderY = 0.5f;
+    private const float ArmXOffset = 0.42f;
+    private const float ArmLength = 0.6f;
+
+    // Arm pose angles: pitch of the shoulder pivot around its local X axis. 0 = pointing straight
+    // forward; positive tilts the far end down, negative tilts it up. The rest pose sits between
+    // the two gestures so both read as a clear sweep away from a relaxed default.
+    private const float ArmRestDeg = 60f;
+    private const float ArmTagReachDeg = -10f;
+    private const float ArmMantleRaisedDeg = -70f;
+    private const float ArmMantlePushedDeg = 110f;
+
+    private const int RingSegments = 48;
+
+    private TagRulesConfig _config = null!;
+    private CharacterMotor _motor = null!;
+    private RoundController? _roundController;
+    private Renderer? _bodyRenderer;
+    private Material? _materialInstance;
+    private bool _isLocalPlayer;
+
+    private InputAction? _lungeAction;
+    private InputAction? _tagAction;
+    private float _lungeCooldownRemaining;
+    private float _graceRemaining;
+
+    private Transform? _leftArmPivot;
+    private Transform? _rightArmPivot;
+    private Coroutine? _armCoroutine;
+    private MotorState _previousMotorState;
+
+    private LineRenderer? _reachRing;
+    private static AudioClip? _boopClip;
+
+    public Role Role { get; private set; } = Role.Runner;
+    public bool IsInGrace => _graceRemaining > 0f;
+    public float LungeCooldownRemaining => Mathf.Max(0f, _lungeCooldownRemaining);
+    public CharacterMotor Motor => _motor;
+
+    /// <summary>Raised on the agent that was just converted to Tagger.</summary>
+    public event Action<TagAgent>? WasTagged;
+
+    public void Configure(TagRulesConfig config, CharacterMotor motor, Renderer? bodyRenderer, bool isLocalPlayer)
+    {
+        _config = config;
+        _motor = motor;
+        _bodyRenderer = bodyRenderer;
+        _isLocalPlayer = isLocalPlayer;
+
+        if (_bodyRenderer != null)
+            _materialInstance = _bodyRenderer.material;
+
+        if (_isLocalPlayer && _lungeAction == null)
+        {
+            // Split per feedback: left click only lunges (movement burst); right click is the
+            // actual tag attempt, landing on whoever is within reach rather than requiring a
+            // physical body collision.
+            _lungeAction = new InputAction("Lunge", InputActionType.Button, "<Mouse>/leftButton");
+            _lungeAction.AddBinding("<Gamepad>/rightTrigger");
+            _lungeAction.performed += _ => TryLunge();
+            _lungeAction.Enable();
+
+            _tagAction = new InputAction("Tag", InputActionType.Button, "<Mouse>/rightButton");
+            _tagAction.AddBinding("<Gamepad>/leftTrigger");
+            _tagAction.performed += _ => TryTagInRange();
+            _tagAction.Enable();
+        }
+
+        _leftArmPivot = CreateArm(-ArmXOffset);
+        _rightArmPivot = CreateArm(ArmXOffset);
+        _previousMotorState = _motor.CurrentState;
+
+        if (_isLocalPlayer)
+        {
+            var ringGo = new GameObject("TagReachRing (debug)");
+            _reachRing = ringGo.AddComponent<LineRenderer>();
+            _reachRing.loop = true;
+            _reachRing.positionCount = RingSegments;
+            _reachRing.useWorldSpace = true;
+            _reachRing.widthMultiplier = 0.05f;
+            _reachRing.material = new Material(Shader.Find("Sprites/Default"));
+            _reachRing.enabled = false;
+        }
+
+        UpdateColor();
+    }
+
+    /// <summary>Needed so <see cref="TryTagInRange"/> can find the nearest opposing agent, the same way bots already do via <see cref="RoundController.FindNearestOpposingAgent"/>.</summary>
+    public void SetRoundController(RoundController controller) => _roundController = controller;
+
+    private void OnDestroy()
+    {
+        _lungeAction?.Dispose();
+        _tagAction?.Dispose();
+        if (_reachRing != null) Destroy(_reachRing.gameObject);
+    }
+
+    private void Update()
+    {
+        if (_graceRemaining > 0f)
+        {
+            _graceRemaining -= Time.deltaTime;
+            if (_graceRemaining <= 0f) UpdateColor();
+        }
+
+        if (_lungeCooldownRemaining > 0f)
+            _lungeCooldownRemaining -= Time.deltaTime;
+
+        if (_reachRing != null)
+        {
+            bool showRing = Role == Role.Tagger && !IsInGrace;
+            _reachRing.enabled = showRing;
+            if (showRing) UpdateReachRing();
+        }
+
+        MotorState state = _motor.CurrentState;
+        if (state != _previousMotorState && (state == MotorState.Mantling || state == MotorState.Vaulting))
+            PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.35f);
+        _previousMotorState = state;
+    }
+
+    public void SetRole(Role role, bool startGrace)
+    {
+        Role = role;
+        if (startGrace) _graceRemaining = _config.conversionGraceDuration;
+        UpdateColor();
+    }
+
+    public void TryLunge()
+    {
+        if (Role != Role.Tagger || IsInGrace || _lungeCooldownRemaining > 0f) return;
+
+        float impulseMagnitude = _config.lungeBaseImpulse + _motor.CurrentSpeed * _config.lungeVelocityScale;
+        _motor.AddImpulse(_motor.transform.forward * impulseMagnitude);
+        _lungeCooldownRemaining = _config.lungeCooldown;
+    }
+
+    /// <summary>Explicit ranged tag attempt (right click / left trigger), tagging the nearest opposing agent if it's within <see cref="CurrentReachRadius"/> — no physical collision required.</summary>
+    public void TryTagInRange()
+    {
+        if (Role != Role.Tagger || IsInGrace) return;
+
+        // The reach animation plays on every attempt, not just a successful one — it's feedback
+        // that the tag input registered, same as swinging at empty air still swings.
+        PlayArmAnimation(ArmRestDeg, ArmTagReachDeg, outDuration: 0.08f, backDuration: 0.22f);
+
+        if (_roundController == null || !_roundController.IsPastStartGrace) return;
+
+        TagAgent? nearest = _roundController.FindNearestOpposingAgent(this);
+        if (nearest == null || nearest.IsInGrace) return;
+
+        float distance = Vector3.Distance(transform.position, nearest.transform.position);
+        if (distance > CurrentReachRadius()) return;
+
+        PerformTag(nearest);
+    }
+
+    private void OnCollisionEnter(Collision collision)
+    {
+        if (collision.gameObject.TryGetComponent(out TagAgent other))
+            TryTag(other);
+    }
+
+    private void TryTag(TagAgent other)
+    {
+        if (Role != Role.Tagger || IsInGrace) return;
+        if (other.Role != Role.Runner || other.IsInGrace) return;
+        if (_roundController != null && !_roundController.IsPastStartGrace) return;
+
+        PerformTag(other);
+    }
+
+    private void PerformTag(TagAgent other)
+    {
+        other.SetRole(Role.Tagger, startGrace: true);
+        other.WasTagged?.Invoke(other);
+        AudioSource.PlayClipAtPoint(GetBoopClip(), other.transform.position);
+    }
+
+    /// <summary>
+    /// Binary still-vs-moving check per feedback — deliberately NOT a continuous function of
+    /// speed, so sprinting or jumping doesn't extend reach beyond the same "moving" value.
+    /// </summary>
+    private float CurrentReachRadius() => _motor.CurrentSpeed > 0.15f ? _config.tagReachMoving : _config.tagReachStill;
+
+    private void UpdateColor()
+    {
+        if (_materialInstance == null) return;
+        _materialInstance.color = IsInGrace
+            ? _config.conversionGraceColor
+            : Role == Role.Tagger ? _config.taggerColor : _config.runnerColor;
+    }
+
+    // ---------------------------------------------------------------- Arms (tag reach + mantle push)
+
+    /// <summary>
+    /// Builds a shoulder pivot (fixed attachment point, never moves) with the visible arm capsule
+    /// offset outward from it — so animating the *pivot's rotation* swings the arm like a rigid
+    /// rod hinged at the shoulder, instead of the whole capsule translating in space.
+    /// </summary>
+    private Transform CreateArm(float xOffset)
+    {
+        var pivot = new GameObject("ArmPivot");
+        pivot.transform.SetParent(transform, false);
+        pivot.transform.localPosition = new Vector3(xOffset, ArmShoulderY, 0f);
+        pivot.transform.localRotation = Quaternion.Euler(ArmRestDeg, 0f, 0f);
+
+        GameObject arm = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+        arm.name = "Arm";
+        Destroy(arm.GetComponent<Collider>());
+        arm.transform.SetParent(pivot.transform, false);
+        // Thin and long ("bean" arm): shrink the capsule's radius (X/Z) and its length (Y), lay it
+        // on its side so the long axis points along the pivot's forward (Z) instead of up, and
+        // offset it so the near end sits at the pivot's origin (the "shoulder") and the far end
+        // extends outward.
+        arm.transform.localScale = new Vector3(0.22f, ArmLength * 0.5f, 0.22f);
+        arm.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+        arm.transform.localPosition = new Vector3(0f, 0f, ArmLength * 0.5f);
+
+        // Share the body's material instance rather than a copy, so the arms always match the
+        // player-model's current role color (blue/red/grace-yellow) automatically, with no extra
+        // per-role bookkeeping.
+        Renderer armRenderer = arm.GetComponent<Renderer>();
+        if (_materialInstance != null) armRenderer.sharedMaterial = _materialInstance;
+        return pivot.transform;
+    }
+
+    private void PlayArmAnimation(float fromDeg, float toDeg, float outDuration, float backDuration)
+    {
+        if (_armCoroutine != null) StopCoroutine(_armCoroutine);
+        _armCoroutine = StartCoroutine(AnimateArmSweep(fromDeg, toDeg, outDuration, backDuration));
+    }
+
+    private IEnumerator AnimateArmSweep(float fromDeg, float toDeg, float outDuration, float backDuration)
+    {
+        float t = 0f;
+        while (t < outDuration)
+        {
+            t += Time.deltaTime;
+            SetArmPitch(Mathf.Lerp(fromDeg, toDeg, t / outDuration));
+            yield return null;
+        }
+
+        t = 0f;
+        while (t < backDuration)
+        {
+            t += Time.deltaTime;
+            SetArmPitch(Mathf.Lerp(toDeg, ArmRestDeg, t / backDuration));
+            yield return null;
+        }
+
+        SetArmPitch(ArmRestDeg);
+        _armCoroutine = null;
+    }
+
+    private void SetArmPitch(float degrees)
+    {
+        Quaternion rotation = Quaternion.Euler(degrees, 0f, 0f);
+        if (_leftArmPivot != null) _leftArmPivot.localRotation = rotation;
+        if (_rightArmPivot != null) _rightArmPivot.localRotation = rotation;
+    }
+
+    // ---------------------------------------------------------------- Debug reach ring
+
+    private void UpdateReachRing()
+    {
+        float radius = CurrentReachRadius();
+
+        Color ringColor = _lungeCooldownRemaining > 0f ? new Color(0.6f, 0.6f, 0.6f, 0.6f) : new Color(1f, 0.25f, 0.2f, 0.8f);
+        _reachRing!.startColor = ringColor;
+        _reachRing.endColor = ringColor;
+
+        Vector3 center = transform.position + Vector3.up * 0.05f;
+        for (int i = 0; i < RingSegments; i++)
+        {
+            float angle = i / (float)RingSegments * Mathf.PI * 2f;
+            Vector3 point = center + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
+            _reachRing.SetPosition(i, point);
+        }
+    }
+
+    // ---------------------------------------------------------------- Tag sound
+
+    private static AudioClip GetBoopClip()
+    {
+        if (_boopClip != null) return _boopClip;
+
+        const int sampleRate = 44100;
+        const float duration = 0.12f;
+        const float frequency = 880f;
+        int sampleCount = Mathf.CeilToInt(sampleRate * duration);
+        var samples = new float[sampleCount];
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float t = i / (float)sampleRate;
+            float envelope = Mathf.Sin(Mathf.PI * i / sampleCount); // fade in/out so the clip doesn't click
+            samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * t) * envelope * 0.5f;
+        }
+
+        _boopClip = AudioClip.Create("TagBoop", sampleCount, 1, sampleRate, false);
+        _boopClip.SetData(samples, 0);
+        return _boopClip;
+    }
+}

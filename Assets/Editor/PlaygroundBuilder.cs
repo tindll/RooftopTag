@@ -1,0 +1,290 @@
+#nullable enable
+
+using Game.MapGeometry;
+using Game.Movement;
+using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+namespace Game.EditorTools;
+
+/// <summary>
+/// Procedurally builds the M1 movement playground. Run headlessly via:
+/// Unity.exe -batchmode -nographics -quit -projectPath &lt;path&gt; -executeMethod Game.EditorTools.PlaygroundBuilder.Build
+/// (there is no manual GUI-editing step in this project's workflow, so the scene is code-defined and reproducible).
+///
+/// Note: this environment's headless Unity cannot reliably resolve custom-asmdef script types
+/// when deserializing persisted data — confirmed via <c>MonoScript.GetClass()</c> returning null
+/// for these types, which breaks both loading standalone ScriptableObject assets AND attaching
+/// scene-embedded components of those types (non-deterministically, even with a correct guid
+/// reference — observed passing for one type and silently failing for another with identical
+/// serialized structure). in-memory <c>CreateInstance&lt;T&gt;()</c>/<c>AddComponent&lt;T&gt;()</c>
+/// within a live process is unaffected, since that path resolves the type directly from the
+/// loaded assembly rather than through Unity's serialization bridge.
+///
+/// So this builder does two things to route entirely around the problem:
+/// (1) MovementConfig is only ever created in-memory here, purely to size the geometry from real
+/// default values — the scene never persists a config asset reference; CharacterMotor/
+/// ThirdPersonCameraRig fall back to their own CreateInstance default at Awake. A human can still
+/// create a real tunable asset via Assets &gt; Create &gt; RooftopTag and assign it in the
+/// Inspector in their own session for the M4 tuning loop.
+/// (2) The scene itself never has CharacterMotor/PlayerInputProvider/ThirdPersonCameraRig/
+/// LadderInteractable/ChainSwingInteractable directly attached. Instead it persists plain
+/// placeholder objects (<see cref="InteractableMarker"/>, and a <c>PlaygroundBootstrap</c>
+/// component — both deliberately namespace-free and outside any custom asmdef) that attach the
+/// real components live via AddComponent&lt;T&gt;() at Awake, sidestepping the broken
+/// deserialization path entirely.
+///
+/// Most of the actual geometry creation (boxes, ramps, the map's sequential sections) has no
+/// Editor dependency at all and lives in <c>Game.MapGeometry.TagArenaMapGeometry</c> instead, so
+/// a headless self-play harness can build the identical physical geometry at runtime without
+/// going through this Editor-only scene-saving path. Ladder/swing-chasm geometry stays here since
+/// it attaches an <see cref="InteractableMarker"/>, which — per the note above — must stay
+/// namespace-free and can't be referenced from a custom asmdef.
+/// </summary>
+public static class PlaygroundBuilder
+{
+    private const string ScenePath = "Assets/Scenes/MovementPlayground.unity";
+
+    [MenuItem("RooftopTag/Build Movement Playground")]
+    public static void Build()
+    {
+        var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
+        int playerLayer = EnsureLayer("Player");
+        int groundMask = ~(1 << playerLayer);
+
+        Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        BuildMapGeometry(movementConfig);
+
+        GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, new Vector3(0f, 1.1f, 2f), new Color(0.2f, 0.6f, 1f));
+        (GameObject cameraRig, Camera cam, Transform yawPivot) = TagArenaMapGeometry.BuildCamera(player);
+
+        BuildBootstrap(player, cameraRig, cam, yawPivot, groundMask, groundMask);
+
+        EditorSceneManager.MarkSceneDirty(scene);
+        EditorSceneManager.SaveScene(scene, ScenePath);
+        Debug.Log($"PLAYGROUND_BUILD_OK: saved to {ScenePath}");
+    }
+
+    /// <summary>Builds the shared greybox map geometry (ramps, gaps, wall-run alley, ledges, ladder, swing). Reused by both the M1 movement playground and the M2 tag arena.</summary>
+    private static void BuildMapGeometry(MovementConfig movementConfig)
+    {
+        float z = TagArenaMapGeometry.BuildMainCorridor(movementConfig);
+        z = BuildLadder(z);
+        BuildSwingChasm(z, movementConfig);
+        TagArenaMapGeometry.BuildFallCatchPlane();
+    }
+
+    private const string TagArenaScenePath = "Assets/Scenes/TagArena.unity";
+    private const int TagArenaAgentCount = 12;
+
+    [MenuItem("RooftopTag/Build Tag Arena")]
+    public static void BuildTagArena()
+    {
+        var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
+        int playerLayer = EnsureLayer("Player");
+        int groundMask = ~(1 << playerLayer);
+
+        Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+        BuildMapGeometry(movementConfig);
+
+        // 1.8m used to leave capsules within a couple meters of each other in every direction —
+        // combined with no round-start grace, this produced near-instant tag cascades before
+        // anyone could react (found via the self-play harness's first batch). 2.5m still fits
+        // the 8x8 spawn platform (a 4x3 grid spans 7.5x5.0) with real room to react at round start.
+        Vector3[] spawnPoints = TagArenaMapGeometry.BuildSpawnGrid(TagArenaAgentCount, new Vector3(0f, 1.1f, 0f), spacing: 2.5f);
+
+        GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, spawnPoints[0], new Color(0.2f, 0.6f, 1f));
+        (GameObject cameraRig, Camera cam, Transform yawPivot) = TagArenaMapGeometry.BuildCamera(player);
+
+        var botRoots = new GameObject[TagArenaAgentCount - 1];
+        for (int i = 0; i < botRoots.Length; i++)
+            botRoots[i] = TagArenaMapGeometry.BuildAgentCapsule($"Bot_{i}", playerLayer, spawnPoints[i + 1], new Color(0.6f, 0.6f, 0.6f));
+
+        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask);
+
+        EditorSceneManager.MarkSceneDirty(scene);
+        EditorSceneManager.SaveScene(scene, TagArenaScenePath);
+        Debug.Log($"TAG_ARENA_BUILD_OK: saved to {TagArenaScenePath}");
+    }
+
+    private static void BuildTagArenaBootstrap(GameObject player, GameObject cameraRig, Camera cam, Transform yawPivot, GameObject[] botRoots, int groundMask, int wallMask)
+    {
+        var bootstrapGo = new GameObject("TagArenaBootstrap");
+        TagArenaBootstrap bootstrap = bootstrapGo.AddComponent<TagArenaBootstrap>();
+
+        SetObjectRef(bootstrap, "playerRoot", player);
+        SetObjectRef(bootstrap, "cameraRig", cameraRig);
+        SetObjectRef(bootstrap, "mainCamera", cam);
+        SetObjectRef(bootstrap, "cameraYawPivot", yawPivot);
+        SetInt(bootstrap, "groundMask", groundMask);
+        SetInt(bootstrap, "wallMask", wallMask);
+
+        var so = new SerializedObject(bootstrap);
+        SerializedProperty botsProp = so.FindProperty("botRoots");
+        botsProp.arraySize = botRoots.Length;
+        for (int i = 0; i < botRoots.Length; i++)
+            botsProp.GetArrayElementAtIndex(i).objectReferenceValue = botRoots[i];
+        so.ApplyModifiedProperties();
+    }
+
+    // ---------------------------------------------------------------- Ladder / swing chasm
+    //
+    // Kept here (not in Game.MapGeometry) because these attach an InteractableMarker component,
+    // which must stay in the default namespace-free assembly so it can be persisted into a saved
+    // scene — see the class remarks above and PlaygroundBuilder's original notes on the
+    // deserialization bug this project routes around.
+
+    private static float BuildLadder(float z)
+    {
+        var root = new GameObject("LadderSection");
+        const float ladderHeight = 8f;
+        const float runway = 6f;
+
+        TagArenaMapGeometry.CreateBox("LadderRunway", root.transform, new Vector3(0f, -0.5f, z + runway * 0.5f), new Vector3(5f, 1f, runway), TagArenaMapGeometry.GreyColor);
+        z += runway;
+
+        TagArenaMapGeometry.CreateBox("LadderWall", root.transform, new Vector3(0f, ladderHeight * 0.5f, z + 0.5f), new Vector3(5f, ladderHeight, 1f), TagArenaMapGeometry.BrownColor);
+
+        // The wall's near face sits at z. The climb line needs enough clearance that the
+        // capsule (radius 0.4) doesn't overlap it — at the old 0.3m offset it penetrated the
+        // wall by ~0.1m, causing continuous collision push-back that fought MovePosition every
+        // tick (visible as jitter while climbing). 0.6m offset leaves a clear 0.2m gap.
+        const float wallClearance = 0.6f;
+
+        var bottomGo = new GameObject("LadderBottom");
+        bottomGo.transform.SetParent(root.transform);
+        bottomGo.transform.position = new Vector3(0f, 0.2f, z - wallClearance);
+
+        var topGo = new GameObject("LadderTop");
+        topGo.transform.SetParent(root.transform);
+        topGo.transform.position = new Vector3(0f, ladderHeight, z - wallClearance);
+
+        var ladderGo = new GameObject("Ladder");
+        ladderGo.transform.SetParent(root.transform);
+        var box = ladderGo.AddComponent<BoxCollider>();
+        box.isTrigger = true;
+        box.size = new Vector3(2f, ladderHeight, 1.5f);
+        box.center = new Vector3(0f, ladderHeight * 0.5f, -wallClearance);
+        ladderGo.transform.position = new Vector3(0f, 0f, z);
+
+        InteractableMarker marker = ladderGo.AddComponent<InteractableMarker>();
+        marker.kind = InteractableMarker.Kind.Ladder;
+        marker.pointA = bottomGo.transform;
+        marker.pointB = topGo.transform;
+        // The wall is at +Z from the ladder; detaching should push the player back toward the
+        // runway (-Z), away from the wall. The default (+Z) pushed straight into it.
+        marker.outwardDirection = Vector3.back;
+
+        TagArenaMapGeometry.CreateBox("LadderTopLanding", root.transform, new Vector3(0f, ladderHeight + 0.5f, z + 2.5f), new Vector3(5f, 1f, 5f), TagArenaMapGeometry.GreyColor);
+
+        return z + 5f;
+    }
+
+    private static void BuildSwingChasm(float z, MovementConfig config)
+    {
+        var root = new GameObject("SwingChasm");
+        const float chasmLength = 12f;
+
+        TagArenaMapGeometry.CreateBox("SwingEntry", root.transform, new Vector3(0f, -0.5f, z + 2f), new Vector3(6f, 1f, 4f), TagArenaMapGeometry.GreyColor);
+        float chasmStart = z + 4f;
+        TagArenaMapGeometry.CreateBox("SwingExit", root.transform, new Vector3(0f, -0.5f, chasmStart + chasmLength + 2f), new Vector3(6f, 1f, 4f), TagArenaMapGeometry.GreyColor);
+
+        var beamGo = new GameObject("OverheadBeam");
+        beamGo.transform.SetParent(root.transform);
+        beamGo.transform.position = new Vector3(0f, 6f, chasmStart + chasmLength * 0.5f);
+        beamGo.transform.localScale = new Vector3(1f, 0.3f, chasmLength + 2f);
+        var beamRenderer = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        beamRenderer.transform.SetParent(beamGo.transform, false);
+        Object.DestroyImmediate(beamRenderer.GetComponent<BoxCollider>());
+        TagArenaMapGeometry.ApplyMaterial(beamRenderer, TagArenaMapGeometry.BrownColor);
+
+        var pivotGo = new GameObject("ChainPivot");
+        pivotGo.transform.SetParent(root.transform);
+        pivotGo.transform.position = new Vector3(0f, 6f, chasmStart + chasmLength * 0.5f);
+
+        var chainGo = new GameObject("ChainSwing");
+        chainGo.transform.SetParent(root.transform);
+        var sphere = chainGo.AddComponent<SphereCollider>();
+        sphere.isTrigger = true;
+        sphere.radius = 1.5f;
+        chainGo.transform.position = pivotGo.transform.position + Vector3.down * 4f;
+
+        InteractableMarker marker = chainGo.AddComponent<InteractableMarker>();
+        marker.kind = InteractableMarker.Kind.Swing;
+        marker.pointA = pivotGo.transform;
+        marker.length = 4f;
+
+        Debug.Log($"PLAYGROUND_INFO: swing chasm length={chasmLength}m, chain length=4m, sprintSpeed={config.ground.sprintSpeed}");
+    }
+
+    // ---------------------------------------------------------------- Player / Camera / Bootstrap
+
+    private static void BuildBootstrap(GameObject player, GameObject cameraRig, Camera cam, Transform yawPivot, int groundMask, int wallMask)
+    {
+        var bootstrapGo = new GameObject("Bootstrap");
+        PlaygroundBootstrap bootstrap = bootstrapGo.AddComponent<PlaygroundBootstrap>();
+
+        SetObjectRef(bootstrap, "playerRoot", player);
+        SetObjectRef(bootstrap, "cameraRig", cameraRig);
+        SetObjectRef(bootstrap, "mainCamera", cam);
+        SetObjectRef(bootstrap, "cameraYawPivot", yawPivot);
+        SetInt(bootstrap, "groundMask", groundMask);
+        SetInt(bootstrap, "wallMask", wallMask);
+    }
+
+    // ---------------------------------------------------------------- Reflection / asset helpers
+
+    private static void SetObjectRef(Object target, string fieldName, Object value)
+    {
+        var so = new SerializedObject(target);
+        SerializedProperty? prop = so.FindProperty(fieldName);
+        if (prop == null)
+        {
+            Debug.LogError($"PLAYGROUND_BUILD_ERROR: field '{fieldName}' not found on {target.GetType().Name}");
+            return;
+        }
+        prop.objectReferenceValue = value;
+        so.ApplyModifiedProperties();
+    }
+
+    private static void SetInt(Object target, string fieldName, int value)
+    {
+        var so = new SerializedObject(target);
+        SerializedProperty? prop = so.FindProperty(fieldName);
+        if (prop == null)
+        {
+            Debug.LogError($"PLAYGROUND_BUILD_ERROR: field '{fieldName}' not found on {target.GetType().Name}");
+            return;
+        }
+        prop.intValue = value;
+        so.ApplyModifiedProperties();
+    }
+
+    private static int EnsureLayer(string layerName)
+    {
+        Object[] tagManagerAssets = AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/TagManager.asset");
+        var tagManager = new SerializedObject(tagManagerAssets[0]);
+        SerializedProperty layersProp = tagManager.FindProperty("layers");
+
+        for (int i = 0; i < layersProp.arraySize; i++)
+        {
+            SerializedProperty sp = layersProp.GetArrayElementAtIndex(i);
+            if (sp.stringValue == layerName) return i;
+        }
+
+        for (int i = 8; i < layersProp.arraySize; i++)
+        {
+            SerializedProperty sp = layersProp.GetArrayElementAtIndex(i);
+            if (string.IsNullOrEmpty(sp.stringValue))
+            {
+                sp.stringValue = layerName;
+                tagManager.ApplyModifiedProperties();
+                return i;
+            }
+        }
+
+        throw new System.InvalidOperationException("No free user layer slots available.");
+    }
+}

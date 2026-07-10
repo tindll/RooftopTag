@@ -1,0 +1,50 @@
+#nullable enable
+
+using UnityEngine;
+
+namespace Game.Rules;
+
+[CreateAssetMenu(fileName = "TagRulesConfig", menuName = "RooftopTag/Tag Rules Config")]
+public sealed class TagRulesConfig : ScriptableObject
+{
+    [Header("Round")]
+    public float roundDuration = 300f;
+
+    /// <summary>Set to 1 while feel-testing so the player (guaranteed a Tagger via <see cref="forcePlayerAsTagger"/>) is the only Tagger. Raise back toward the 12-player design (2 taggers) for a real round.</summary>
+    public int taggerCount = 1;
+    public int runnerCount = 10;
+
+    /// <summary>Guarantees the local player is always assigned Tagger (useful while feel-testing tagger-specific mechanics like the lunge). Flip off for a "real" fully-random round.</summary>
+    public bool forcePlayerAsTagger = true;
+
+    /// <summary>
+    /// No tag can land for this many seconds after the round starts. Found via the first
+    /// self-play batch: 12 agents on a tight spawn grid with taggers assigned at t=0 produced
+    /// matches ending in under 3 seconds, tags landing before anyone could react — not bot
+    /// intelligence, just an unfair starting configuration. Mirrors the existing per-agent
+    /// conversion grace, but applies to the whole round at once.
+    /// </summary>
+    public float roundStartGraceDuration = 3f;
+
+    [Header("Conversion")]
+    public float conversionGraceDuration = 2.5f;
+
+    [Header("Lunge")]
+    public float lungeCooldown = 1.5f;
+    public float lungeBaseImpulse = 4f;
+    public float lungeVelocityScale = 0.6f;
+
+    /// <summary>Tag reach radius is a binary still-vs-moving check, not a continuous function of speed — sprinting or jumping shouldn't extend it beyond the same "moving" value.</summary>
+    [Header("Tag reach")]
+    public float tagReachStill = 1.2f;
+    public float tagReachMoving = 2.0f;
+
+    [Header("Late-game tagger speed curve")]
+    public float lateGamePhaseDuration = 75f;
+    public float lateGameMaxSpeedMultiplier = 1.10f;
+
+    [Header("Role telegraphing")]
+    public Color taggerColor = new(0.85f, 0.15f, 0.1f);
+    public Color runnerColor = new(0.2f, 0.6f, 1f);
+    public Color conversionGraceColor = new(0.9f, 0.7f, 0.1f);
+}

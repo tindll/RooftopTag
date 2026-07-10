@@ -1,0 +1,142 @@
+#nullable enable
+
+using Game.Movement;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+namespace Game.CameraSystem;
+
+/// <summary>
+/// Presentation-only third-person camera: orbits the target, widens FOV with speed,
+/// tilts subtly during wall-runs, and shakes lightly on landing. Reads its own mouse/stick
+/// delta every frame (decoupled from the fixed-timestep simulation) for smooth look feel.
+/// </summary>
+public sealed class ThirdPersonCameraRig : MonoBehaviour
+{
+    [SerializeField] private CharacterMotor? target;
+    [SerializeField] private CameraConfig config = null!;
+    [SerializeField] private Camera cameraComponent = null!;
+    [SerializeField] private Transform? yawPivot;
+
+    private InputAction? _lookAction;
+    private float _yaw;
+    private float _pitch;
+    private float _currentTilt;
+    private float _shakeTimer;
+    private Vector3 _smoothedPivotPosition;
+    private Vector3 _pivotVelocity;
+    private bool _pivotInitialized;
+
+    public Transform YawPivot => yawPivot!;
+
+    public void SetTarget(CharacterMotor motor)
+    {
+        if (target != null) target.Landed -= OnLanded;
+        target = motor;
+        if (target != null) target.Landed += OnLanded;
+    }
+
+    /// <summary>For runtime wiring (e.g. a bootstrap that attaches this component live) instead of Inspector assignment.</summary>
+    public void Configure(CharacterMotor motor, Camera cam, Transform yaw)
+    {
+        SetTarget(motor);
+        cameraComponent = cam;
+        if (yawPivot != null && yawPivot != yaw) Destroy(yawPivot.gameObject);
+        yawPivot = yaw;
+    }
+
+    /// <summary>Forces the next frame to jump straight to the target's position instead of smoothing into it — for use right after a hard teleport (e.g. a playground reset).</summary>
+    public void SnapToTarget() => _pivotInitialized = false;
+
+    private void Awake()
+    {
+        if (config == null)
+            config = ScriptableObject.CreateInstance<CameraConfig>();
+
+        if (yawPivot == null)
+        {
+            var yawGo = new GameObject("CameraYawPivot");
+            yawPivot = yawGo.transform;
+            yawPivot.SetParent(transform, worldPositionStays: false);
+        }
+
+        _lookAction = new InputAction("CameraLook", InputActionType.Value);
+        _lookAction.AddBinding("<Mouse>/delta");
+        _lookAction.AddBinding("<Gamepad>/rightStick", processors: "scaleVector2(x=8,y=8)");
+        _lookAction.Enable();
+
+        _yaw = transform.eulerAngles.y;
+    }
+
+    private void OnEnable()
+    {
+        if (target != null) target.Landed += OnLanded;
+    }
+
+    private void OnDisable()
+    {
+        if (target != null) target.Landed -= OnLanded;
+    }
+
+    private void OnDestroy()
+    {
+        _lookAction?.Dispose();
+    }
+
+    private void OnLanded() => _shakeTimer = config.landingShakeDuration;
+
+    private void LateUpdate()
+    {
+        if (target == null || config == null || cameraComponent == null) return;
+
+        Vector2 look = _lookAction?.ReadValue<Vector2>() ?? Vector2.zero;
+        _yaw += look.x * config.mouseSensitivity * 0.1f;
+        _pitch = Mathf.Clamp(_pitch - look.y * config.mouseSensitivity * 0.1f, config.minPitchDegrees, config.maxPitchDegrees);
+
+        Quaternion rotation = Quaternion.Euler(_pitch, _yaw, 0f);
+        yawPivot!.rotation = Quaternion.Euler(0f, _yaw, 0f);
+
+        Vector3 rawPivot = target.transform.position + Vector3.up * config.orbitHeight;
+        if (!_pivotInitialized)
+        {
+            _smoothedPivotPosition = rawPivot;
+            _pivotInitialized = true;
+        }
+
+        // Smooth the followed position itself, not just tilt/FOV — the target's rigidbody can
+        // carry tiny physics-driven noise (ground-snap bias, collider seams) that reads as
+        // camera jitter when copied 1:1 every frame with no damping at all.
+        _smoothedPivotPosition = Vector3.SmoothDamp(_smoothedPivotPosition, rawPivot, ref _pivotVelocity, config.positionSmoothTime);
+
+        Vector3 pivotWorld = _smoothedPivotPosition;
+        Vector3 dir = -(rotation * Vector3.forward);
+        float distance = config.orbitDistance;
+
+        if (Physics.SphereCast(pivotWorld, config.collisionRadius, dir, out RaycastHit hit, distance, ~0, QueryTriggerInteraction.Ignore))
+            distance = Mathf.Max(hit.distance, 0.3f);
+
+        Vector3 desiredCamPos = pivotWorld + dir * distance;
+
+        float targetTilt = 0f;
+        if (target.CurrentState == MotorState.WallRunning)
+        {
+            float side = Vector3.Dot(target.transform.right, target.WallNormal);
+            targetTilt = -Mathf.Sign(side) * config.maxTiltDegrees;
+        }
+        _currentTilt = Mathf.Lerp(_currentTilt, targetTilt, config.tiltLerpSpeed * Time.deltaTime);
+
+        Vector3 shakeOffset = Vector3.zero;
+        if (_shakeTimer > 0f)
+        {
+            _shakeTimer -= Time.deltaTime;
+            float t = Mathf.Clamp01(_shakeTimer / config.landingShakeDuration);
+            shakeOffset = Random.insideUnitSphere * (config.landingShakeAmplitude * t);
+        }
+
+        cameraComponent.transform.SetPositionAndRotation(desiredCamPos + shakeOffset, rotation * Quaternion.Euler(0f, 0f, _currentTilt));
+
+        float speedT = Mathf.Clamp01(target.CurrentSpeed / config.speedForMaxFov);
+        float targetFov = Mathf.Lerp(config.baseFov, config.maxFov, speedT);
+        cameraComponent.fieldOfView = Mathf.Lerp(cameraComponent.fieldOfView, targetFov, config.fovLerpSpeed * Time.deltaTime);
+    }
+}
