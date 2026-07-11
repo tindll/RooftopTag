@@ -3,6 +3,91 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## M3 self-play loop — 2 — late-game-phase confound fixed; win_rate is now a wall, stopping per LOOP.md
+
+**Diagnosis:** with spawn clustering fixed (loop 1), tags were now landing across a wide spread —
+mostly z=4-18 (still the ramp valley), but several z=29-32, and one match's last tag at **z=193.9**
+(near the full corridor's reachable end) — real evidence bots are now actually running the gauntlet,
+not dying at spawn. Yet `runner_win_rate` stayed 0.00.
+
+**Found a second real confound, not a tuning target:** `TagRulesConfig.lateGamePhaseDuration`
+defaults to 75s, tuned against the real 300s round (kicks in for the final quarter only). Self-play
+shortens the round to 60s but never scaled this down — since 60 < 75, the "final phase" Tagger
+speed boost (`lateGameMaxSpeedMultiplier`, up to +10%) was active from **t=0**, growing throughout
+the *entire* match instead of just the end. This silently made every self-play match harder than a
+real round would be, confounding the win-rate measurement itself. Fixed by scaling
+`lateGamePhaseDuration` by the same 75/300 proportion of whatever round length the test uses
+(`RoundDurationSeconds * (75f / 300f)` = 15s for the current 60s test round) — a test-harness
+correctness fix, not a gameplay change.
+
+**Metric outcome:** ran three consecutive batches after the two fixes above (spawn separation +
+this one). `max_z_reached` varies a lot batch-to-batch (75.0, then 204.3, then back down) — self-play
+has real variance, not a regression. But **`runner_win_rate` was 0.00 in all three**, with zero
+movement despite both fixes being real, verified improvements to match quality and map traversal.
+
+**Stopping the loop here per `Tools/LOOP.md`'s own rule** ("same metric fails 3 iterations with
+no movement → stop, report the wall, don't tune blind"). Suspected underlying cause, worth a human
+decision rather than another blind numeric guess: **the win condition itself may be structurally
+hard to hit with equal-skill bots.** A Runner-win requires ALL 10 Runners to survive the whole
+round independently — even a modest per-Runner catch probability compounds brutally across 10
+agents (e.g. a 90% chance each individually survives still only yields ~35% for all ten; anything
+below ~95% per-Runner survival pushes the *whole-round* win rate well under the 40-60% target
+band). Bots also can't replicate the creative/deceptive evasion a human Runner would bring, which
+the design likely leans on. This may not be fixable by tuning bot execution further — it may need
+a design call: e.g. a different self-play success metric (avg. Runners surviving, not just "all
+survived"), a difficulty rebalance for bot-vs-bot testing specifically, or accepting that this
+target band is meant to be validated with human Runners, not bot self-play.
+
+**Decision:** Keep both fixes (spawn separation, late-game-phase scaling) — genuine, verified
+improvements regardless of the win-rate wall. Flagging the win-rate gap itself to the user rather
+than continuing to guess at numbers against it.
+
+---
+
+## M3 self-play loop — 1 — spawn clustering was the dominant cause of instant sweeps
+
+Continuing the M4/M3 self-play loop (`Tools/LOOP.md`) after the movement/minimap round above.
+Baseline going in: `runner_win_rate=0.00 speed_p50=1.98 total_edge_attempts=[Jump=36]
+max_z_reached=65.8` — matches ending in 5-16s.
+
+**Diagnosis first, not a number guess:** added temporary per-tag logging (position + timestamp)
+rather than assuming. Result was unambiguous: **every single tag in a full batch landed within
+~8m of spawn (z: -4 to +8), all within 2-3 seconds of the round-start grace ending.** Taggers
+weren't out-navigating anyone — roles are shuffled independently of spawn position, so a Tagger
+routinely started immediately adjacent to a Runner in the same tight cluster and tagged them the
+instant grace lifted, before anyone had moved meaningfully at all.
+
+**Root cause, structural:** the spawn platform (`TagArenaLayout.SpawnSize`, 8m) was too small for
+any amount of clever spacing to create real separation between a Tagger and the Runner cluster —
+even pulling Taggers back along -Z (the map's only unoccupied direction; nothing exists behind
+spawn) risked pushing them off the platform's edge into the void at the old size.
+
+**Fix (one hypothesis, three small parts):**
+- `TagArenaLayout.SpawnSize` 8m → 24m (single-source layout constant — propagates to the visual
+  geometry and the layout's own z-cursor automatically, no desync risk).
+- Spawn grid spacing (`BuildSpawnGrid` call sites in `PlaygroundBuilder.BuildTagArena` and
+  `SelfPlayTests.cs`) 2.5m → 5m, now that there's room for it.
+- `RoundController.AssignRoles`: Taggers now spawn offset -6m in Z from their originally-registered
+  grid position (Runners keep theirs) — checked against the new platform size so even the
+  widest-spread agent stays inside it (12 agents at 5m spacing spans ±5m; -8 would have pushed the
+  extreme case to -13m, just off a ±12m platform — used -6m for margin).
+
+**Metric outcome:** `time_to_first_tag` pushed out slightly (~2.9-4.3s vs a hard 2.94-3.06s
+before). Match duration roughly tripled (5.7-36.3s vs 4.7-15.9s). **`max_z_reached` 65.8 → 203.9**
+— runners are now getting through the ramp valley, the full gap gauntlet, and into the ledge row,
+not dying at spawn. `total_edge_attempts` Jump 36→152, plus Climb 44 and WallRun 2 newly appearing.
+`runner_win_rate` is still **0.00** — every match still ends in a full sweep, just a lot later and
+after a lot more parkour.
+
+**Decision:** Keep — this was a real, high-impact fix (3x match length, 3x map depth), not a wash.
+Continuing the loop: something is still guaranteeing a 100% Tagger sweep given enough time, which
+now that spawn clustering is fixed, is probably the *actual* structural issue underneath it — this
+map is one single linear corridor with no branching routes, so a Runner has nowhere to lose a
+Tagger once seen, only to out-pace them. Next: check whether tags are now clustering at a specific
+later bottleneck (a choke point) before deciding whether this needs a bigger map-topology change.
+
+---
+
 ## Bunny-hop, slide duration cap + facing-bug fix, circular minimap
 
 Three requests from live playtesting, planned up front (design review via a second pass before

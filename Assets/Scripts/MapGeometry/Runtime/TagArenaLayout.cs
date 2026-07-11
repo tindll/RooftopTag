@@ -38,7 +38,12 @@ public sealed class TagArenaLayout
     public const float PlatformLength = 4f;
     public const float PlatformWidth = 5f;
 
-    public const float SpawnSize = 8f;
+    // Was 8f. Found via self-play diagnostics: every tag in a batch landed within ~8m of spawn,
+    // all within seconds of the round-start grace ending — the platform was too small for a
+    // Tagger and Runner to ever NOT be almost adjacent, regardless of spawn-grid spacing tricks.
+    // Widened 3x so Taggers can be placed meaningfully behind the Runner cluster (see
+    // RoundController.TaggerSpawnBackOffset) and the spawn grid can spread agents out further.
+    public const float SpawnSize = 24f;
     public const float RampLength = 10f;
     public const float ValleyDrop = 4f;
     public const float ValleyFloorLength = 6f;

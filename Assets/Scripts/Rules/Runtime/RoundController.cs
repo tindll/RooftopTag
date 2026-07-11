@@ -151,11 +151,28 @@ public sealed class RoundController : MonoBehaviour
         for (int i = 0; i < shuffled.Count; i++)
         {
             (Vector3 position, Quaternion rotation) = _spawnStates[shuffled[i]];
+            bool isTagger = i < _config.taggerCount;
+
+            // Found via self-play diagnostics: every single tag in a batch landed within ~8m of
+            // spawn, all within a couple seconds of the round-start grace ending. Roles were
+            // shuffled independently of spawn position, so a Tagger could — and typically did —
+            // start immediately adjacent to a Runner, tagging them the instant grace lifted before
+            // anyone had a real chance to flee. Pulling Taggers back along -Z (away from the
+            // runner cluster, which sits near the spawn platform's center) gives Runners genuine
+            // separation to use the grace period for. Offsetting only Z (not X) means multiple
+            // Taggers, who already have distinct X from the spawn grid, still can't overlap.
+            if (isTagger) position += TaggerSpawnBackOffset;
+
             shuffled[i].Motor.ResetState(position, rotation);
             shuffled[i].Motor.ExternalSpeedMultiplier = 1f;
-            shuffled[i].SetRole(i < _config.taggerCount ? Role.Tagger : Role.Runner, startGrace: false);
+            shuffled[i].SetRole(isTagger ? Role.Tagger : Role.Runner, startGrace: false);
         }
     }
+
+    // Kept comfortably inside the (now 24m) spawn platform's bounds even for the widest spawn grid
+    // (12 agents at 5m spacing spans +-5m in Z) — -8 would push the most-offset agent to Z=-13,
+    // just off a +-12 platform edge.
+    private static readonly Vector3 TaggerSpawnBackOffset = new(0f, 0f, -6f);
 
     private void Update()
     {

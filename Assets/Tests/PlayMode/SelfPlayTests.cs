@@ -54,6 +54,14 @@ public sealed class SelfPlayTests
         tagConfig.roundDuration = RoundDurationSeconds;
         tagConfig.forcePlayerAsTagger = false;
         tagConfig.taggerCount = 2;
+
+        // The default lateGamePhaseDuration (75s) is tuned against the real 300s round — it's
+        // meant to only kick in for the final quarter. Left as-is against this test's shortened
+        // 60s round, 75 > 60 means the "final phase" tagger speed boost is active for the ENTIRE
+        // match instead of just the end, silently making self-play harder than a real round and
+        // confounding win-rate measurement. Scale it by the same proportion of the round instead.
+        tagConfig.lateGamePhaseDuration = RoundDurationSeconds * (75f / 300f);
+
         var botConfig = ScriptableObject.CreateInstance<BotConfig>();
         ParkourGraph graph = TagArenaParkourGraphBuilder.Build(movementConfig);
 
@@ -83,7 +91,7 @@ public sealed class SelfPlayTests
         RoundController controller = controllerGo.AddComponent<RoundController>();
         controller.Configure(tagConfig);
 
-        Vector3[] spawnPoints = TagArenaMapGeometry.BuildSpawnGrid(AgentCount, new Vector3(0f, 1.1f, 0f), spacing: 2.5f);
+        Vector3[] spawnPoints = TagArenaMapGeometry.BuildSpawnGrid(AgentCount, new Vector3(0f, 1.1f, 0f), spacing: 5f);
 
         var agents = new List<TagAgent>(AgentCount);
         float elapsedRef = 0f;

@@ -93,7 +93,7 @@ public static class PlaygroundBuilder
         // combined with no round-start grace, this produced near-instant tag cascades before
         // anyone could react (found via the self-play harness's first batch). 2.5m still fits
         // the 8x8 spawn platform (a 4x3 grid spans 7.5x5.0) with real room to react at round start.
-        Vector3[] spawnPoints = TagArenaMapGeometry.BuildSpawnGrid(TagArenaAgentCount, new Vector3(0f, 1.1f, 0f), spacing: 2.5f);
+        Vector3[] spawnPoints = TagArenaMapGeometry.BuildSpawnGrid(TagArenaAgentCount, new Vector3(0f, 1.1f, 0f), spacing: 5f);
 
         GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, spawnPoints[0], new Color(0.2f, 0.6f, 1f));
         (GameObject cameraRig, Camera cam, Transform yawPivot) = TagArenaMapGeometry.BuildCamera(player);
