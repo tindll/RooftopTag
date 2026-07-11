@@ -152,20 +152,34 @@ public sealed class MovementMetricsTests
 
         (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(0f, 1.1f, 0f));
 
-        float? wallRunStart = null;
-        float? wallRunEnd = null;
-        motor.WallRunStarted += _ => wallRunStart = Time.time;
-        motor.WallRunEnded += () => wallRunEnd ??= Time.time;
+        // Tracks the LONGEST single wall-run cycle, not just the first start / first end — a
+        // spurious brief attach-detach during the initial spawn-settle fall (falling straight past
+        // the ground box before it's had a chance to land once) is a separate, harmless cycle from
+        // the real one after actually running off the ledge, and pairing "first end" with
+        // "whatever start happened most recently" produced a nonsensical negative duration.
+        float? currentCycleStart = null;
+        float longestCycleDuration = 0f;
+        bool everStarted = false;
+        bool everEnded = false;
+        motor.WallRunStarted += _ => { everStarted = true; currentCycleStart = Time.time; };
+        motor.WallRunEnded += () =>
+        {
+            everEnded = true;
+            if (currentCycleStart is { } start)
+            {
+                longestCycleDuration = Mathf.Max(longestCycleDuration, Time.time - start);
+                currentCycleStart = null;
+            }
+        };
 
         input.Move = new Vector2(0f, 1f);
         yield return RunForSeconds(6f);
 
-        Assert.IsNotNull(wallRunStart, "Character should have entered a wall-run alongside the wall.");
-        Assert.IsNotNull(wallRunEnd, "Wall-run should have ended (timeout, speed loss, or wall-jump) within the test window.");
+        Assert.IsTrue(everStarted, "Character should have entered a wall-run alongside the wall.");
+        Assert.IsTrue(everEnded, "Wall-run should have ended (timeout, speed loss, or wall-jump) within the test window.");
 
-        float duration = wallRunEnd!.Value - wallRunStart!.Value;
-        Debug.Log($"METRIC wall_run_duration_s={duration:0.00}");
-        Assert.Greater(duration, 0.2f, "Wall-run should sustain for a non-trivial duration.");
+        Debug.Log($"METRIC wall_run_duration_s={longestCycleDuration:0.00}");
+        Assert.Greater(longestCycleDuration, 0.2f, "Wall-run should sustain for a non-trivial duration.");
         AssertNoPhysicsExplosion(motor);
     }
 
@@ -365,6 +379,13 @@ public sealed class MovementMetricsTests
         Assert.AreEqual(MotorState.Sliding, motor.CurrentState, "Should be sliding.");
 
         float lateralSpeedEarly = Mathf.Abs(motor.Velocity.x);
+
+        // A/D now actively STEERS the slide (rotates travel direction while held) rather than being
+        // a passive run-up artifact — holding the same sideways input through the slide would fight
+        // the fall-line self-correction below by design, not exercise it. Release the sideways
+        // component once sliding, same as a player letting off A/D, so the "let off and it carves
+        // back toward straight-down" self-correction actually gets a chance to run.
+        input.Move = new Vector2(0f, 1f);
 
         // Short window, deliberately: at slide speeds up to the ~13 m/s cap this 20m ramp is
         // covered quickly, and the correction (rightly) stops the moment the character leaves

@@ -65,6 +65,7 @@ public sealed class MovementConfig : ScriptableObject
         public float wallJumpOutSpeed;
         public float reattachCooldown;
         public float minAirTimeBeforeAttach;
+        public float maxEntryFallSpeed;
     }
 
     [Serializable]
@@ -175,6 +176,7 @@ public sealed class MovementConfig : ScriptableObject
         wallJumpOutSpeed = 6f,
         reattachCooldown = 0.3f,
         minAirTimeBeforeAttach = 0.05f,
+        maxEntryFallSpeed = 1.5f,
     };
 
     public WallHookSettings wallHook = new()

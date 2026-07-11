@@ -541,6 +541,16 @@ public sealed class CharacterMotor : MonoBehaviour
             _lastWallCollider = hit.collider;
             _state = MotorState.WallRunning;
             _wallRunElapsed = 0f;
+
+            // Catch an existing fast fall instead of carrying it through — wall-run should feel
+            // like grabbing on and gliding, not continuing to plummet at whatever vertical speed
+            // you already had (e.g. from a jump arc). gravityMultiplier only slows the RATE of
+            // further acceleration, not the speed already carried in, so entering while falling at
+            // ~5 m/s meant falling out from under a 4m-tall wall in ~0.1s — nowhere near a
+            // sustained run. Found via a diagnostic trace showing exactly that entry speed.
+            Vector3 vel = _rb.linearVelocity;
+            _rb.linearVelocity = new Vector3(vel.x, Mathf.Max(vel.y, -config.wallRun.maxEntryFallSpeed), vel.z);
+
             WallRunStarted?.Invoke(_wallNormal);
             return true;
         }

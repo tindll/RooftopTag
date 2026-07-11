@@ -3,6 +3,59 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Post-office-session sync — test suite triage (5 failures after pull)
+
+Pulled the office session's work (Rooftop Arena, movement rework, M4 loop entries below) onto a
+second machine. Compiled clean, all three scenes rebuilt clean, but the test suite went 14/19 —
+triaged each failure against what actually changed rather than guessing.
+
+**Two were stale assertions against intentional redesigns, updated to match:**
+- `TagArenaScene_SpawnsWithCorrectRoleDistribution` expected 12 agents/1 tagger/11 runners — the
+  scene is now a deliberate 3-agent "chase me" mode (`TagArenaAgentCount = 3`,
+  `TagRulesConfig.forcePlayerAsRunner = true`, `taggerCount = 2`): player is the runner, 2 bots
+  hunt them. Updated the assertions to 3/2/1.
+- `Tag_OnContact_ConvertsRunnerToTaggerWithGrace` / `TaggedAgent_CannotTagAnyoneDuringGracePeriod`
+  assumed passive body-contact tags on its own. It doesn't anymore — contact only tags during a
+  brief 0.45s window right after a lunge (`TagAgent`'s `_lungeTagWindowRemaining`/`_lungeTagUsed`,
+  the "dive tackle"), one runner max per lunge. Both tests now call `TryLunge()` before relying on
+  contact; the grace test also asserts `LungeCooldownRemaining == 0` after the in-grace lunge
+  attempt, to actually verify it was a full no-op (grace blocks `TryLunge` itself) rather than
+  "happened not to tag."
+- `Slide_SelfCorrectsTowardTrueDownhillDirection` held the same sideways input through the whole
+  slide — but A/D now actively *steers* the slide while held (`SlideSteerDegPerSec`), which fights
+  the fall-line self-correction by design. Test held sideways input throughout, so it was measuring
+  "does self-correction win against continuous opposing steering input" (no) instead of its actual
+  intent, "does letting off return you to the fall line" (yes). Released the sideways input once
+  sliding, matching a player letting off A/D.
+
+**Two were real regressions, found via diagnostics and fixed at the source:**
+- `WallRun_MeasuresSustainedDuration` returned a **negative** duration. Added per-tick diagnostic
+  logging rather than guessing: revealed *two* wall-run cycles in the 6s window — a harmless
+  spurious ~0.12s attach during spawn-settle (still within the ground platform's footprint, ends
+  the instant it actually lands), then the real one after falling off the ledge, which *also* only
+  lasted ~0.14s. Root cause of the real one: the character enters wall-run already falling at
+  ~5 m/s (carried over from the jump arc); `wallRun.gravityMultiplier` only slows *further*
+  acceleration, not the speed already carried in, so it fell out from under the 4m-tall wall almost
+  immediately — nowhere near a sustained run. This is very likely the same root cause behind the
+  office session's already-flagged "WallRun attempts ~10, ~0 completions" self-play finding (loop 9
+  below), not a new issue. **Fix:** clamp the vertical velocity to a small downward speed when
+  wall-run engages (new `MovementConfig.wallRun.maxEntryFallSpeed`, 1.5 m/s) — catches the fall
+  instead of carrying it through. The test's own event-recording was *also* fragile (paired "first
+  end" with "most recent start" across multiple cycles, which is exactly how you get a negative
+  duration) — rewrote it to track the longest single start→end cycle instead.
+- The above; no second unrelated regression turned up once the wall-run fix landed — the two
+  "real" failures shared one root cause.
+
+**Metric outcome:** Full suite 19/19 passing, zero warnings, all three scenes rebuilt clean.
+
+**Decision:** Keep all fixes. The wall-run entry-speed clamp should be re-validated against the
+self-play harness next (`Tools/selfplay.sh` — note its `PROJ` path is hardcoded to the office
+machine, needs making portable before it'll run correctly here or on any other machine) to see
+whether `WallRun attempts/completions` actually improves now, since that was flagged as a "next
+target" and this fix directly addresses the mechanism likely causing it.
+
+---
+
 ## Session — rooftop playground + movement/feature work
 
 Beyond the M4 self-play loop, a run of feature + feel work driven by live testing:
