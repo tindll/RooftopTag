@@ -2,6 +2,7 @@
 
 using System.Collections;
 using Game.AI;
+using Game.MapGeometry;
 using Game.Movement;
 using Game.Rules;
 using NUnit.Framework;
@@ -193,6 +194,56 @@ public sealed class TagRulesTests
         Scene blank = SceneManager.CreateScene("TestIsolationBlank");
         SceneManager.SetActiveScene(blank);
         yield return SceneManager.UnloadSceneAsync(tagArenaScene);
+    }
+
+    [UnityTest]
+    public IEnumerator TagAgent_RootRotationStaysYawOnlyDuringLungeDive()
+    {
+        // Regression test: the slide-lean/lunge-dive visual pitch used to be applied directly to
+        // the root transform.rotation — the same transform CharacterMotor's Rigidbody drives every
+        // FixedUpdate via MoveRotation. Physics.autoSyncTransforms (default true) synced that
+        // manual write back into the Rigidbody's authoritative pose, so CharacterMotor's own
+        // RotateTowards had to fight/unwind a pitch that kept getting reintroduced every LateUpdate
+        // — surfaced directly as "the player model bugs out and doesn't face the right direction
+        // anymore" from a manual feel-test. Exercises the fix via the lunge dive rather than a
+        // slide-on-a-ramp — same shared pitch-application code path in TagAgent.LateUpdate, but
+        // triggered with a single TryLunge() call on flat ground instead of needing slope geometry
+        // tuned just right to reliably trigger and sustain a slide. Needs a real body-renderer
+        // child (TagAgent no-ops the pitch effect without one), unlike the bare GameObject
+        // CreateTagAgent normally builds — so this test constructs the agent via
+        // TagArenaMapGeometry.BuildAgentCapsule (root + child "Body"), matching the real game.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
+
+        GameObject go = TagArenaMapGeometry.BuildAgentCapsule("FacingTestAgent", 0, new Vector3(0f, 1.1f, 0f), Color.white);
+        go.transform.SetParent(_sceneRoot.transform, false);
+        ScriptedCharacterInput input = go.AddComponent<ScriptedCharacterInput>();
+        CharacterMotor motor = go.AddComponent<CharacterMotor>();
+
+        var motorSo = new SerializedObject(motor);
+        motorSo.FindProperty("config").objectReferenceValue = _movementConfig;
+        motorSo.ApplyModifiedProperties();
+
+        TagAgent agent = go.AddComponent<TagAgent>();
+        agent.Configure(_tagConfig, motor, go.GetComponentInChildren<Renderer>(), isLocalPlayer: false);
+        agent.SetRole(Role.Tagger, startGrace: false);
+
+        yield return null; // let Awake/Configure settle
+        agent.TryLunge(); // triggers the dive pitch pulse (_diveElapsed) in TagAgent.LateUpdate
+
+        float maxPitchOrRoll = 0f;
+        for (int i = 0; i < 40; i++)
+        {
+            yield return new WaitForFixedUpdate();
+            float pitch = go.transform.eulerAngles.x;
+            float roll = go.transform.eulerAngles.z;
+            if (pitch > 180f) pitch -= 360f;
+            if (roll > 180f) roll -= 360f;
+            maxPitchOrRoll = Mathf.Max(maxPitchOrRoll, Mathf.Abs(pitch), Mathf.Abs(roll));
+        }
+
+        Debug.Log($"METRIC facing_bug_max_root_pitch_or_roll_deg={maxPitchOrRoll:0.00}");
+        Assert.Less(maxPitchOrRoll, 1f, "Root rotation should stay yaw-only (no pitch/roll drift) even while the lunge-dive visual effect is active.");
     }
 
     [UnityTest]

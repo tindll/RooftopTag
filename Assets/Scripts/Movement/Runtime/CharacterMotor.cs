@@ -34,6 +34,12 @@ public sealed class CharacterMotor : MonoBehaviour
     private float _jumpBufferDeadline = float.NegativeInfinity;
     private bool _airDiveUsed; // one air-dive per airborne period (reset on the ground)
 
+    // Separate from _lastGroundedTime, which refreshes every grounded tick (so gating a bunny-hop
+    // window on it would be true almost always while standing still) — this is set once, exactly
+    // on the moment of landing, so PerformJump can tell "did you just land" from "have you been
+    // standing here a while."
+    private float _lastLandingTime = float.NegativeInfinity;
+
     // Interact (E) is edge-triggered for one frame, but vault/mantle/climb/wall-grab need you to also
     // be in range of the wall on that exact frame — so a press a hair too early or far did nothing.
     // Buffer it like the jump buffer: a press stays "live" for a short window, so E fires as soon as
@@ -73,6 +79,14 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private float _airborneStartTime = float.NegativeInfinity;
     private float _lastSlideEndTime = float.NegativeInfinity;
+    private float _slideElapsed;
+
+    // Set only when a slide is force-ended by hitting maxSlideDuration (holding CTRL indefinitely),
+    // not by voluntary release or a slide-hop jump-out — those keep the shorter
+    // slideReentryCooldown so legitimate slide-hop chaining (which the rest of the slide tuning is
+    // built to reward) isn't collateral damage from throttling the "hold forever" case.
+    private float _forcedSlideCooldownDeadline = float.NegativeInfinity;
+
     private MotorState _previousState = MotorState.Airborne;
 
     public event Action? Landed;
@@ -147,9 +161,12 @@ public sealed class CharacterMotor : MonoBehaviour
         _state = MotorState.Airborne;
         _previousState = MotorState.Airborne;
         _lastGroundedTime = float.NegativeInfinity;
+        _lastLandingTime = float.NegativeInfinity;
         _jumpBufferDeadline = float.NegativeInfinity;
         _wallReattachDeadline = float.NegativeInfinity;
         _lastSlideEndTime = float.NegativeInfinity;
+        _forcedSlideCooldownDeadline = float.NegativeInfinity;
+        _slideElapsed = 0f;
         _airborneStartTime = Time.time;
 
         _rb.linearVelocity = Vector3.zero;
@@ -225,7 +242,8 @@ public sealed class CharacterMotor : MonoBehaviour
         // on a ramp gravity does the work, so you can just hold CTRL to slide down it without a run-up
         // or pressing forward (you still steer left/right; see TickSliding's strafe).
         if (_input.SlideHeld && (CurrentSpeed >= config.slide.minEntrySpeed || IsOnSlope())
-            && Time.time - _lastSlideEndTime >= config.slide.slideReentryCooldown)
+            && Time.time - _lastSlideEndTime >= config.slide.slideReentryCooldown
+            && Time.time >= _forcedSlideCooldownDeadline)
         {
             EnterSliding();
             return;
@@ -244,6 +262,7 @@ public sealed class CharacterMotor : MonoBehaviour
     private void EnterSliding()
     {
         _state = MotorState.Sliding;
+        _slideElapsed = 0f;
         Vector3 horizontal = HorizontalVelocity;
         Vector3 dir = horizontal.sqrMagnitude > 0.0001f ? horizontal.normalized : transform.forward;
 
@@ -261,11 +280,14 @@ public sealed class CharacterMotor : MonoBehaviour
         _capsule.center = new Vector3(0f, _capsule.height * 0.5f, 0f);
     }
 
-    private void ExitSliding()
+    private void ExitSliding(bool forcedByMaxDuration = false)
     {
         _capsule.height = _defaultCapsuleHeight;
         _capsule.center = _defaultCapsuleCenter;
         _lastSlideEndTime = Time.time;
+
+        if (forcedByMaxDuration)
+            _forcedSlideCooldownDeadline = Time.time + config.slide.forcedExitCooldown;
     }
 
     // How sharply A/D curves a slide (degrees/sec of heading change at full input) — steers, not flings.
@@ -288,6 +310,7 @@ public sealed class CharacterMotor : MonoBehaviour
         }
 
         _lastGroundedTime = Time.time;
+        _slideElapsed += dt;
 
         if (ConsumeBufferedJump())
         {
@@ -341,11 +364,14 @@ public sealed class CharacterMotor : MonoBehaviour
 
         // Release CTRL to stop. Otherwise only auto-exit when slow on FLAT ground — on a slope a
         // slide legitimately starts near-zero and accelerates, so a low-speed exit there would kill
-        // it before gravity kicks in.
-        bool wantsExit = !_input.SlideHeld || (speed < config.slide.minEntrySpeed * 0.4f && !IsOnSlope());
+        // it before gravity kicks in. Also force-exit once maxSlideDuration is hit regardless of
+        // continued CTRL hold — a slope previously let you hold CTRL indefinitely, steering with
+        // A/D while downhillAccelMultiplier kept adding speed the whole time.
+        bool durationExceeded = _slideElapsed >= config.slide.maxSlideDuration;
+        bool wantsExit = !_input.SlideHeld || durationExceeded || (speed < config.slide.minEntrySpeed * 0.4f && !IsOnSlope());
         if (wantsExit)
         {
-            ExitSliding();
+            ExitSliding(forcedByMaxDuration: durationExceeded);
             _state = MotorState.Grounded;
         }
 
@@ -363,6 +389,7 @@ public sealed class CharacterMotor : MonoBehaviour
         float airborneDuration = Time.time - _airborneStartTime;
         _state = MotorState.Grounded;
         _lastGroundedTime = Time.time;
+        _lastLandingTime = Time.time;
 
         // Gate landing effects (camera shake) on a minimum air time so a tiny geometry seam or
         // a single missed ground-probe tick doesn't read as a "landing" and shake the camera.
@@ -509,6 +536,14 @@ public sealed class CharacterMotor : MonoBehaviour
     {
         _jumpBufferDeadline = float.NegativeInfinity;
         Vector3 horizontal = HorizontalVelocity * horizontalRetention;
+
+        // Bunny-hop: jumping again shortly after landing gives a small speed bonus, rewarding a
+        // fast hop rhythm rather than merely "not being blocked." ClampHorizontalSpeed (called
+        // every FixedUpdate regardless of state) still caps the total, so chaining many quick hops
+        // can't run away unbounded.
+        if (Time.time - _lastLandingTime <= config.jump.bunnyHopWindow)
+            horizontal *= config.jump.bunnyHopSpeedBonus;
+
         _rb.linearVelocity = new Vector3(horizontal.x, config.jump.jumpSpeed, horizontal.z);
         _state = MotorState.Airborne;
         Jumped?.Invoke();

@@ -3,6 +3,81 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Bunny-hop, slide duration cap + facing-bug fix, circular minimap
+
+Three requests from live playtesting, planned up front (design review via a second pass before
+implementing) then built in order: bunny-hop feel, slide duration cap + a real facing bug, and a
+circular minimap.
+
+**Bunny-hop:** no hard-coded jump cooldown existed — `jump.coyoteTime`/`jumpBufferTime` already
+allowed a near-instant re-jump, and jumps already retained 100% horizontal speed. But
+`JumpSettings.bunnyHopWindow` was declared and never read anywhere — a dead field. Wired it up for
+real: new `_lastLandingTime` (separate from `_lastGroundedTime`, which refreshes every grounded
+tick and would've made the window almost always true), set on landing, reset in `ResetState`. `PerformJump`
+now applies a small multiplicative speed bonus (`bunnyHopSpeedBonus`, 1.05) when a jump lands
+within `bunnyHopWindow` of the last landing, bounded by the existing global speed cap. Verified:
+chaining a jump immediately after landing measured 8.00 → 8.40 m/s, exactly the 5% bonus.
+
+**Slide duration cap:** holding CTRL on a slope let the player slide indefinitely while
+`downhillAccelMultiplier` kept adding speed and A/D kept steering — "I can just keep hold of CTRL
+and slide forever whilst gaining momentum." Added `SlideSettings.maxSlideDuration` (1.75s) and
+`_slideElapsed` tracking, folded into the existing `wantsExit` check (same pattern as
+`TickWallRunning`'s `maxDuration`). Deliberately did NOT just lengthen the existing
+`slideReentryCooldown` (0.5s) uniformly — `ExitSliding` fires on every exit path including the
+slide-hop jump-out, which the rest of the tuning (`slideHopRetention=1`, the flat-ground boost) is
+clearly built to reward via fast chaining; a longer cooldown across the board would've throttled
+that too. Instead, only a forced max-duration exit sets a separate, longer
+`forcedExitCooldown` (1.5s) deadline — voluntary release and slide-hops keep the original 0.5s.
+First test attempt for this used the same 20m ramp as an existing test and produced a false pass
+(the character reached the ramp's *end* and fell off before the duration cap even triggered, an
+unrelated exit path) — caught by checking which state it exited into, fixed by using a much longer
+(100m) ramp so the duration cap is unambiguously what's being tested.
+
+**Facing bug — a real rotation-ownership conflict, not cosmetic:** `TagAgent.LateUpdate()`'s
+slide-lean/lunge-dive pitch effect was applied by directly overwriting `transform.rotation` on the
+same root GameObject whose Rigidbody `CharacterMotor.UpdateFacing` drives every FixedUpdate via
+`MoveRotation`. `Physics.autoSyncTransforms` (default true) synced that manual write into the
+Rigidbody's authoritative pose, so `UpdateFacing`'s next `RotateTowards` call started from a
+pitch-contaminated quaternion — spherically interpolating from a pitched+yawed rotation toward a
+pure-yaw target doesn't cleanly subtract the pitch, and can introduce off-axis roll. This recurred
+every LateUpdate tick a slide/dive was active, worse the longer you slide — exactly "the player
+model bugs out and doesn't face the right direction anymore." Fix: apply the pitch to
+`_bodyRenderer.transform.localRotation` (the visible mesh, a child GameObject) instead of the
+root — composes with the root's yaw for free through the transform hierarchy, never touches the
+Rigidbody-owned root. Verified via a dedicated regression test (triggered through the lunge dive,
+simpler than needing slope geometry): max root pitch/roll drift over the whole dive was 0.00°.
+Known follow-up, not fixed here: the lunge arm pivots are still root-parented, so torso/legs will
+now lean during a slide/dive but the arms won't — worth a look, not blocking.
+
+**Circular minimap:** lives inside `RoundController` (`Game.Rules`) — the only viable home, since
+`Game.Rules` already references `Game.Camera` and the reverse would be a cyclic asmdef reference.
+This project's whole HUD is OnGUI/IMGUI (zero Canvas/UGUI anywhere), so the minimap stays
+consistent: a second orthographic top-down camera renders into a small RenderTexture, drawn via
+`GUI.DrawTexture` and cropped into a circle with a procedurally-generated circular mask texture
+(cached once, not regenerated per `OnGUI` call — it runs at least twice a frame). Blue triangles
+(rotated to facing) for agents sharing the local player's role, red dots for the opposing role.
+North-up (doesn't rotate with player facing) and no edge-clamping for off-map agents in this pass —
+both reasonable future refinements, not required now. Built lazily inside `RegisterAgent`'s
+`isLocalPlayer` branch rather than unconditionally in `Awake`/`Start`, specifically so the
+self-play harness's 10 headless bot-only matches (never a local player) skip camera/RenderTexture
+setup entirely — confirmed via the design review that building it unconditionally would've leaked
+a Camera + RenderTexture per self-play match with no teardown between them.
+
+**Found and fixed along the way:** headless batch-mode (`-nographics`, including this project's
+own scene-load PlayMode tests that legitimately register a real local player) reports a Null
+graphics device — `RenderTexture.Create` throws there, which surfaced as two real test failures
+the moment the minimap shipped. Guarded `SetupMinimap` on `SystemInfo.graphicsDeviceType !=
+GraphicsDeviceType.Null` — skips gracefully in headless contexts (nothing to display a minimap on
+anyway), same spirit as the self-play lazy-init guard above.
+
+**Metric outcome:** Full suite 23/23 passing, zero warnings, all three scenes rebuilt clean.
+
+**Decision:** Keep all four. The minimap specifically needs your own eyes — orthographic size (25),
+icon size, colors, and whether north-up vs. player-rotating feels right are all first-guess values
+with zero visual feel-testing behind them yet.
+
+---
+
 ## Post-office-session sync — test suite triage (5 failures after pull)
 
 Pulled the office session's work (Rooftop Arena, movement rework, M4 loop entries below) onto a

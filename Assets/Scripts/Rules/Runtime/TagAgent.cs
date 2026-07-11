@@ -236,12 +236,18 @@ public sealed class TagAgent : MonoBehaviour
         // Lunge dive pitches forward (+), slide leans back (−); they almost never overlap, and if they
         // do the sum reads fine.
         float pitch = divePitch + _slideLean;
-        if (Mathf.Abs(pitch) <= 0.01f) return; // nothing active — leave CharacterMotor's yaw-only facing alone
 
-        // Rebuild the rotation absolutely from the current yaw — NOT `rotation *= pitch`, which
-        // compounds every LateUpdate (several run per FixedUpdate) into a spin ("10 frontflips").
-        float yaw = transform.eulerAngles.y;
-        transform.rotation = Quaternion.Euler(pitch, yaw, 0f);
+        // Applied to the visible body's LOCAL rotation, not the root — the root's Transform is the
+        // Rigidbody CharacterMotor drives every FixedUpdate via MoveRotation. Physics.autoSyncTransforms
+        // (default true) means a direct write to the ROOT's transform.rotation gets synced back into
+        // the Rigidbody's authoritative pose before the next physics step, so CharacterMotor's own
+        // RotateTowards then has to fight/unwind a pitch that keeps getting reintroduced every
+        // LateUpdate during a slide — a real rotation-ownership conflict (not just a visual pop)
+        // that showed up as the character's facing visibly glitching after sliding. The body child
+        // inherits the root's yaw for free through the transform hierarchy, so only pitch is set
+        // here — no need to reconstruct yaw the way the old root-rotation code had to.
+        if (_bodyRenderer != null)
+            _bodyRenderer.transform.localRotation = Quaternion.Euler(pitch, 0f, 0f);
     }
 
     /// <summary>Explicit ranged tag attempt (right click / left trigger), tagging the nearest opposing agent if it's within <see cref="CurrentReachRadius"/> — no physical collision required.</summary>

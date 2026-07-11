@@ -35,6 +35,7 @@ public sealed class MovementConfig : ScriptableObject
         public float jumpBufferTime;
         public float fallGravityMultiplier;
         public float bunnyHopWindow;
+        public float bunnyHopSpeedBonus;
         public float minAirTimeForLandingEffects;
     }
 
@@ -52,6 +53,8 @@ public sealed class MovementConfig : ScriptableObject
         public float slideReentryCooldown;
         public float airDiveForwardBoost; // mid-air slide: a one-shot forward lunge...
         public float airDiveDownBoost;    // ...and a downward kick, to dive across/into gaps
+        public float maxSlideDuration;    // force-exit a slide held this long, regardless of CTRL
+        public float forcedExitCooldown;  // longer re-entry lockout specifically after a maxSlideDuration force-exit
     }
 
     [Serializable]
@@ -148,6 +151,7 @@ public sealed class MovementConfig : ScriptableObject
         jumpBufferTime = 0.15f,
         fallGravityMultiplier = 1.6f,
         bunnyHopWindow = 0.15f,
+        bunnyHopSpeedBonus = 1.05f,
         minAirTimeForLandingEffects = 0.3f,
     };
 
@@ -164,6 +168,8 @@ public sealed class MovementConfig : ScriptableObject
         slideReentryCooldown = 0.5f,
         airDiveForwardBoost = 0.7f, // barely a nudge — the dive is mostly the pose + a little drop
         airDiveDownBoost = 1f,
+        maxSlideDuration = 1.75f,
+        forcedExitCooldown = 1.5f,
     };
 
     public WallRunSettings wallRun = new()

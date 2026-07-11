@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Game.CameraSystem;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.Rendering;
 
 namespace Game.Rules;
 
@@ -46,7 +47,11 @@ public sealed class RoundController : MonoBehaviour
     {
         _agents.Add(agent);
         _spawnStates[agent] = (agent.transform.position, agent.transform.rotation);
-        if (isLocalPlayer) _localPlayerAgent = agent;
+        if (isLocalPlayer)
+        {
+            _localPlayerAgent = agent;
+            SetupMinimap();
+        }
     }
 
     /// <summary>Loose tagger coordination: taggers record who they're currently pursuing so others prefer an unclaimed runner over piling onto the same one.</summary>
@@ -200,6 +205,12 @@ public sealed class RoundController : MonoBehaviour
 
         if (_timeRemaining <= 0f)
             EndRound($"Runners win! {runnersRemaining} survived.");
+
+        if (_minimapCamera != null && _localPlayerAgent != null)
+        {
+            Vector3 playerPos = _localPlayerAgent.transform.position;
+            _minimapCamera.transform.position = new Vector3(playerPos.x, playerPos.y + MinimapCameraHeight, playerPos.z);
+        }
     }
 
     private void EndRound(string message)
@@ -243,5 +254,173 @@ public sealed class RoundController : MonoBehaviour
             var smallStyle = new GUIStyle(GUI.skin.label) { fontSize = 18, alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.white } };
             GUI.Label(new Rect(0, Screen.height / 2f, Screen.width, 30), "Press R to restart", smallStyle);
         }
+
+        DrawMinimap();
+    }
+
+    // ---------------------------------------------------------------- Minimap
+    //
+    // Circular top-down minimap, top-right: a second orthographic camera looking straight down,
+    // rendered into a small RenderTexture and drawn via GUI.DrawTexture (this project's whole HUD
+    // is OnGUI/IMGUI, no Canvas/UGUI anywhere — staying consistent rather than introducing a new
+    // UI system). IMGUI has no native circular clip, so a procedurally-generated circular "corner
+    // mask" texture (opaque outside the inscribed circle, transparent inside) is drawn on top of
+    // the square render to crop it into a circle. North-up (fixed world rotation) in this pass —
+    // doesn't rotate to match player facing; a reasonable future refinement, not required here.
+    //
+    // Built lazily here in RegisterAgent's isLocalPlayer branch rather than unconditionally in
+    // Awake/Start: the self-play harness (SelfPlayTests.cs) runs full headless matches with only
+    // bot agents (isLocalPlayer never true), and building a Camera + RenderTexture per match for a
+    // view centered on nothing would be a pure leak with no teardown between matches — this hook
+    // means self-play skips minimap setup entirely for free.
+
+    private const int MinimapSize = 180;
+    private const int MinimapMargin = 12;
+    private const int MinimapTextureSize = 256;
+    private const float MinimapOrthographicSize = 25f;
+    private const float MinimapCameraHeight = 40f;
+    private const float MinimapIconSize = 14f;
+
+    private Camera? _minimapCamera;
+    private RenderTexture? _minimapRenderTexture;
+    private Texture2D? _minimapMaskTexture;
+    private Texture2D? _minimapTriangleTexture;
+    private Texture2D? _minimapDotTexture;
+
+    private void SetupMinimap()
+    {
+        if (_minimapCamera != null) return;
+
+        // Headless batch-mode (e.g. -nographics PlayMode tests, including this project's own
+        // scene-load tests that legitimately register a real local player) reports a Null graphics
+        // device — RenderTexture.Create fails there, and there's nothing to display a minimap on
+        // anyway. Skip gracefully rather than erroring.
+        if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return;
+
+        _minimapRenderTexture = new RenderTexture(MinimapTextureSize, MinimapTextureSize, 24);
+
+        var camGo = new GameObject("MinimapCamera");
+        _minimapCamera = camGo.AddComponent<Camera>();
+        _minimapCamera.orthographic = true;
+        _minimapCamera.orthographicSize = MinimapOrthographicSize;
+        _minimapCamera.targetTexture = _minimapRenderTexture;
+        _minimapCamera.clearFlags = CameraClearFlags.SolidColor;
+        _minimapCamera.backgroundColor = new Color(0.05f, 0.05f, 0.05f);
+        camGo.transform.rotation = Quaternion.Euler(90f, 0f, 0f); // straight down, north-up (no yaw)
+
+        // Cached once — OnGUI runs at least twice per frame (Layout + Repaint), so regenerating
+        // these via SetPixels/Apply on every call would be a real, avoidable cost.
+        _minimapMaskTexture = BuildCircularMaskTexture(MinimapTextureSize, new Color(0.05f, 0.05f, 0.05f));
+        _minimapTriangleTexture = BuildTriangleTexture(32);
+        _minimapDotTexture = BuildDotTexture(32);
+    }
+
+    private void DrawMinimap()
+    {
+        if (_minimapCamera == null || _minimapRenderTexture == null || _localPlayerAgent == null) return;
+
+        Rect mapRect = new(Screen.width - MinimapSize - MinimapMargin, MinimapMargin, MinimapSize, MinimapSize);
+
+        GUI.color = Color.white;
+        GUI.DrawTexture(mapRect, _minimapRenderTexture);
+        GUI.DrawTexture(mapRect, _minimapMaskTexture!);
+
+        Vector3 playerPos = _localPlayerAgent.transform.position;
+        float worldToMinimapScale = (MinimapSize * 0.5f) / MinimapOrthographicSize;
+        Vector2 mapCenter = new(mapRect.x + mapRect.width * 0.5f, mapRect.y + mapRect.height * 0.5f);
+
+        // Local player marker — white triangle, oriented to facing, always at the map's center.
+        DrawMinimapIcon(_minimapTriangleTexture!, mapCenter, _localPlayerAgent.transform.eulerAngles.y, Color.white);
+
+        foreach (TagAgent agent in _agents)
+        {
+            if (agent == _localPlayerAgent) continue;
+
+            Vector3 offset = agent.transform.position - playerPos;
+            Vector2 mapOffset = new(offset.x * worldToMinimapScale, -offset.z * worldToMinimapScale);
+            if (mapOffset.magnitude > MinimapSize * 0.5f) continue; // outside visible range — no edge-clamp in this pass
+
+            Vector2 iconPos = mapCenter + mapOffset;
+            bool isFriendly = agent.Role == _localPlayerAgent.Role;
+
+            if (isFriendly)
+                DrawMinimapIcon(_minimapTriangleTexture!, iconPos, agent.transform.eulerAngles.y, new Color(0.25f, 0.55f, 1f));
+            else
+                DrawMinimapIcon(_minimapDotTexture!, iconPos, 0f, new Color(1f, 0.2f, 0.2f));
+        }
+
+        GUI.color = Color.white;
+    }
+
+    private static void DrawMinimapIcon(Texture2D texture, Vector2 center, float yawDegrees, Color color)
+    {
+        Rect rect = new(center.x - MinimapIconSize * 0.5f, center.y - MinimapIconSize * 0.5f, MinimapIconSize, MinimapIconSize);
+        Matrix4x4 savedMatrix = GUI.matrix;
+        GUI.color = color;
+        GUIUtility.RotateAroundPivot(yawDegrees, center);
+        GUI.DrawTexture(rect, texture);
+        GUI.matrix = savedMatrix;
+    }
+
+    private static Texture2D BuildCircularMaskTexture(int size, Color backgroundColor)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        float radius = size * 0.5f;
+        Vector2 center = new(radius, radius);
+        var pixels = new Color[size * size];
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float dist = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center);
+                // Opaque outside the circle, fully transparent inside it, with a ~1px antialiased
+                // edge so the crop doesn't look jagged.
+                float alpha = Mathf.Clamp01(dist - radius + 1f);
+                pixels[y * size + x] = new Color(backgroundColor.r, backgroundColor.g, backgroundColor.b, alpha);
+            }
+        }
+        tex.SetPixels(pixels);
+        tex.Apply();
+        return tex;
+    }
+
+    private static Texture2D BuildDotTexture(int size)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        float radius = size * 0.5f;
+        Vector2 center = new(radius, radius);
+        var pixels = new Color[size * size];
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float dist = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center);
+                float alpha = Mathf.Clamp01(radius - dist);
+                pixels[y * size + x] = new Color(1f, 1f, 1f, alpha); // white — tinted via GUI.color when drawn
+            }
+        }
+        tex.SetPixels(pixels);
+        tex.Apply();
+        return tex;
+    }
+
+    private static Texture2D BuildTriangleTexture(int size)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        var pixels = new Color[size * size];
+        float center = size * 0.5f;
+        for (int y = 0; y < size; y++)
+        {
+            float t = y / (float)(size - 1); // 0 at bottom row, 1 at top row
+            float halfWidth = (1f - t) * center;
+            for (int x = 0; x < size; x++)
+            {
+                bool inside = Mathf.Abs(x + 0.5f - center) <= halfWidth;
+                pixels[y * size + x] = new Color(1f, 1f, 1f, inside ? 1f : 0f);
+            }
+        }
+        tex.SetPixels(pixels);
+        tex.Apply();
+        return tex;
     }
 }

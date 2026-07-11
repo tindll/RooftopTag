@@ -91,6 +91,38 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
+    public IEnumerator Jump_ChainedWithinBunnyHopWindow_GrantsSpeedBonus()
+    {
+        // Bunny-hop feel: chaining a jump quickly after landing should reward a small speed bonus,
+        // not just "not being blocked" (buffer/coyote already allowed a near-instant re-jump) —
+        // requested directly from a manual feel-test.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 100f), new Vector3(10f, 1f, 220f));
+
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(0f, 1.1f, 0f));
+
+        input.Move = new Vector2(0f, 1f);
+        yield return RunForSeconds(1.5f);
+
+        input.PressJump();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.Airborne, motor.CurrentState, "Precondition: should be airborne after the first jump.");
+
+        yield return WaitUntilGroundedOrTimeout(motor, 5f);
+        float speedBeforeChainedJump = motor.CurrentSpeed;
+
+        // Chain immediately — well within bunnyHopWindow (0.15s default).
+        input.PressJump();
+        yield return new WaitForFixedUpdate();
+        float speedAfterChainedJump = motor.CurrentSpeed;
+
+        Debug.Log($"METRIC bunny_hop_speed_before={speedBeforeChainedJump:0.00} speed_after={speedAfterChainedJump:0.00}");
+        Assert.Greater(speedAfterChainedJump, speedBeforeChainedJump * 1.01f,
+            "Jumping again immediately after landing should grant a measurable bunny-hop speed bonus.");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
     public IEnumerator SlideHop_MeasuresChainedDistance()
     {
         _sceneRoot = new GameObject("TestScene");
@@ -350,6 +382,79 @@ public sealed class MovementMetricsTests
 
         Debug.Log($"METRIC ramp_run_speed_mps={runSpeed:0.00} ramp_slide_speed_mps={slideSpeed:0.00}");
         Assert.Greater(slideSpeed, runSpeed, "Sliding down a slope should be faster than running down the same slope.");
+    }
+
+    [UnityTest]
+    public IEnumerator Slide_ExceedsMaxDuration_ForcesExit()
+    {
+        // Regression test: holding CTRL on a slope let the player slide indefinitely while
+        // downhillAccelMultiplier kept adding speed and A/D kept steering — "I can just keep hold
+        // of CTRL and slide forever whilst gaining momentum" from a manual feel-test. This ramp
+        // takes ~2.3-2.6s to fully traverse (see SlideDownRamp_FasterThanRunningDownSameRamp just
+        // above), comfortably longer than maxSlideDuration (1.75s default), so a force-exit here
+        // is necessarily the duration cap, not just reaching the bottom.
+        // Ramp is deliberately long (100m, same ~22-degree grade as the ramp used elsewhere in this
+        // file) so that even at the ~13 m/s speed cap, sliding physically cannot reach the bottom
+        // within maxSlideDuration (1.75s) or this test's polling window — the only possible exit is
+        // the duration cap itself, not "reached the end and fell off."
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, -3f), new Vector3(10f, 1f, 6f));
+        CreateRamp(_sceneRoot.transform, 0f, 0f, 100f, -40f, 10f);
+
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(0f, 1.1f, -2f));
+        input.Move = new Vector2(0f, 1f);
+        yield return RunForSeconds(0.3f);
+
+        input.SlideHeld = true; // held continuously, never released
+        yield return RunForSeconds(0.1f);
+        Assert.AreEqual(MotorState.Sliding, motor.CurrentState, "Should be sliding.");
+
+        float elapsed = 0f;
+        while (motor.CurrentState == MotorState.Sliding && elapsed < 3f)
+        {
+            yield return new WaitForFixedUpdate();
+            elapsed += Time.fixedDeltaTime;
+        }
+
+        Debug.Log($"METRIC slide_forced_exit_time_s={elapsed:0.00}");
+        Assert.Less(elapsed, 3f, "Slide should force-exit at maxSlideDuration even with CTRL still held.");
+        Assert.AreNotEqual(MotorState.Sliding, motor.CurrentState, "Should no longer be sliding after maxSlideDuration.");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
+    public IEnumerator Slide_ReentryAfterForcedExit_RespectsLongerCooldown()
+    {
+        // Same deliberately-long ramp as Slide_ExceedsMaxDuration_ForcesExit above — see that
+        // test's comment for why (guarantees the duration cap, not reaching the ramp's end, is
+        // what triggers the exit).
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, -3f), new Vector3(10f, 1f, 6f));
+        CreateRamp(_sceneRoot.transform, 0f, 0f, 100f, -40f, 10f);
+
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(0f, 1.1f, -2f));
+        input.Move = new Vector2(0f, 1f);
+        yield return RunForSeconds(0.3f);
+
+        input.SlideHeld = true;
+        yield return RunForSeconds(0.1f);
+        Assert.AreEqual(MotorState.Sliding, motor.CurrentState, "Precondition: should actually be sliding before waiting for the forced exit.");
+
+        float elapsed = 0f;
+        while (motor.CurrentState == MotorState.Sliding && elapsed < 3f)
+        {
+            yield return new WaitForFixedUpdate();
+            elapsed += Time.fixedDeltaTime;
+        }
+        Assert.AreNotEqual(MotorState.Sliding, motor.CurrentState, "Precondition: slide should have force-exited by maxSlideDuration.");
+
+        // Still holding CTRL — re-entry should stay blocked past the shorter slideReentryCooldown
+        // (0.5s) specifically because this was a forced exit, not a voluntary release or slide-hop.
+        yield return RunForSeconds(0.6f);
+        Debug.Log($"METRIC slide_state_after_short_cooldown={motor.CurrentState}");
+        Assert.AreNotEqual(MotorState.Sliding, motor.CurrentState,
+            "A forced max-duration exit should block re-entry past the ordinary slideReentryCooldown.");
+        AssertNoPhysicsExplosion(motor);
     }
 
     [UnityTest]
