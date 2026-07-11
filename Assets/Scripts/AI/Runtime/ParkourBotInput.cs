@@ -1,6 +1,7 @@
 #nullable enable
 
 using System.Collections.Generic;
+using Game.MapGeometry;
 using Game.Movement;
 using Game.Rules;
 using UnityEngine;
@@ -29,11 +30,18 @@ namespace Game.AI;
 /// </summary>
 public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 {
-    [SerializeField] private float lungeRange = 2.5f;
+    [SerializeField] private float lungeRange = 4.5f; // lunge to close this gap (a committed dive), not just when already on top of the target
     [SerializeField] private float nodeArrivalRadius = 1.75f;
     [SerializeField] private float interactTriggerDistance = 2f;
-    [SerializeField] private float fleeDistance = 10f;
-    [SerializeField] private float edgeLookahead = 1.3f;
+    // Takeoff fires when ground runs out this far ahead — every metre here is wasted jump range
+    // (the bot leaves the ledge that much before the lip). M4 loop measured jumps landing ~9m short
+    // with the old 1.3m; tightened so the bot commits nearer the edge and keeps its reach.
+    [SerializeField] private float edgeLookahead = 0.6f;
+
+    // Below this empty-gap distance a sprint jump (~8.5m of range) overshoots the far platform into
+    // the next pit, so the bot approaches at walk speed (~4.4m range) instead — the M4 loop's
+    // "fails the first jump" (the 3m opening gap) was this fixed-power overshoot. Above it, sprint.
+    [SerializeField] private float shortJumpGapThreshold = 4.5f;
 
     // Cliff-avoidance tuning — see ChaseFleeBotInput's original fix notes: the raycast must cover
     // a band both above and below the bot's current height (ramps rise above a shallow check),
@@ -61,12 +69,21 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private float _nextDecisionTime;
     private MatchMetrics? _metrics;
 
+    // Jump-landing telemetry: capture the target node at takeoff, measure horizontal miss on landing.
+    private bool _jumpInFlight;
+    private Vector3 _jumpTargetPos;
+
+    // True while approaching a short Jump edge — drop sprint so the jump doesn't overshoot.
+    private bool _approachShortGap;
+    private bool _jumpWasShort;   // was the in-flight jump a short (walk) one — for landing telemetry
+    private float _jumpTargetZ;
+
     public Vector2 Move { get; private set; }
     public Vector2 Look => Vector2.zero;
     public bool JumpHeld => false;
     public bool JumpPressed { get; private set; }
     public bool SlideHeld => false;
-    public bool SprintHeld => true;
+    public bool SprintHeld => !_approachShortGap;
     public bool InteractPressed { get; private set; }
 
     /// <summary>Current planned path, exposed read-only for debug visualization.</summary>
@@ -92,6 +109,30 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         JumpPressed = false;
         InteractPressed = false;
 
+        if (_jumpInFlight && _agent.Motor.CurrentState == MotorState.Grounded)
+        {
+            Vector3 d = transform.position - _jumpTargetPos;
+            d.y = 0f;
+            // Ignore implausibly large "landings" — a fall-respawn teleports the bot to spawn
+            // mid-flight, which would otherwise register as a huge phantom miss and wreck the stats.
+            if (d.magnitude <= 12f)
+            {
+                _metrics?.JumpLandingErrors.Add(d.magnitude);
+                float signedZ = transform.position.z - _jumpTargetZ;
+                if (_jumpWasShort) _metrics?.ShortJumpSignedOvershoot.Add(signedZ);
+                else _metrics?.LongJumpSignedOvershoot.Add(signedZ);
+            }
+            _jumpInFlight = false;
+        }
+
+        // Hold still until the round-start grace lifts — the taggers are "unleashed" only after the
+        // runner's head start, rather than chasing from t=0.
+        if (_roundController != null && !_roundController.IsPastStartGrace)
+        {
+            Move = Vector2.zero;
+            return;
+        }
+
         if (Time.time >= _nextDecisionTime)
         {
             _nextDecisionTime = Time.time + Mathf.Max(_tuning.reactionTime, 0.05f);
@@ -105,6 +146,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         }
 
         Vector3 steerPoint = ComputeSteerPoint();
+        _approachShortGap = IsShortJumpAhead();
         Vector3 rawDir = RawDirectionTo(steerPoint);
         Vector3 finalDir = ApplySteeringSafety(rawDir);
 
@@ -113,9 +155,14 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
         if (_agent.Role == Role.Tagger)
         {
-            float distance = Vector3.Distance(transform.position, _target.transform.position);
             _agent.TryTagInRange();
-            if (distance <= lungeRange)
+
+            // Lunge to close the last stretch: a committed forward dive when the target is within
+            // range AND roughly ahead (so the bot dives AT it, not sideways). The dive's contact-tag
+            // window can land the tag, and a bot diving after you reads exactly as intended.
+            Vector3 toTarget = _target.transform.position - transform.position;
+            bool targetAhead = Vector3.Dot(transform.forward, toTarget.normalized) > 0.6f;
+            if (toTarget.magnitude <= lungeRange && targetAhead)
                 _agent.TryLunge();
         }
     }
@@ -140,7 +187,6 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
         Vector3 predicted = PredictPosition(target);
         LastPredictedPoint = predicted;
-        Vector3 goalPoint = isTagger ? predicted : ComputeFleePoint(predicted);
 
         if (_graph == null)
         {
@@ -149,7 +195,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         }
 
         int startNode = _graph.NearestNode(transform.position);
-        int goalNode = _graph.NearestNode(goalPoint);
+        int goalNode = isTagger
+            ? _graph.NearestNode(predicted)
+            : FleeGoalNode(predicted, startNode);
         _path = _graph.FindPath(startNode, goalNode);
         _pathIndex = 0;
     }
@@ -166,11 +214,40 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         return predicted;
     }
 
-    private Vector3 ComputeFleePoint(Vector3 threatPredictedPos)
+    /// <summary>
+    /// Runners flee toward the graph node lying farthest in the away-from-threat direction, so they
+    /// escape INTO the parkour arena (traversing its jump/wall-run/climb edges) instead of steering
+    /// to a raw radial point that lands off the small spawn pad — NearestNode would snap that point
+    /// to a platform-edge node and march the runner over the edge. This was the M4-loop root cause
+    /// of the spawn-scrum collapse: radial flee dumped runners off the pad (high fall count) before
+    /// they ever reached the arena, so the infection cascade cleared everyone in &lt;10s.
+    /// Falls back to the start node (→ empty path → direct steering) when no node lies away from the
+    /// threat, e.g. a runner already cornered at the arena's far end.
+    /// </summary>
+    private int FleeGoalNode(Vector3 threatPredictedPos, int startNode)
     {
-        Vector3 away = transform.position - threatPredictedPos;
-        Vector3 dir = away.sqrMagnitude > 0.0001f ? away.normalized : transform.forward;
-        return transform.position + dir * fleeDistance;
+        Vector3 self = transform.position;
+        Vector3 fleeDir = self - threatPredictedPos;
+        fleeDir.y = 0f;
+        fleeDir = fleeDir.sqrMagnitude > 0.0001f ? fleeDir.normalized : transform.forward;
+
+        IReadOnlyList<ParkourNode> nodes = _graph!.Nodes;
+        int best = startNode;
+        float bestScore = 0f; // strictly-positive projection required, so a node must lie away from the threat
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            if (i == startNode) continue;
+            Vector3 toNode = nodes[i].Position - self;
+            toNode.y = 0f;
+            float alongFlee = Vector3.Dot(toNode, fleeDir);
+            if (alongFlee <= bestScore) continue;
+            // Only flee somewhere actually reachable — an unreachable farthest node yields a null
+            // path, whose fallback steers the runner straight at its threat (see ComputeSteerPoint).
+            if (_graph.FindPath(startNode, i) == null) continue;
+            bestScore = alongFlee;
+            best = i;
+        }
+        return best;
     }
 
     private Vector3 ComputeSteerPoint()
@@ -215,7 +292,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private Vector3 ApplySteeringSafety(Vector3 dir)
     {
         bool crossingGapIsExpected = _path != null && _pathIndex < _path.Count && _path[_pathIndex].Type
-            is ParkourEdgeType.Jump or ParkourEdgeType.SlideHop or ParkourEdgeType.WallRun or ParkourEdgeType.Vault or ParkourEdgeType.Drop;
+            is ParkourEdgeType.Jump or ParkourEdgeType.SlideHop or ParkourEdgeType.WallRun
+               or ParkourEdgeType.Vault or ParkourEdgeType.Mantle or ParkourEdgeType.Drop
+               or ParkourEdgeType.Swing;
 
         return crossingGapIsExpected ? dir : FindSafeDirection(dir);
     }
@@ -233,17 +312,89 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 // Jump exactly when the ground is about to run out underfoot, rather than at a
                 // fixed distance from the landing node — robust regardless of the actual gap size.
                 if (_agent.Motor.CurrentState == MotorState.Grounded && IsAboutToRunOffEdge(steeringDir))
+                {
                     JumpPressed = true;
+                    _metrics?.RecordEdgeAttempt(edge.Type);
+                    _metrics?.JumpTakeoffSpeeds.Add(_agent.Motor.HorizontalVelocity.magnitude);
+                    _jumpInFlight = true;
+                    _jumpTargetPos = _graph!.Nodes[edge.ToNode].Position;
+                    _jumpTargetZ = _jumpTargetPos.z;
+                    _jumpWasShort = _approachShortGap;
+                }
+                break;
+
+            case ParkourEdgeType.Vault:
+            case ParkourEdgeType.Mantle:
+                // Vault/mantle are motor-auto when the bot arrives with speed, but a bot that runs
+                // into the ledge and stops deadlocks: CharacterMotor bails its mantle/vault check
+                // when stopped unless jump or interact is down (see TryMantleOrVaultOrClimb's early
+                // return). Hold interact while executing the edge so a stalled bot still pops over —
+                // the vault ledges (~0.55m / ~1.05m) sit in the mantle band, which has no speed gate.
+                // Harmless while moving: no ladder/swing/wall-hook exists on these ledges to trigger.
+                InteractPressed = true;
+                // If it has actually stalled against the ledge, hop: a jump clears the low boxes
+                // outright (jump height ~2m exceeds every vault/mantle ledge) or re-triggers the
+                // mantle check airborne (TickAirborne runs it too), breaking a dead stop the interact
+                // alone doesn't — the "bots get stuck on the orange boxes" case.
+                HopIfStalled();
+                break;
+
+            case ParkourEdgeType.Swing:
+                // Hold interact the whole way across: the bot runs off the entry platform toward the
+                // exit and must grab the rope while airborne mid-chasm — the grab point is nowhere
+                // near either node, so it just keeps interact down until it catches the rope (then the
+                // motor auto-releases it toward the exit, see TickSwing).
+                InteractPressed = true;
+                _metrics?.RecordEdgeAttempt(edge.Type);
                 break;
 
             case ParkourEdgeType.Climb:
             case ParkourEdgeType.Ladder:
-            case ParkourEdgeType.Swing:
-                float dist = Vector3.Distance(transform.position, _graph!.Nodes[edge.ToNode].Position);
-                if (dist <= interactTriggerDistance)
+                // Press interact when near EITHER end of the edge — a ladder's target node is 8m up at
+                // the top, so gating on the ToNode alone meant the bot never pressed E at the base and
+                // just stood there. The nearer endpoint is the attach point (ladder base, climb wall).
+                float distFrom = Vector3.Distance(transform.position, _graph!.Nodes[edge.FromNode].Position);
+                float distTo = Vector3.Distance(transform.position, _graph.Nodes[edge.ToNode].Position);
+                if (Mathf.Min(distFrom, distTo) <= interactTriggerDistance)
+                {
                     InteractPressed = true;
+                    _metrics?.RecordEdgeAttempt(edge.Type);
+                }
                 break;
         }
+    }
+
+    /// <summary>Should the bot approach at walk speed to avoid overshooting a short gap? Only for a
+    /// short jump the bot is *about to take* — either the current edge is that short jump, or the bot
+    /// is on the Run approach immediately before one (it needs the run-up to decelerate sprint→walk,
+    /// which takes more than the short takeoff platform alone). Crucially it does NOT walk a *long*
+    /// jump whose next edge happens to be short — doing so made long jumps fall short into the pit.</summary>
+    private bool IsShortJumpAhead()
+    {
+        if (_path == null || _pathIndex >= _path.Count) return false;
+        ParkourEdgeType current = _path[_pathIndex].Type;
+        if (current == ParkourEdgeType.Jump) return IsShortJumpEdge(_pathIndex);
+        if (current == ParkourEdgeType.Run) return IsShortJumpEdge(_pathIndex + 1);
+        return false;
+    }
+
+    private bool IsShortJumpEdge(int index)
+    {
+        if (_path == null || index < 0 || index >= _path.Count) return false;
+        ParkourEdge edge = _path[index];
+        if (edge.Type != ParkourEdgeType.Jump) return false;
+
+        float centerDist = Vector3.Distance(_graph!.Nodes[edge.FromNode].Position, _graph.Nodes[edge.ToNode].Position);
+        float emptyGap = centerDist - TagArenaLayout.PlatformLength;
+        return emptyGap <= shortJumpGapThreshold;
+    }
+
+    /// <summary>Jump if the bot has effectively stopped while grounded — used at ledges to break a
+    /// dead stall against an obstacle the mantle/vault auto-detect couldn't resolve from standstill.</summary>
+    private void HopIfStalled()
+    {
+        if (_agent.Motor.CurrentState == MotorState.Grounded && _agent.Motor.HorizontalVelocity.magnitude < 1.5f)
+            JumpPressed = true;
     }
 
     private bool IsAboutToRunOffEdge(Vector3 moveDir)

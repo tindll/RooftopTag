@@ -248,7 +248,7 @@ public sealed class TagRulesTests
         motorSo.ApplyModifiedProperties();
 
         TagAgent agent = go.AddComponent<TagAgent>();
-        agent.Configure(_tagConfig, motor, go.GetComponent<Renderer>(), isLocalPlayer: false);
+        agent.Configure(_tagConfig, motor, go.GetComponentInChildren<Renderer>(), isLocalPlayer: false);
 
         return (go, motor, agent, input);
     }
@@ -269,7 +269,7 @@ public sealed class TagRulesTests
         motorSo.ApplyModifiedProperties();
 
         TagAgent agent = go.AddComponent<TagAgent>();
-        agent.Configure(_tagConfig, motor, go.GetComponent<Renderer>(), isLocalPlayer: false);
+        agent.Configure(_tagConfig, motor, go.GetComponentInChildren<Renderer>(), isLocalPlayer: false);
         agent.SetRoundController(controller);
         // No graph supplied — exercises the fallback direct-chase-with-cliff-avoidance path.
         botInput.Configure(agent, controller, graph: null, _botConfig, BotDifficulty.Skilled);

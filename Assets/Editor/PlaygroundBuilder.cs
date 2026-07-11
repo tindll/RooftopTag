@@ -77,7 +77,7 @@ public static class PlaygroundBuilder
     }
 
     private const string TagArenaScenePath = "Assets/Scenes/TagArena.unity";
-    private const int TagArenaAgentCount = 12;
+    private const int TagArenaAgentCount = 3; // "chase me" mode: the player + 2 bot taggers
 
     [MenuItem("RooftopTag/Build Tag Arena")]
     public static void BuildTagArena()
@@ -109,7 +109,72 @@ public static class PlaygroundBuilder
         Debug.Log($"TAG_ARENA_BUILD_OK: saved to {TagArenaScenePath}");
     }
 
-    private static void BuildTagArenaBootstrap(GameObject player, GameObject cameraRig, Camera cam, Transform yawPivot, GameObject[] botRoots, int groundMask, int wallMask)
+    private const string RooftopScenePath = "Assets/Scenes/RooftopArena.unity";
+    private const int RooftopAgentCount = 3; // player + 2 bot taggers (chase mode)
+
+    [MenuItem("RooftopTag/Build Rooftop Arena")]
+    public static void BuildRooftopArena()
+    {
+        var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
+        int playerLayer = EnsureLayer("Player");
+        int groundMask = ~(1 << playerLayer);
+
+        Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+
+        var ladder = RooftopArena.BuildAndGetLadder(movementConfig);
+        if (ladder.HasValue) BuildRoofLadder(ladder.Value.bottom, ladder.Value.top, ladder.Value.outward);
+
+        Vector3[] spawns = RooftopArena.SpawnPoints(RooftopAgentCount);
+        GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, spawns[0], new Color(0.2f, 0.6f, 1f));
+        (GameObject cameraRig, Camera cam, Transform yawPivot) = TagArenaMapGeometry.BuildCamera(player);
+
+        var botRoots = new GameObject[RooftopAgentCount - 1];
+        for (int i = 0; i < botRoots.Length; i++)
+            botRoots[i] = TagArenaMapGeometry.BuildAgentCapsule($"Bot_{i}", playerLayer, spawns[i + 1], new Color(0.6f, 0.6f, 0.6f));
+
+        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, useRooftopGraph: true);
+
+        EditorSceneManager.MarkSceneDirty(scene);
+        EditorSceneManager.SaveScene(scene, RooftopScenePath);
+        Debug.Log($"ROOFTOP_ARENA_BUILD_OK: saved to {RooftopScenePath}");
+    }
+
+    // Rooftop ladder: a climbable wall up the side of the taller roof, with the InteractableMarker
+    // (namespace-free, so built here not in Game.MapGeometry). Mirrors BuildLadder's marker wiring.
+    private static void BuildRoofLadder(Vector3 bottom, Vector3 top, Vector3 outward)
+    {
+        var root = new GameObject("RoofLadderSection");
+        float height = top.y - bottom.y;
+        Vector3 midXZ = new(bottom.x, (bottom.y + top.y) * 0.5f, bottom.z);
+
+        // Visual wall sits just inside the ladder line (on the +outward side is open air; the wall is
+        // the building face, so offset it slightly toward the building, i.e. -outward).
+        Vector3 wallCenter = midXZ - outward * 0.4f;
+        TagArenaMapGeometry.CreateBox("RoofLadderWall", root.transform, wallCenter, new Vector3(2f, height, 0.5f), TagArenaMapGeometry.BrownColor);
+
+        var bottomGo = new GameObject("RoofLadderBottom");
+        bottomGo.transform.SetParent(root.transform);
+        bottomGo.transform.position = bottom;
+
+        var topGo = new GameObject("RoofLadderTop");
+        topGo.transform.SetParent(root.transform);
+        topGo.transform.position = top;
+
+        var ladderGo = new GameObject("RoofLadder");
+        ladderGo.transform.SetParent(root.transform);
+        var box = ladderGo.AddComponent<BoxCollider>();
+        box.isTrigger = true;
+        box.size = new Vector3(2f, height, 1.5f);
+        ladderGo.transform.position = midXZ;
+
+        InteractableMarker marker = ladderGo.AddComponent<InteractableMarker>();
+        marker.kind = InteractableMarker.Kind.Ladder;
+        marker.pointA = bottomGo.transform;
+        marker.pointB = topGo.transform;
+        marker.outwardDirection = outward;
+    }
+
+    private static void BuildTagArenaBootstrap(GameObject player, GameObject cameraRig, Camera cam, Transform yawPivot, GameObject[] botRoots, int groundMask, int wallMask, bool useRooftopGraph = false)
     {
         var bootstrapGo = new GameObject("TagArenaBootstrap");
         TagArenaBootstrap bootstrap = bootstrapGo.AddComponent<TagArenaBootstrap>();
@@ -120,6 +185,7 @@ public static class PlaygroundBuilder
         SetObjectRef(bootstrap, "cameraYawPivot", yawPivot);
         SetInt(bootstrap, "groundMask", groundMask);
         SetInt(bootstrap, "wallMask", wallMask);
+        SetBool(bootstrap, "useRooftopGraph", useRooftopGraph);
 
         var so = new SerializedObject(bootstrap);
         SerializedProperty botsProp = so.FindProperty("botRoots");
@@ -259,6 +325,19 @@ public static class PlaygroundBuilder
             return;
         }
         prop.intValue = value;
+        so.ApplyModifiedProperties();
+    }
+
+    private static void SetBool(Object target, string fieldName, bool value)
+    {
+        var so = new SerializedObject(target);
+        SerializedProperty? prop = so.FindProperty(fieldName);
+        if (prop == null)
+        {
+            Debug.LogError($"PLAYGROUND_BUILD_ERROR: field '{fieldName}' not found on {target.GetType().Name}");
+            return;
+        }
+        prop.boolValue = value;
         so.ApplyModifiedProperties();
     }
 

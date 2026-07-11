@@ -1,0 +1,200 @@
+#nullable enable
+
+using System.Collections.Generic;
+using Game.Movement;
+using UnityEngine;
+
+namespace Game.MapGeometry;
+
+/// <summary>
+/// A rooftop-chase playground: a cluster of building rooftops at varied heights, linked by jumpable
+/// gaps, a ramp, and a ladder. No objective — just open space for bots to chase the player across.
+///
+/// Single source of truth (like <see cref="TagArenaLayout"/>): it holds the roof/link data, renders
+/// the physical boxes/ramps here, and exposes walk-surface anchors + the link list so
+/// <c>Game.AI.RooftopGraphBuilder</c> can drop parkour-graph nodes on the exact same roofs. Ladders
+/// carry an InteractableMarker (namespace-free) so they're appended by PlaygroundBuilder, not here —
+/// their anchors are still computed here so geometry and graph stay in lockstep.
+/// </summary>
+public static class RooftopArena
+{
+    public readonly struct Roof
+    {
+        public readonly string Name;
+        public readonly Vector3 Center;   // building centre (x,z); y is the roof-top height
+        public readonly float SizeX;
+        public readonly float SizeZ;
+        public Roof(string name, float x, float z, float height, float sizeX, float sizeZ)
+        {
+            Name = name; Center = new Vector3(x, height, z); SizeX = sizeX; SizeZ = sizeZ;
+        }
+        /// <summary>Where an agent stands / a graph node sits: centre of the roof, just above its surface.</summary>
+        public Vector3 Walk => new(Center.x, Center.y + 0.1f, Center.z);
+    }
+
+    public enum LinkKind { Jump, Ramp, Ladder }
+
+    public readonly struct Link
+    {
+        public readonly int From;
+        public readonly int To;
+        public readonly LinkKind Kind;
+        public Link(int from, int to, LinkKind kind) { From = from; To = to; Kind = kind; }
+    }
+
+    // A spread of rooftops. Neighbours sit ~13m apart (≈5m gaps) with height steps kept small enough
+    // to jump; bigger climbs use a ramp or a ladder. RooftopGraphBuilder validates every Jump link
+    // for makeability, so a mis-estimated gap is dropped (and logged) rather than luring bots into
+    // the void.
+    public static readonly Roof[] Roofs =
+    {
+        new("Roof_Spawn", 0f,   0f,  3f, 12f, 12f), // 0 — central start
+        new("Roof_E1",    13f,  0f,  4f, 8f,  8f),  // 1
+        new("Roof_E2",    26f,  0f,  3f, 8f,  8f),  // 2
+        new("Roof_W1",   -13f,  0f,  5f, 8f,  8f),  // 3
+        new("Roof_N1",    0f,   13f, 4f, 8f,  8f),  // 4
+        new("Roof_N1E",   13f,  13f, 5f, 8f,  8f),  // 5
+        new("Roof_N1EE",  26f,  13f, 6f, 8f,  8f),  // 6
+        new("Roof_N1W",  -13f,  13f, 4f, 8f,  8f),  // 7
+        new("Roof_N2",    0f,   26f, 5f, 8f,  8f),  // 8
+        new("Roof_N2E",   13f,  26f, 5f, 8f,  8f),  // 9
+        new("Roof_N2EE",  26f,  26f, 7f, 8f,  8f),  // 10
+        new("Roof_Tower",-13f,  20f, 9f, 7f,  7f),  // 11 — tall, ladder up; sits against Roof_N1W so its base is reachable
+        new("Roof_S1",    0f,  -13f, 4f, 9f,  8f),  // 12
+    };
+
+    // LinkKind.Jump between roofs ≤2m apart in height; Ramp for the +3m climb to Roof_N1EE; Ladder up
+    // the tower. (Any Jump the validator finds un-makeable is skipped — see RooftopGraphBuilder.)
+    public static readonly Link[] Links =
+    {
+        new(0, 1, LinkKind.Jump),
+        new(1, 2, LinkKind.Jump),
+        new(0, 3, LinkKind.Jump),
+        new(0, 4, LinkKind.Jump),
+        new(0, 12, LinkKind.Jump),
+        new(1, 5, LinkKind.Jump),
+        new(2, 6, LinkKind.Ramp),   // 3m up
+        new(3, 7, LinkKind.Jump),
+        new(4, 5, LinkKind.Jump),
+        new(5, 6, LinkKind.Jump),
+        new(4, 7, LinkKind.Jump),
+        new(4, 8, LinkKind.Jump),
+        new(5, 9, LinkKind.Jump),
+        new(6, 10, LinkKind.Jump),
+        new(8, 9, LinkKind.Jump),
+        new(9, 10, LinkKind.Jump),
+        new(7, 11, LinkKind.Ladder),
+    };
+
+    public static readonly Color RoofColor = new(0.5f, 0.5f, 0.55f);
+    public static readonly Color WallColor = new(0.38f, 0.36f, 0.4f);
+
+    private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
+
+    /// <summary>Build all roof boxes + ramps. Returns the ladder link's (bottom, top) anchors so
+    /// PlaygroundBuilder can place the InteractableMarker ladder, and the graph can align to it.</summary>
+    public static (Vector3 bottom, Vector3 top, Vector3 outward)? BuildAndGetLadder(MovementConfig config)
+    {
+        TagArenaMapGeometry.CreateLight();
+        var root = new GameObject("RooftopArena");
+
+        foreach (Roof r in Roofs)
+        {
+            // A building: a tall box whose TOP face is the walkable roof at height r.Center.y.
+            float bodyHeight = r.Center.y + BuildingSkirt; // extends below ground for a solid look
+            float centerY = r.Center.y - bodyHeight * 0.5f;
+            TagArenaMapGeometry.CreateBox(r.Name, root.transform,
+                new Vector3(r.Center.x, centerY, r.Center.z),
+                new Vector3(r.SizeX, bodyHeight, r.SizeZ), RoofColor);
+        }
+
+        (Vector3, Vector3, Vector3)? ladder = null;
+        foreach (Link link in Links)
+        {
+            switch (link.Kind)
+            {
+                case LinkKind.Ramp:
+                    BuildRamp(root.transform, Roofs[link.From], Roofs[link.To]);
+                    break;
+                case LinkKind.Ladder:
+                    ladder = LadderAnchors(Roofs[link.From], Roofs[link.To]);
+                    break;
+                // Jump links need no geometry — the gap between roofs IS the jump.
+            }
+        }
+
+        Debug.Log($"ROOFTOP_BUILD: {Roofs.Length} roofs, {Links.Length} links; sprintSpeed={config.ground.sprintSpeed}");
+        return ladder;
+    }
+
+    private static void BuildRamp(Transform parent, Roof from, Roof to)
+    {
+        // A straight ramp from the lower roof's edge up to the higher roof's edge.
+        Roof lower = from.Center.y <= to.Center.y ? from : to;
+        Roof upper = from.Center.y <= to.Center.y ? to : from;
+
+        Vector3 a = lower.Walk;
+        Vector3 b = upper.Walk;
+        Vector3 flat = new(b.x - a.x, 0f, b.z - a.z);
+        float run = flat.magnitude;
+        float rise = b.y - a.y;
+
+        // Place along the line between the two roof centres.
+        float zStart = a.z;
+        // CreateRamp builds along +Z; our ramp is roughly along the connecting line, so orient it.
+        var rampGo = new GameObject("Ramp");
+        rampGo.transform.SetParent(parent, false);
+        const float thickness = 0.5f;
+        float length3D = Mathf.Sqrt(run * run + rise * rise);
+        Vector3 mid = (a + b) * 0.5f;
+        Quaternion rot = Quaternion.LookRotation(new Vector3(b.x - a.x, rise, b.z - a.z).normalized, Vector3.up);
+        Vector3 localUp = rot * Vector3.up;
+        var box = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        box.name = "RampSurface";
+        box.transform.SetParent(rampGo.transform, false);
+        box.transform.position = mid - localUp * (thickness * 0.5f);
+        box.transform.rotation = rot;
+        box.transform.localScale = new Vector3(3f, thickness, length3D);
+        TagArenaMapGeometry.ApplyMaterial(box, WallColor);
+    }
+
+    public static (Vector3 bottom, Vector3 top, Vector3 outward) LadderAnchors(Roof from, Roof to)
+    {
+        Roof lower = from.Center.y <= to.Center.y ? from : to;
+        Roof upper = from.Center.y <= to.Center.y ? to : from;
+        // Ladder runs up the side of the taller roof, on the edge facing the lower roof. "outward"
+        // points away from the upper roof (toward the lower one) — the direction to push a detaching
+        // climber, and whose opposite launches them onto the top.
+        Vector3 outward = new Vector3(lower.Center.x - upper.Center.x, 0f, lower.Center.z - upper.Center.z).normalized;
+        Vector3 faceEdge = new Vector3(upper.Center.x, 0f, upper.Center.z) + outward * (Mathf.Max(upper.SizeX, upper.SizeZ) * 0.5f + 0.4f);
+        Vector3 bottom = new(faceEdge.x, lower.Center.y + 0.2f, faceEdge.z);
+        Vector3 top = new(faceEdge.x, upper.Center.y, faceEdge.z);
+        return (bottom, top, outward);
+    }
+
+    /// <summary>Spawn points spread across the central spawn roof.</summary>
+    public static Vector3[] SpawnPoints(int count)
+    {
+        Roof spawn = Roofs[0];
+        var pts = new Vector3[count];
+        int perRow = Mathf.CeilToInt(Mathf.Sqrt(count));
+        for (int i = 0; i < count; i++)
+        {
+            int row = i / perRow, col = i % perRow;
+            pts[i] = new Vector3(
+                spawn.Center.x + (col - (perRow - 1) * 0.5f) * 2.5f,
+                spawn.Center.y + 1.1f,
+                spawn.Center.z + (row - (perRow - 1) * 0.5f) * 2.5f);
+        }
+        return pts;
+    }
+
+    /// <summary>The ladder link's bottom/top/outward, recomputed for the graph (matches BuildAndGetLadder).</summary>
+    public static (Vector3 bottom, Vector3 top, Vector3 outward)? LadderLink()
+    {
+        foreach (Link link in Links)
+            if (link.Kind == LinkKind.Ladder)
+                return LadderAnchors(Roofs[link.From], Roofs[link.To]);
+        return null;
+    }
+}

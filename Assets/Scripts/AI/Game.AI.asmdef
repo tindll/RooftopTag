@@ -3,6 +3,7 @@
     "references": [
         "Game.Movement",
         "Game.Rules",
+        "Game.MapGeometry",
         "Unity.InputSystem"
     ],
     "includePlatforms": [],

@@ -10,12 +10,15 @@ public sealed class TagRulesConfig : ScriptableObject
     [Header("Round")]
     public float roundDuration = 300f;
 
-    /// <summary>Set to 1 while feel-testing so the player (guaranteed a Tagger via <see cref="forcePlayerAsTagger"/>) is the only Tagger. Raise back toward the 12-player design (2 taggers) for a real round.</summary>
-    public int taggerCount = 1;
-    public int runnerCount = 10;
+    /// <summary>Current mode: the player is the runner and 2 bots are the taggers chasing them.</summary>
+    public int taggerCount = 2;
+    public int runnerCount = 1;
 
     /// <summary>Guarantees the local player is always assigned Tagger (useful while feel-testing tagger-specific mechanics like the lunge). Flip off for a "real" fully-random round.</summary>
-    public bool forcePlayerAsTagger = true;
+    public bool forcePlayerAsTagger = false;
+
+    /// <summary>Guarantees the local player is always assigned Runner — the "chase me" mode: player flees, the taggerCount bots hunt. Takes priority over <see cref="forcePlayerAsTagger"/>.</summary>
+    public bool forcePlayerAsRunner = true;
 
     /// <summary>
     /// No tag can land for this many seconds after the round starts. Found via the first

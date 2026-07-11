@@ -23,13 +23,16 @@ public sealed class TagArenaBootstrap : MonoBehaviour
     [SerializeField] private int groundMask = ~0;
     [SerializeField] private int wallMask = ~0;
     [SerializeField] private BotDifficulty difficulty = BotDifficulty.Skilled;
+    [SerializeField] private bool useRooftopGraph = false; // false = linear Tag Arena graph, true = Rooftop playground graph
 
     private void Awake()
     {
         var tagConfig = ScriptableObject.CreateInstance<TagRulesConfig>();
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         var botConfig = ScriptableObject.CreateInstance<BotConfig>();
-        ParkourGraph graph = TagArenaParkourGraphBuilder.Build(movementConfig);
+        ParkourGraph graph = useRooftopGraph
+            ? Game.AI.RooftopGraphBuilder.Build(movementConfig)
+            : TagArenaParkourGraphBuilder.Build(movementConfig);
 
         var roundControllerGo = new GameObject("RoundController");
         RoundController roundController = roundControllerGo.AddComponent<RoundController>();
@@ -39,7 +42,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         CharacterMotor playerMotor = playerRoot.AddComponent<CharacterMotor>();
         playerMotor.Configure(groundMask, wallMask, cameraYawPivot);
         TagAgent playerAgent = playerRoot.AddComponent<TagAgent>();
-        playerAgent.Configure(tagConfig, playerMotor, playerRoot.GetComponent<Renderer>(), isLocalPlayer: true);
+        playerAgent.Configure(tagConfig, playerMotor, playerRoot.GetComponentInChildren<Renderer>(), isLocalPlayer: true);
         playerAgent.SetRoundController(roundController);
         roundController.RegisterAgent(playerAgent, isLocalPlayer: true);
 
@@ -54,7 +57,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
             CharacterMotor botMotor = botRoot.AddComponent<CharacterMotor>();
             botMotor.Configure(groundMask, wallMask, null);
             TagAgent botAgent = botRoot.AddComponent<TagAgent>();
-            botAgent.Configure(tagConfig, botMotor, botRoot.GetComponent<Renderer>(), isLocalPlayer: false);
+            botAgent.Configure(tagConfig, botMotor, botRoot.GetComponentInChildren<Renderer>(), isLocalPlayer: false);
             botAgent.SetRoundController(roundController);
             botInput.Configure(botAgent, roundController, graph, botConfig, difficulty);
             roundController.RegisterAgent(botAgent, isLocalPlayer: false);

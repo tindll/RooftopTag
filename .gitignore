@@ -74,3 +74,7 @@ _*.xml
 
 # Claude Code local settings (personal/machine-specific, not meant to be shared)
 .claude/settings.local.json
+
+# Tooling artifacts
+Tools/selfplay.log
+Tools/selfplay-results.xml

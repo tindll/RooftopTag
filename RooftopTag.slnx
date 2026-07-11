@@ -1,0 +1,10 @@
+﻿<Solution>
+  <Project Path="Game.AI.csproj" />
+  <Project Path="Game.Movement.csproj" />
+  <Project Path="Assembly-CSharp-Editor.csproj" />
+  <Project Path="Game.Rules.csproj" />
+  <Project Path="RooftopTag.Tests.PlayMode.csproj" />
+  <Project Path="Game.MapGeometry.csproj" />
+  <Project Path="Assembly-CSharp.csproj" />
+  <Project Path="Game.Camera.csproj" />
+</Solution>

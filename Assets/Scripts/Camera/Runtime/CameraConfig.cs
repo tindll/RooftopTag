@@ -9,10 +9,11 @@ public sealed class CameraConfig : ScriptableObject
     public float orbitDistance = 5f;
     public float orbitHeight = 1.6f;
     public float mouseSensitivity = 3f;
+    public float keyboardTurnSpeed = 130f; // Left/Right arrow camera rotation (deg/sec) — RDP-friendly alt to mouse yaw
     public float minPitchDegrees = -35f;
     public float maxPitchDegrees = 70f;
     public float collisionRadius = 0.25f;
-    public float positionSmoothTime = 0.06f;
+    public float positionSmoothTime = 0.09f; // slightly softer follow — less rigid/clunky, still tracks tightly
 
     [Header("Speed feedback")]
     public float baseFov = 60f;

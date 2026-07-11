@@ -32,128 +32,97 @@ public static class TagArenaMapGeometry
     public static readonly Color BrownColor = new(0.5f, 0.35f, 0.25f);
     public static readonly Color OrangeColor = new(0.85f, 0.5f, 0.2f);
 
-    /// <summary>Builds every section up to (but not including) the ladder/swing chasm. Returns the z cursor for whoever wants to continue appending sections.</summary>
+    /// <summary>Builds every section up to (but not including) the ladder/swing chasm, rendering the
+    /// boxes/ramps at the anchors computed by <see cref="TagArenaLayout"/> — the same anchors the bot
+    /// parkour graph uses, so geometry and graph stay in lockstep. Returns the end z cursor.</summary>
     public static float BuildMainCorridor(MovementConfig movementConfig)
     {
         CreateLight();
+        var layout = new TagArenaLayout(movementConfig);
 
-        float z = BuildSpawnPlatform();
-        z = BuildRampValley(z);
-        z = BuildGapGauntlet(z, movementConfig);
-        z = BuildWallRunAlley(z);
-        z = BuildLedgeRow(z, movementConfig);
-        return z;
+        BuildSpawnPlatform();
+        BuildRampValley(layout);
+        BuildGapGauntlet(layout, movementConfig);
+        BuildWallRunAlley(layout);
+        BuildLedgeRow(layout);
+        return layout.EndZ;
     }
 
-    public static float BuildSpawnPlatform()
+    /// <summary>Box center for a 1m-thick floor platform whose top the given walk anchor sits on.</summary>
+    private static Vector3 GroundBoxCenter(Vector3 walk) => new(walk.x, walk.y - 0.6f, walk.z);
+
+    public static void BuildSpawnPlatform()
     {
-        CreateBox("SpawnPlatform", null, new Vector3(0f, -0.5f, 0f), new Vector3(8f, 1f, 8f), GreyColor);
-        return 4f;
+        CreateBox("SpawnPlatform", null, new Vector3(0f, -0.5f, 0f),
+            new Vector3(TagArenaLayout.SpawnSize, 1f, TagArenaLayout.SpawnSize), GreyColor);
     }
 
-    public static float BuildRampValley(float z)
+    public static void BuildRampValley(TagArenaLayout layout)
     {
         var root = new GameObject("RampValley");
-        float rampLength = 10f;
-        float drop = 4f;
+        float drop = TagArenaLayout.ValleyDrop;
+        float rampLength = TagArenaLayout.RampLength;
 
-        CreateRamp(root.transform, "DownRamp", z, 0f, rampLength, -drop, 6f, BlueGrey);
-        z += rampLength;
+        float downRampZ = layout.RampTopDown.z;
+        CreateRamp(root.transform, "DownRamp", downRampZ, 0f, rampLength, -drop, 6f, BlueGrey);
+        CreateBox("ValleyFloor", root.transform, GroundBoxCenter(layout.ValleyFloor),
+            new Vector3(6f, 1f, TagArenaLayout.ValleyFloorLength), GreyColor);
 
-        CreateBox("ValleyFloor", root.transform, new Vector3(0f, -drop - 0.5f, z + 3f), new Vector3(6f, 1f, 6f), GreyColor);
-        z += 6f;
-
-        CreateRamp(root.transform, "UpRamp", z, -drop, rampLength, drop, 6f, BlueGrey);
-        z += rampLength;
-
-        CreateBox("ValleyExit", root.transform, new Vector3(0f, -0.5f, z + 2f), new Vector3(6f, 1f, 4f), GreyColor);
-        z += 4f;
-        return z;
+        float upRampZ = downRampZ + rampLength + TagArenaLayout.ValleyFloorLength;
+        CreateRamp(root.transform, "UpRamp", upRampZ, -drop, rampLength, drop, 6f, BlueGrey);
+        CreateBox("ValleyExit", root.transform, GroundBoxCenter(layout.ValleyExit),
+            new Vector3(6f, 1f, TagArenaLayout.ValleyExitLength), GreyColor);
     }
 
-    public static float BuildGapGauntlet(float z, MovementConfig config)
+    public static void BuildGapGauntlet(TagArenaLayout layout, MovementConfig config)
     {
         var root = new GameObject("GapGauntlet");
-        // The last two gaps used to be 11m/13m — beyond the measured ~9.6m sprint-jump/slide-hop
-        // ceiling, with no alternate route yet (ladders/swings come later in the level), which
-        // made the gauntlet's final jump — the one gating entry to the wall-run section right
-        // after it — literally impossible to clear. Tapered back down so the whole gauntlet
-        // stays completable with currently-available techniques.
-        float[] gaps = { 3f, 5f, 7f, 9f, 8f, 7f };
-        const float platformLength = 4f;
-        const float platformWidth = 5f;
+        var size = new Vector3(TagArenaLayout.PlatformWidth, 1f, TagArenaLayout.PlatformLength);
+        for (int i = 0; i < layout.GapPlatforms.Length; i++)
+            CreateBox($"GapPlatform_{i}_gap{TagArenaLayout.Gaps[i]:0}m", root.transform,
+                GroundBoxCenter(layout.GapPlatforms[i]), size, GreyColor);
 
-        for (int i = 0; i < gaps.Length; i++)
-        {
-            CreateBox($"GapPlatform_{i}_gap{gaps[i]:0}m", root.transform,
-                new Vector3(0f, -0.5f, z + platformLength * 0.5f), new Vector3(platformWidth, 1f, platformLength), GreyColor);
-            z += platformLength + gaps[i];
-        }
+        CreateBox("GauntletExit", root.transform, GroundBoxCenter(layout.GauntletExit),
+            new Vector3(TagArenaLayout.PlatformWidth, 1f, TagArenaLayout.ValleyExitLength), GreyColor);
 
-        CreateBox("GauntletExit", root.transform, new Vector3(0f, -0.5f, z + 2f), new Vector3(platformWidth, 1f, 4f), GreyColor);
-        z += 4f;
-
-        Debug.Log($"PLAYGROUND_INFO: gap gauntlet distances = [{string.Join(", ", gaps)}] meters; ground.sprintSpeed={config.ground.sprintSpeed}, jump.jumpSpeed={config.jump.jumpSpeed}");
-        return z;
+        Debug.Log($"PLAYGROUND_INFO: gap gauntlet distances = [{string.Join(", ", TagArenaLayout.Gaps)}] meters; ground.sprintSpeed={config.ground.sprintSpeed}, jump.jumpSpeed={config.jump.jumpSpeed}");
     }
 
-    public static float BuildWallRunAlley(float z)
+    public static void BuildWallRunAlley(TagArenaLayout layout)
     {
         var root = new GameObject("WallRunAlley");
-        const float corridorWidth = 3f;
-        const float wallHeight = 4f;
-        const float entryLength = 3f;
-        const float chasmLength = 10f;
-        const float exitLength = 3f;
+        float corridorWidth = TagArenaLayout.AlleyCorridorWidth;
+        float wallHeight = TagArenaLayout.AlleyWallHeight;
 
-        CreateBox("AlleyEntry", root.transform, new Vector3(0f, -0.5f, z + entryLength * 0.5f), new Vector3(corridorWidth, 1f, entryLength), GreyColor);
-        float chasmStart = z + entryLength;
-        CreateBox("AlleyExit", root.transform, new Vector3(0f, -0.5f, chasmStart + chasmLength + exitLength * 0.5f), new Vector3(corridorWidth, 1f, exitLength), GreyColor);
+        CreateBox("AlleyEntry", root.transform, GroundBoxCenter(layout.AlleyEntry),
+            new Vector3(corridorWidth, 1f, TagArenaLayout.AlleyEntryLength), GreyColor);
+        CreateBox("AlleyExit", root.transform, GroundBoxCenter(layout.AlleyExit),
+            new Vector3(corridorWidth, 1f, TagArenaLayout.AlleyExitLength), GreyColor);
 
-        float totalLength = entryLength + chasmLength + exitLength;
-        float wallCenterZ = z + totalLength * 0.5f;
+        float totalLength = TagArenaLayout.AlleyEntryLength + TagArenaLayout.AlleyChasmLength + TagArenaLayout.AlleyExitLength;
+        float wallCenterZ = layout.AlleyStartZ + totalLength * 0.5f;
         CreateBox("WallLeft", root.transform, new Vector3(-corridorWidth * 0.5f - 0.25f, wallHeight * 0.5f, wallCenterZ), new Vector3(0.5f, wallHeight, totalLength), BrownColor);
         CreateBox("WallRight", root.transform, new Vector3(corridorWidth * 0.5f + 0.25f, wallHeight * 0.5f, wallCenterZ), new Vector3(0.5f, wallHeight, totalLength), BrownColor);
-
-        return z + totalLength;
     }
 
-    public static float BuildLedgeRow(float z, MovementConfig config)
+    public static void BuildLedgeRow(TagArenaLayout layout)
     {
         var root = new GameObject("LedgeRow");
-        const float runway = 8f;
-        const float wallThickness = 1f;
-
-        float vaultLow = config.mantleVault.vaultMaxHeight * 0.5f;
-        float vaultHigh = config.mantleVault.vaultMaxHeight * 0.95f;
-        float mantleMid = (config.mantleVault.mantleMinHeight + config.mantleVault.mantleMaxHeight) * 0.5f;
-        float mantleHigh = config.mantleVault.mantleMaxHeight * 0.95f;
-        float climbMid = (config.mantleVault.mantleMaxHeight + config.climb.climbMaxHeight) * 0.5f;
-        float tooTall = config.climb.climbMaxHeight * 1.2f;
-
-        (string label, float height)[] ledges =
+        foreach (TagArenaLayout.Ledge ledge in layout.Ledges)
         {
-            ("Vault_Low", vaultLow),
-            ("Vault_High", vaultHigh),
-            ("Mantle_Mid", mantleMid),
-            ("Mantle_High", mantleHigh),
-            ("Climb_Mid", climbMid),
-            ("TooTall_Control", tooTall),
-        };
+            CreateBox($"Runway_{ledge.Label}", root.transform, GroundBoxCenter(ledge.Runway),
+                new Vector3(5f, 1f, TagArenaLayout.LedgeRunway), GreyColor);
 
-        foreach ((string label, float height) in ledges)
-        {
-            CreateBox($"Runway_{label}", root.transform, new Vector3(0f, -0.5f, z + runway * 0.5f), new Vector3(5f, 1f, runway), GreyColor);
-            z += runway;
+            float wallZ = ledge.Runway.z + TagArenaLayout.LedgeRunway * 0.5f + TagArenaLayout.LedgeWallThickness * 0.5f;
+            CreateBox(ledge.Label, root.transform, new Vector3(0f, ledge.Height * 0.5f, wallZ),
+                new Vector3(5f, ledge.Height, TagArenaLayout.LedgeWallThickness), OrangeColor);
 
-            CreateBox(label, root.transform, new Vector3(0f, height * 0.5f, z + wallThickness * 0.5f), new Vector3(5f, height, wallThickness), OrangeColor);
-
-            CreateBox($"LandingTop_{label}", root.transform, new Vector3(0f, height + 0.5f, z + wallThickness + 3f), new Vector3(5f, 1f, 6f), GreyColor);
-            z += wallThickness + 6f;
+            CreateBox($"LandingTop_{ledge.Label}", root.transform, new Vector3(0f, ledge.Height + 0.5f, ledge.Landing.z),
+                new Vector3(5f, 1f, TagArenaLayout.LedgeLandingLength), GreyColor);
         }
 
-        Debug.Log($"PLAYGROUND_INFO: ledge heights = vaultLow={vaultLow:0.00} vaultHigh={vaultHigh:0.00} mantleMid={mantleMid:0.00} mantleHigh={mantleHigh:0.00} climbMid={climbMid:0.00} tooTall={tooTall:0.00}");
-        return z;
+        TagArenaLayout.Ledge[] l = layout.Ledges;
+        Debug.Log($"PLAYGROUND_INFO: ledge heights = vaultLow={l[0].Height:0.00} vaultHigh={l[1].Height:0.00} mantleMid={l[2].Height:0.00} mantleHigh={l[3].Height:0.00} climbMid={l[4].Height:0.00}");
     }
 
     public static void BuildFallCatchPlane()
@@ -177,18 +146,28 @@ public static class TagArenaMapGeometry
     /// <summary>Plain capsule + Rigidbody + CapsuleCollider only — no custom component (custom-asmdef components must be attached live via AddComponent, never persisted directly in a saved scene; see PlaygroundBuilder's class remarks). Shared by the M1 player and every M2/M3 tag-arena agent.</summary>
     public static GameObject BuildAgentCapsule(string name, int layer, Vector3 position, Color color)
     {
-        var go = GameObject.CreatePrimitive(PrimitiveType.Capsule);
-        go.name = name;
-        go.layer = layer;
-        go.transform.position = position;
-        Object.DestroyImmediate(go.GetComponent<CapsuleCollider>());
-        ApplyMaterial(go, color);
+        // Root carries the physics (Rigidbody + CapsuleCollider, which CharacterMotor sizes feet-up
+        // from the origin). The visible capsule is a CHILD, scaled to ~1.8m tall and lifted half its
+        // height so its base sits at the root origin (the feet). Previously the mesh WAS the root:
+        // the primitive capsule mesh is 2 units tall centred on its origin, so with the collider
+        // feet-up the visible body hung ~1m below the feet and clipped through the floor.
+        var root = new GameObject(name) { layer = layer };
+        root.transform.position = position;
 
-        var rb = go.AddComponent<Rigidbody>();
+        var body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
+        body.name = "Body";
+        body.layer = layer;
+        Object.DestroyImmediate(body.GetComponent<CapsuleCollider>());
+        body.transform.SetParent(root.transform, false);
+        body.transform.localScale = new Vector3(0.8f, 0.9f, 0.8f); // 2×0.9 = 1.8m tall, radius 0.5×0.8 = 0.4
+        body.transform.localPosition = new Vector3(0f, 0.9f, 0f);  // base at the feet, top at ~1.8m
+        ApplyMaterial(body, color);
+
+        var rb = root.AddComponent<Rigidbody>();
         rb.mass = 1f;
-        go.AddComponent<CapsuleCollider>();
+        root.AddComponent<CapsuleCollider>();
 
-        return go;
+        return root;
     }
 
     /// <summary>Builds only the plain, built-in-typed pieces. No ThirdPersonCameraRig here — the caller attaches that live via AddComponent.</summary>

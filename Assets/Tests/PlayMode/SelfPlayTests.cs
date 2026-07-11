@@ -32,7 +32,7 @@ public sealed class SelfPlayTests
     private const int AgentCount = 12;
     private const float RoundDurationSeconds = 60f;
     private const float TimeScale = 8f;
-    private const int MatchCount = 3;
+    private const int MatchCount = 10;
     private const float StuckCheckInterval = 3f;
     private const float StuckDisplacementThreshold = 0.75f;
     private const float FallYThreshold = -20f;
@@ -100,7 +100,7 @@ public sealed class SelfPlayTests
             motorSo.ApplyModifiedProperties();
 
             TagAgent agent = go.AddComponent<TagAgent>();
-            agent.Configure(tagConfig, motor, go.GetComponent<Renderer>(), isLocalPlayer: false);
+            agent.Configure(tagConfig, motor, go.GetComponentInChildren<Renderer>(), isLocalPlayer: false);
             agent.SetRoundController(controller);
             botInput.Configure(agent, controller, graph, botConfig, BotDifficulty.Skilled);
             botInput.SetMetrics(metrics);
@@ -140,6 +140,8 @@ public sealed class SelfPlayTests
             {
                 if (agent.transform.position.y < FallYThreshold && countedFallen.Add(agent))
                     metrics.FallCount++;
+                if (agent.transform.position.z > metrics.MaxZReached)
+                    metrics.MaxZReached = agent.transform.position.z;
             }
 
             if (elapsed >= nextStuckCheck)
@@ -195,14 +197,45 @@ public sealed class SelfPlayTests
             }
 
         string edgeUsageSummary = string.Join(", ", totalEdgeUsage.Select(kv => $"{kv.Key}={kv.Value}"));
+
+        var totalEdgeAttempts = new Dictionary<ParkourEdgeType, int>();
+        foreach (MatchMetrics metrics in results)
+            foreach (KeyValuePair<ParkourEdgeType, int> kv in metrics.EdgeAttemptCounts)
+            {
+                totalEdgeAttempts.TryGetValue(kv.Key, out int existing);
+                totalEdgeAttempts[kv.Key] = existing + kv.Value;
+            }
+        string edgeAttemptSummary = string.Join(", ", totalEdgeAttempts.Select(kv => $"{kv.Key}={kv.Value}"));
+
         int totalStuck = results.Sum(m => m.StuckAgentCount);
         int totalFallen = results.Sum(m => m.FallCount);
 
         Debug.Log($"METRIC selfplay_batch matches={results.Count} runner_win_rate={runnerWinRate:0.00} " +
                   $"speed_p50={p50:0.00} speed_p90={p90:0.00} total_stuck={totalStuck} total_fallen={totalFallen} " +
-                  $"total_edge_usage=[{edgeUsageSummary}]");
+                  $"total_edge_usage=[{edgeUsageSummary}] total_edge_attempts=[{edgeAttemptSummary}] " +
+                  $"max_z_reached={results.Max(m => m.MaxZReached):0.0} " +
+                  $"jump_takeoff_speed_avg={AverageOrZero(results.SelectMany(m => m.JumpTakeoffSpeeds)):0.00} " +
+                  $"jump_landing_err_avg={AverageOrZero(results.SelectMany(m => m.JumpLandingErrors)):0.00} " +
+                  $"jump_land_within_1.75m={FractionWithin(results.SelectMany(m => m.JumpLandingErrors), 1.75f):0.00} " +
+                  $"short_jump_signed_avg={AverageOrZero(results.SelectMany(m => m.ShortJumpSignedOvershoot)):0.00}(n={results.Sum(m => m.ShortJumpSignedOvershoot.Count)}) " +
+                  $"long_jump_signed_avg={AverageOrZero(results.SelectMany(m => m.LongJumpSignedOvershoot)):0.00}(n={results.Sum(m => m.LongJumpSignedOvershoot.Count)})");
 
         Assert.Greater(results.Count, 0, "Batch should have run at least one match.");
+    }
+
+    private static float AverageOrZero(IEnumerable<float> values)
+    {
+        float sum = 0f;
+        int count = 0;
+        foreach (float v in values) { sum += v; count++; }
+        return count > 0 ? sum / count : 0f;
+    }
+
+    private static float FractionWithin(IEnumerable<float> values, float threshold)
+    {
+        int within = 0, count = 0;
+        foreach (float v in values) { if (v <= threshold) within++; count++; }
+        return count > 0 ? within / (float)count : 0f;
     }
 
     private static float Percentile(IReadOnlyList<float> sortedValues, float percentile)

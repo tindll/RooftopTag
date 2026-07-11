@@ -18,6 +18,9 @@ public sealed class RoundController : MonoBehaviour
     private TagRulesConfig _config = null!;
     private readonly List<TagAgent> _agents = new();
     private readonly Dictionary<TagAgent, (Vector3 position, Quaternion rotation)> _spawnStates = new();
+
+    // A bot below this height has fallen off the map — respawn it at its start.
+    private const float FallResetY = -15f;
     private readonly Dictionary<TagAgent, TagAgent> _taggerClaims = new();
     private TagAgent? _localPlayerAgent;
     private ThirdPersonCameraRig? _cameraRig;
@@ -122,8 +125,14 @@ public sealed class RoundController : MonoBehaviour
     private void AssignRoles()
     {
         var shuffled = new List<TagAgent>(_agents);
-        bool forcePlayer = _config.forcePlayerAsTagger && _localPlayerAgent != null && _config.taggerCount > 0;
-        if (forcePlayer) shuffled.Remove(_localPlayerAgent!);
+
+        // forcePlayerAsRunner wins over forcePlayerAsTagger: pull the player out, shuffle the rest,
+        // then reinsert the player at the front (→ Tagger, index < taggerCount) or the back
+        // (→ Runner, index ≥ taggerCount) so their role is guaranteed rather than left to the shuffle.
+        bool forceRunner = _config.forcePlayerAsRunner && _localPlayerAgent != null;
+        bool forceTagger = !forceRunner && _config.forcePlayerAsTagger && _localPlayerAgent != null && _config.taggerCount > 0;
+        bool pinPlayer = forceRunner || forceTagger;
+        if (pinPlayer) shuffled.Remove(_localPlayerAgent!);
 
         for (int i = shuffled.Count - 1; i > 0; i--)
         {
@@ -131,7 +140,8 @@ public sealed class RoundController : MonoBehaviour
             (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
         }
 
-        if (forcePlayer) shuffled.Insert(0, _localPlayerAgent!);
+        if (forceTagger) shuffled.Insert(0, _localPlayerAgent!);
+        else if (forceRunner) shuffled.Add(_localPlayerAgent!);
 
         for (int i = 0; i < shuffled.Count; i++)
         {
@@ -168,6 +178,16 @@ public sealed class RoundController : MonoBehaviour
         int runnersRemaining = 0;
         foreach (TagAgent agent in _agents)
         {
+            // Anyone (bot or player) who falls off the map respawns at their start rather than being
+            // lost — especially important on the rooftop map where there's nothing below the gaps.
+            if (agent.transform.position.y < FallResetY
+                && _spawnStates.TryGetValue(agent, out (Vector3 pos, Quaternion rot) spawn))
+            {
+                agent.Motor.ResetState(spawn.pos, spawn.rot);
+                // Brief grace on respawn so you don't reappear right into a tagger's reach.
+                agent.SetRole(agent.Role, startGrace: true);
+            }
+
             agent.Motor.ExternalSpeedMultiplier = agent.Role == Role.Tagger ? multiplier : 1f;
             if (agent.Role == Role.Runner) runnersRemaining++;
         }

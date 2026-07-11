@@ -19,11 +19,10 @@ namespace Game.Rules;
 /// </summary>
 public sealed class TagAgent : MonoBehaviour
 {
-    // Chest height is calibrated against the *visible mesh*, not the CapsuleCollider: the default
-    // primitive capsule mesh is always 2 units tall centered on the pivot (-1..+1) regardless of
-    // CharacterMotor's runtime collider height/center, so a collider-relative offset (~0.9-1.3)
-    // put the arms well above the visible model, reading as disconnected floating boxes.
-    private const float ArmShoulderY = 0.5f;
+    // Shoulder height, in root-local space. The visible body (BuildAgentCapsule's child mesh) now
+    // sits feet-at-root, ~1.8m tall with its centre at y≈0.9, so the shoulders sit a bit above that
+    // centre. (It used to be the mesh-was-root era where the body centred on the pivot at 0.5.)
+    private const float ArmShoulderY = 1.4f;
     private const float ArmXOffset = 0.42f;
     private const float ArmLength = 0.6f;
 
@@ -32,8 +31,24 @@ public sealed class TagAgent : MonoBehaviour
     // the two gestures so both read as a clear sweep away from a relaxed default.
     private const float ArmRestDeg = 60f;
     private const float ArmTagReachDeg = -10f;
+    private const float ArmLungeDeg = -35f; // both arms driven up-and-forward — the committed "dive" reach
     private const float ArmMantleRaisedDeg = -70f;
     private const float ArmMantlePushedDeg = 110f;
+
+    // Lunge body-dive: pitch the whole model forward over the lunge, peaking mid-dive then easing
+    // back. Applied in LateUpdate so it's purely visual — CharacterMotor rewrites the transform's
+    // (yaw-only) facing every FixedUpdate before the physics step, so the pitch never reaches physics.
+    private const float DiveDuration = 0.45f;
+    private const float DiveMaxPitchDeg = 32f;
+    private float _diveElapsed = -1f;
+
+    // Slide lean: a sustained BACKWARD body-pitch while sliding — leaning away from the direction of
+    // travel, like a rail/park slide, held for the whole slide and eased in/out (the lunge dive is
+    // the opposite, a forward pitch). Applied as a negative pitch.
+    private const float SlideLeanBackDeg = 30f;
+    private const float SlideLeanSpeedDeg = 200f; // how fast the lean eases in/out (deg/sec)
+    private float _slideLean;
+    private bool _wasAirDiving;
 
     private const int RingSegments = 48;
 
@@ -48,6 +63,12 @@ public sealed class TagAgent : MonoBehaviour
     private InputAction? _tagAction;
     private float _lungeCooldownRemaining;
     private float _graceRemaining;
+
+    // Contact tagging is enabled only during the brief window after a lunge, and only for the first
+    // runner touched — a committed dive that connects tags, but merely brushing someone otherwise does not.
+    private const float LungeTagWindow = 0.45f;
+    private float _lungeTagWindowRemaining;
+    private bool _lungeTagUsed;
 
     private Transform? _leftArmPivot;
     private Transform? _rightArmPivot;
@@ -131,6 +152,9 @@ public sealed class TagAgent : MonoBehaviour
         if (_lungeCooldownRemaining > 0f)
             _lungeCooldownRemaining -= Time.deltaTime;
 
+        if (_lungeTagWindowRemaining > 0f)
+            _lungeTagWindowRemaining -= Time.deltaTime;
+
         if (_reachRing != null)
         {
             bool showRing = Role == Role.Tagger && !IsInGrace;
@@ -139,9 +163,21 @@ public sealed class TagAgent : MonoBehaviour
         }
 
         MotorState state = _motor.CurrentState;
-        if (state != _previousMotorState && (state == MotorState.Mantling || state == MotorState.Vaulting))
-            PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.35f);
+        if (state != _previousMotorState)
+        {
+            if (state == MotorState.Mantling || state == MotorState.Vaulting)
+                PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.35f);
+            else if (state == MotorState.Sliding)
+                // Same arms-forward reach as the lunge — the slide reads as a committed forward dive.
+                PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.12f, backDuration: 0.3f);
+        }
         _previousMotorState = state;
+
+        // Mid-air dive: same slide arm gesture on the rising edge.
+        bool diving = _motor.AirDiving;
+        if (diving && !_wasAirDiving)
+            PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.12f, backDuration: 0.3f);
+        _wasAirDiving = diving;
     }
 
     public void SetRole(Role role, bool startGrace)
@@ -158,6 +194,54 @@ public sealed class TagAgent : MonoBehaviour
         float impulseMagnitude = _config.lungeBaseImpulse + _motor.CurrentSpeed * _config.lungeVelocityScale;
         _motor.AddImpulse(_motor.transform.forward * impulseMagnitude);
         _lungeCooldownRemaining = _config.lungeCooldown;
+
+        // Dive gesture: both arms thrust fully forward and hold out through the lunge before easing
+        // back — reads as a committed dive rather than the quick jab of a ranged tag reach.
+        PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.08f, backDuration: 0.45f);
+        _diveElapsed = 0f; // start the body-pitch dive (see LateUpdate)
+
+        _lungeTagWindowRemaining = LungeTagWindow; // arm contact-tag for the dive
+        _lungeTagUsed = false;
+    }
+
+    // Contact tag — active ONLY during the lunge window, and only the first runner touched per lunge.
+    private void OnCollisionEnter(Collision collision)
+    {
+        if (_lungeTagWindowRemaining <= 0f || _lungeTagUsed) return;
+        if (Role != Role.Tagger || IsInGrace) return;
+        if (!collision.gameObject.TryGetComponent(out TagAgent other)) return;
+        if (other.Role != Role.Runner || other.IsInGrace) return;
+        if (_roundController != null && !_roundController.IsPastStartGrace) return;
+
+        _lungeTagUsed = true;
+        PerformTag(other);
+    }
+
+    private void LateUpdate()
+    {
+        // Lunge dive: a one-shot forward pitch pulse. sin(0..pi) → 0 at start, 1 at mid-dive, 0 at end.
+        float divePitch = 0f;
+        if (_diveElapsed >= 0f)
+        {
+            _diveElapsed += Time.deltaTime;
+            if (_diveElapsed >= DiveDuration) _diveElapsed = -1f;
+            else divePitch = Mathf.Sin(_diveElapsed / DiveDuration * Mathf.PI) * DiveMaxPitchDeg;
+        }
+
+        // Slide lean: sustained BACKWARD pitch (negative), eased toward the target while sliding (or
+        // mid-air diving) and back to 0 when not, so it doesn't pop on/off.
+        bool sliding = _motor.CurrentState == MotorState.Sliding || _motor.AirDiving;
+        _slideLean = Mathf.MoveTowards(_slideLean, sliding ? -SlideLeanBackDeg : 0f, SlideLeanSpeedDeg * Time.deltaTime);
+
+        // Lunge dive pitches forward (+), slide leans back (−); they almost never overlap, and if they
+        // do the sum reads fine.
+        float pitch = divePitch + _slideLean;
+        if (Mathf.Abs(pitch) <= 0.01f) return; // nothing active — leave CharacterMotor's yaw-only facing alone
+
+        // Rebuild the rotation absolutely from the current yaw — NOT `rotation *= pitch`, which
+        // compounds every LateUpdate (several run per FixedUpdate) into a spin ("10 frontflips").
+        float yaw = transform.eulerAngles.y;
+        transform.rotation = Quaternion.Euler(pitch, yaw, 0f);
     }
 
     /// <summary>Explicit ranged tag attempt (right click / left trigger), tagging the nearest opposing agent if it's within <see cref="CurrentReachRadius"/> — no physical collision required.</summary>
@@ -180,20 +264,10 @@ public sealed class TagAgent : MonoBehaviour
         PerformTag(nearest);
     }
 
-    private void OnCollisionEnter(Collision collision)
-    {
-        if (collision.gameObject.TryGetComponent(out TagAgent other))
-            TryTag(other);
-    }
-
-    private void TryTag(TagAgent other)
-    {
-        if (Role != Role.Tagger || IsInGrace) return;
-        if (other.Role != Role.Runner || other.IsInGrace) return;
-        if (_roundController != null && !_roundController.IsPastStartGrace) return;
-
-        PerformTag(other);
-    }
+    // Tagging is an explicit ranged attempt only (player: right click, via TryTagInRange; bots call
+    // TryTagInRange from their AI). Physical body contact deliberately does NOT tag — an earlier
+    // OnCollisionEnter path did, which meant merely brushing or landing on a runner tagged them with
+    // no input; removed per feel-test.
 
     private void PerformTag(TagAgent other)
     {

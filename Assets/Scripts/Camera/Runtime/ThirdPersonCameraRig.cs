@@ -21,6 +21,7 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
     private InputAction? _lookAction;
     private float _yaw;
     private float _pitch;
+    private bool _cursorUnlocked;
     private float _currentTilt;
     private float _shakeTimer;
     private Vector3 _smoothedPivotPosition;
@@ -66,6 +67,10 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
         _lookAction.Enable();
 
         _yaw = transform.eulerAngles.y;
+
+        // Lock the cursor to the game window so mouse-look doesn't drift the pointer off-screen (and
+        // start clicking Unity behind the game). Esc toggles it back out.
+        LockCursor(true);
     }
 
     private void OnEnable()
@@ -76,6 +81,7 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
     private void OnDisable()
     {
         if (target != null) target.Landed -= OnLanded;
+        LockCursor(false);
     }
 
     private void OnDestroy()
@@ -85,12 +91,42 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
 
     private void OnLanded() => _shakeTimer = config.landingShakeDuration;
 
+    private static void LockCursor(bool locked)
+    {
+        // Correct for local play and builds. NOTE: cursor lock / relative-mouse does not work over
+        // Remote Desktop (RDP feeds absolute cursor position), so mouse-look stalls at the screen
+        // edge there regardless — that's an RDP limitation, not a game bug.
+        CursorLockMode desired = locked ? CursorLockMode.Locked : CursorLockMode.None;
+        if (Cursor.lockState != desired) Cursor.lockState = desired;
+        if (Cursor.visible == locked) Cursor.visible = !locked;
+    }
+
     private void LateUpdate()
     {
+        // Esc frees the cursor; clicking back in re-locks it. We ENFORCE the desired state every frame
+        // — Unity can silently drop CursorLockMode on focus changes/recompiles, which let the pointer
+        // hit the screen edge and the mouse-delta stall out (the "can't turn past a wall" symptom).
+        if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
+            _cursorUnlocked = true;
+        if (_cursorUnlocked && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+            _cursorUnlocked = false;
+        LockCursor(!_cursorUnlocked);
+
         if (target == null || config == null || cameraComponent == null) return;
 
-        Vector2 look = _lookAction?.ReadValue<Vector2>() ?? Vector2.zero;
-        _yaw += look.x * config.mouseSensitivity * 0.1f;
+        // Don't feed look while the cursor is free (pointer is being used elsewhere).
+        Vector2 look = _cursorUnlocked ? Vector2.zero : (_lookAction?.ReadValue<Vector2>() ?? Vector2.zero);
+
+        // Left/Right arrows rotate the camera too — a keyboard alternative to mouse yaw that works
+        // over Remote Desktop (where cursor-lock mouse-look stalls at the screen edge).
+        float keyTurn = 0f;
+        if (Keyboard.current != null)
+        {
+            if (Keyboard.current.leftArrowKey.isPressed) keyTurn -= 1f;
+            if (Keyboard.current.rightArrowKey.isPressed) keyTurn += 1f;
+        }
+
+        _yaw += look.x * config.mouseSensitivity * 0.1f + keyTurn * config.keyboardTurnSpeed * Time.deltaTime;
         _pitch = Mathf.Clamp(_pitch - look.y * config.mouseSensitivity * 0.1f, config.minPitchDegrees, config.maxPitchDegrees);
 
         Quaternion rotation = Quaternion.Euler(_pitch, _yaw, 0f);

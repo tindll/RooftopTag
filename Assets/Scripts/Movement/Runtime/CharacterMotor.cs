@@ -32,6 +32,19 @@ public sealed class CharacterMotor : MonoBehaviour
     private GroundHit _ground;
     private float _lastGroundedTime = float.NegativeInfinity;
     private float _jumpBufferDeadline = float.NegativeInfinity;
+    private bool _airDiveUsed; // one air-dive per airborne period (reset on the ground)
+
+    // Interact (E) is edge-triggered for one frame, but vault/mantle/climb/wall-grab need you to also
+    // be in range of the wall on that exact frame — so a press a hair too early or far did nothing.
+    // Buffer it like the jump buffer: a press stays "live" for a short window, so E fires as soon as
+    // you're in position. Makes vault/wall-grab work every time.
+    /// <summary>True while airborne after an air-dive — drives the mid-air slide pose (see TagAgent).</summary>
+    public bool AirDiving => _airDiveUsed && _state == MotorState.Airborne;
+
+    private const float InteractBufferTime = 0.25f;
+    private float _interactBufferDeadline = float.NegativeInfinity;
+    private bool InteractBuffered => Time.time <= _interactBufferDeadline;
+    private void ConsumeInteract() => _interactBufferDeadline = float.NegativeInfinity;
 
     private float _defaultCapsuleHeight;
     private Vector3 _defaultCapsuleCenter;
@@ -155,6 +168,9 @@ public sealed class CharacterMotor : MonoBehaviour
         if (_input.JumpPressed)
             _jumpBufferDeadline = Time.time + config.jump.jumpBufferTime;
 
+        if (_input.InteractPressed)
+            _interactBufferDeadline = Time.time + InteractBufferTime;
+
         switch (_state)
         {
             case MotorState.Grounded: TickGrounded(dt); break;
@@ -200,11 +216,15 @@ public sealed class CharacterMotor : MonoBehaviour
         }
 
         _lastGroundedTime = Time.time;
+        _airDiveUsed = false; // back on the ground — air-dive is available again next time you're airborne
 
         if (TryStartLadderOrSwingAttach()) return;
         if (TryMantleOrVaultOrClimb()) return;
 
-        if (_input.SlideHeld && CurrentSpeed >= config.slide.minEntrySpeed
+        // Slide when holding crouch and either already moving fast enough, OR standing on a slope —
+        // on a ramp gravity does the work, so you can just hold CTRL to slide down it without a run-up
+        // or pressing forward (you still steer left/right; see TickSliding's strafe).
+        if (_input.SlideHeld && (CurrentSpeed >= config.slide.minEntrySpeed || IsOnSlope())
             && Time.time - _lastSlideEndTime >= config.slide.slideReentryCooldown)
         {
             EnterSliding();
@@ -227,12 +247,15 @@ public sealed class CharacterMotor : MonoBehaviour
         Vector3 horizontal = HorizontalVelocity;
         Vector3 dir = horizontal.sqrMagnitude > 0.0001f ? horizontal.normalized : transform.forward;
 
-        // Boost only rewards an actual downhill entry (per the design spec), scaling to zero on
-        // flat ground or uphill — an unconditional boost let repeated slide/hop chains stack
-        // unbounded speed even on flat ground.
+        // A small flat-ground boost (FlatSlideBoostFraction of the full impulse) so sliding on the
+        // level gives a little forward pop, scaling up to the full boost downhill. The old code gave
+        // zero on the flat to stop slide-hop chains stacking speed unbounded — safe to add a little
+        // back now that ground.maxHorizontalSpeed caps the total, and flat friction still stops the
+        // slide far sooner than a ramp does (so you slide less on the flat, as intended).
         Vector3 downhill = Vector3.ProjectOnPlane(Vector3.down, _ground.normal).normalized;
         float downhillFactor = Mathf.Clamp01(Vector3.Dot(downhill, dir));
-        Vector3 boosted = dir * (horizontal.magnitude + config.slide.entryBoostImpulse * downhillFactor);
+        float boostFactor = FlatSlideBoostFraction + (1f - FlatSlideBoostFraction) * downhillFactor;
+        Vector3 boosted = dir * (horizontal.magnitude + config.slide.entryBoostImpulse * boostFactor);
         _rb.linearVelocity = new Vector3(boosted.x, _rb.linearVelocity.y, boosted.z);
         _capsule.height = _defaultCapsuleHeight * config.slide.capsuleHeightMultiplier;
         _capsule.center = new Vector3(0f, _capsule.height * 0.5f, 0f);
@@ -244,6 +267,15 @@ public sealed class CharacterMotor : MonoBehaviour
         _capsule.center = _defaultCapsuleCenter;
         _lastSlideEndTime = Time.time;
     }
+
+    // How sharply A/D curves a slide (degrees/sec of heading change at full input) — steers, not flings.
+    private const float SlideSteerDegPerSec = 110f;
+
+    // Fraction of the slide entry boost given on flat ground (full boost still reserved for downhill).
+    private const float FlatSlideBoostFraction = 0.35f;
+
+    /// <summary>On real (non-flat) ground the current ground probe is resting on.</summary>
+    private bool IsOnSlope() => _ground.grounded && _ground.normal.y < 0.99f;
 
     private void TickSliding(float dt)
     {
@@ -284,6 +316,14 @@ public sealed class CharacterMotor : MonoBehaviour
             float alongSpeed = Vector3.Dot(horizontal, downhillNorm);
             float acrossSpeed = Vector3.Dot(horizontal, acrossSlope) * Mathf.Exp(-config.slide.downhillAlignment * dt);
             horizontal = downhillNorm * alongSpeed + acrossSlope * acrossSpeed;
+
+            // A/D strafe STEERS the slide (rotates the travel direction) rather than adding sideways
+            // velocity — the latter flung you off sideways, which felt unnatural. This curves the
+            // slide left/right while preserving speed; the fall-line alignment above still gently pulls
+            // you back toward straight-down when you let off, like carving on a slope.
+            float strafe = Vector3.Dot(ComputeWishDirection(), acrossSlope);
+            if (Mathf.Abs(strafe) > 0.01f)
+                horizontal = Quaternion.Euler(0f, strafe * SlideSteerDegPerSec * dt, 0f) * horizontal;
         }
 
         float speed = horizontal.magnitude;
@@ -299,7 +339,10 @@ public sealed class CharacterMotor : MonoBehaviour
         Vector3 slopeDir = Vector3.ProjectOnPlane(flatDir, _ground.normal).normalized;
         _rb.linearVelocity = slopeDir * speed;
 
-        bool wantsExit = !_input.SlideHeld || speed < config.slide.minEntrySpeed * 0.4f;
+        // Release CTRL to stop. Otherwise only auto-exit when slow on FLAT ground — on a slope a
+        // slide legitimately starts near-zero and accelerates, so a low-speed exit there would kill
+        // it before gravity kicks in.
+        bool wantsExit = !_input.SlideHeld || (speed < config.slide.minEntrySpeed * 0.4f && !IsOnSlope());
         if (wantsExit)
         {
             ExitSliding();
@@ -332,18 +375,32 @@ public sealed class CharacterMotor : MonoBehaviour
     private void ApplyGroundedAcceleration(float dt)
     {
         Vector3 wishDir = ComputeWishDirection();
-        Vector3 wishVelocity = Vector3.ProjectOnPlane(wishDir * CurrentTargetSpeed, _ground.normal);
+        Vector3 horizontal = HorizontalVelocity;
+        float targetSpeed = CurrentTargetSpeed;
 
-        // Full 3D MoveTowards (not just horizontal): the slope-projected wishVelocity already
-        // has the correct vertical component to follow the ramp's incline. Previously this
-        // discarded that Y component and relied on SnapToGround's flat, non-slope-aware push
-        // instead, which couldn't keep pace with a steep descent — the character would separate
-        // from the surface and re-land repeatedly (visible as bouncing down ramps).
-        float rate = wishDir.sqrMagnitude > 0.0001f ? config.ground.acceleration : config.ground.deceleration;
-        Vector3 newVelocity = Vector3.MoveTowards(_rb.linearVelocity, wishVelocity, rate * dt);
+        Vector3 newHorizontal;
+        if (wishDir.sqrMagnitude > 0.0001f)
+        {
+            // Redirect the velocity DIRECTION toward the input (rotating it, preserving speed) rather
+            // than decelerating toward the new target through zero and re-accelerating — the latter
+            // cancelled your momentum when you turned around, briefly stopping you. Now a turn carries
+            // your speed through it, and the magnitude eases toward the target speed separately.
+            float speed = horizontal.magnitude;
+            Vector3 dir = speed > 0.1f ? horizontal.normalized : wishDir;
+            Vector3 steeredDir = Vector3.RotateTowards(dir, wishDir, config.ground.steerRateDegrees * Mathf.Deg2Rad * dt, 0f).normalized;
+            float newSpeed = Mathf.MoveTowards(speed, targetSpeed, config.ground.acceleration * dt);
+            newHorizontal = steeredDir * newSpeed;
+        }
+        else
+        {
+            // No input — decelerate to a stop.
+            newHorizontal = Vector3.MoveTowards(horizontal, Vector3.zero, config.ground.deceleration * dt);
+        }
 
-        // Gravity's component along the slope: assists downhill motion, resists uphill, even
-        // when not sliding.
+        // Project onto the slope so the resulting velocity follows the ramp's incline.
+        Vector3 newVelocity = Vector3.ProjectOnPlane(newHorizontal, _ground.normal);
+
+        // Gravity's component along the slope: assists downhill, resists uphill, even when not sliding.
         Vector3 slopeGravity = Vector3.ProjectOnPlane(Physics.gravity, _ground.normal);
         newVelocity += slopeGravity * (config.ground.slopeGravityInfluence * dt);
 
@@ -387,6 +444,15 @@ public sealed class CharacterMotor : MonoBehaviour
             return;
         }
 
+        // Mid-air slide = a dive: a one-shot forward+downward kick to fling across a gap or drop
+        // onto something below. One per airborne period (reset once you're back on the ground).
+        if (_input.SlideHeld && !_airDiveUsed)
+        {
+            Vector3 fwd = HorizontalVelocity.sqrMagnitude > 0.1f ? HorizontalVelocity.normalized : transform.forward;
+            _rb.linearVelocity += fwd * config.slide.airDiveForwardBoost + Vector3.down * config.slide.airDiveDownBoost;
+            _airDiveUsed = true;
+        }
+
         ApplyAirAcceleration(dt);
         ApplyGravity(dt);
     }
@@ -400,7 +466,12 @@ public sealed class CharacterMotor : MonoBehaviour
         // target is fixed to the character's own facing (-transform.forward), not the current
         // velocity direction — deriving it from velocity would flip the target back to "forward"
         // the instant velocity crossed zero into reverse, oscillating instead of settling.
-        if (_input.Move.y < -0.1f)
+        // Player-only: Move.y is the camera-relative stick/S-key (a deliberate "brake/reverse").
+        // AI input (cameraYaw == null, see ComputeWishDirection) feeds Move as a world-space
+        // direction, so its Move.y is just the world-Z component of where it's steering — reading
+        // that as a brake air-braked bots mid-jump whenever they fled or aimed toward -Z, killing
+        // the jump and dropping them into the gap (M4 loop: 92 jump attempts, 0 completions).
+        if (cameraYaw != null && _input.Move.y < -0.1f)
         {
             Vector3 currentHorizontal = HorizontalVelocity;
             Vector3 target = -transform.forward * config.ground.airBrakeReverseSpeed;
@@ -559,7 +630,9 @@ public sealed class CharacterMotor : MonoBehaviour
     private void TickWallHook(float dt)
     {
         _wallHookElapsed += dt;
-        _rb.linearVelocity = Vector3.zero;
+        // You can't cling forever — hanging slides you slowly down the wall (and it eventually lets
+        // go). Jump before then to launch off, wall-to-wall.
+        _rb.linearVelocity = Vector3.down * config.wallHook.slideDownSpeed;
 
         if (ConsumeBufferedJump())
         {
@@ -567,7 +640,9 @@ public sealed class CharacterMotor : MonoBehaviour
             return;
         }
 
-        if (_wallHookElapsed >= config.wallHook.maxHoldDuration)
+        // Re-detect the wall: if you've slid off the bottom of it, drop into a normal fall.
+        bool stillOnWall = Physics.Raycast(CapsuleCenterWorld(), -_wallHookNormal, config.wallHook.detectionDistance + 0.3f, wallMask, QueryTriggerInteraction.Ignore);
+        if (!stillOnWall || _wallHookElapsed >= config.wallHook.maxHoldDuration)
             _state = MotorState.Airborne;
     }
 
@@ -577,6 +652,19 @@ public sealed class CharacterMotor : MonoBehaviour
         _rb.linearVelocity = new Vector3(launch.x, config.wallHook.jumpUpSpeed, launch.z);
         _state = MotorState.Airborne;
         Jumped?.Invoke();
+    }
+
+    /// <summary>Grab and hang on a wall you can't get up (E). Player-only — bots route via graph edges.
+    /// Hanging slides you slowly down (TickWallHook); jump to launch off, chaining wall to wall.</summary>
+    private bool TryWallHang(Vector3 wallNormal)
+    {
+        if (cameraYaw == null || !InteractBuffered) return false;
+        ConsumeInteract();
+        _wallHookNormal = wallNormal;
+        _wallHookElapsed = 0f;
+        _state = MotorState.WallHook;
+        _rb.linearVelocity = Vector3.zero;
+        return true;
     }
 
     // ---------------------------------------------------------------- Mantle / Vault / Climb
@@ -592,7 +680,7 @@ public sealed class CharacterMotor : MonoBehaviour
         if (!Physics.Raycast(chestOrigin, probeDir, out RaycastHit wallHit, config.mantleVault.forwardCheckDistance, wallMask, QueryTriggerInteraction.Ignore))
             return false;
 
-        if (CurrentSpeed < 0.1f && !_input.JumpHeld && !_input.InteractPressed)
+        if (CurrentSpeed < 0.1f && !_input.JumpHeld && !InteractBuffered)
             return false;
 
         float maxSearchHeight = Mathf.Max(config.mantleVault.mantleMaxHeight, config.climb.climbMaxHeight);
@@ -600,36 +688,47 @@ public sealed class CharacterMotor : MonoBehaviour
 
         if (!Physics.Raycast(aboveHit, Vector3.down, out RaycastHit topHit, maxSearchHeight + 0.3f, groundMask, QueryTriggerInteraction.Ignore))
         {
-            // Wall extends above the climb threshold with no ledge found: stays a meaningful obstacle.
-            return false;
+            // No ledge to pull up onto — the wall's too tall. If you pressed E, grab and hang on it
+            // instead (then jump to launch off, wall to wall).
+            return TryWallHang(wallHit.normal);
         }
 
         float ledgeHeight = topHit.point.y - feet.y;
+
+        // Player only: getting over a wall is now a deliberate press of E, not automatic — per
+        // feel-test, the player should choose to vault/mantle rather than have it happen on approach.
+        // Bots (cameraYaw == null, the AI-input convention used in ComputeWishDirection) keep the
+        // automatic behavior — they rely on it to clamber incidental map geometry, and gating them on
+        // interact stranded them in the valley.
+        if (cameraYaw != null && !InteractBuffered) return false;
 
         // Vault takes priority in the overlap band: a low obstacle taken at speed is a vault,
         // not a mantle. Mantle only wins there when approach speed is too low to vault.
         if (ledgeHeight > 0f && ledgeHeight <= config.mantleVault.vaultMaxHeight && CurrentSpeed >= config.mantleVault.vaultMinApproachSpeed)
         {
+            ConsumeInteract();
             StartVault(topHit.point, probeDir);
             return true;
         }
 
         if (ledgeHeight >= config.mantleVault.mantleMinHeight && ledgeHeight <= config.mantleVault.mantleMaxHeight)
         {
+            ConsumeInteract();
             StartMantle(topHit.point, probeDir);
             return true;
         }
 
-        // Climbing taller walls is a deliberate grab (E), not automatic like mantle/vault —
-        // "the player shouldn't just be able to climb any wall" was the exact feel-test
-        // complaint about the old auto-climb-while-holding-jump behavior.
-        if (ledgeHeight > config.mantleVault.mantleMaxHeight && ledgeHeight <= config.climb.climbMaxHeight && _input.InteractPressed)
+        // Bots keep the auto-climb for tall ledges (the Tag Arena's Climb_Mid). The PLAYER does NOT
+        // pull up from that far — if the ledge is above mantle height, it's a wall-grab, not a vault
+        // (per feel-test: pulling up from way down a wall felt wrong; grabbing is the intended move).
+        if (cameraYaw == null && ledgeHeight > config.mantleVault.mantleMaxHeight && ledgeHeight <= config.climb.climbMaxHeight)
         {
             StartClimbToLedge(topHit.point, probeDir);
             return true;
         }
 
-        return false;
+        // Ledge too high to pull up (player) — grab and hang instead.
+        return TryWallHang(wallHit.normal);
     }
 
     private void StartMantle(Vector3 ledgePoint, Vector3 approachDir)
@@ -728,8 +827,14 @@ public sealed class CharacterMotor : MonoBehaviour
 
         if (_ladderT >= 1f)
         {
+            // Off the top: launch up-and-forward (toward the wall side, opposite the outward push) to
+            // clear the wall and land on the top platform beyond it. The old code just nudged 0.1m
+            // straight up at the ladder line — still on the bare wall face with no floor, so the
+            // climber fell right back down and could never reach the top platform.
+            Vector3 ontoLanding = -_currentLadder.OutwardNormal;
             _currentLadder = null;
-            StartMantle(pos + Vector3.up * 0.1f, transform.forward);
+            _rb.linearVelocity = ontoLanding * config.ladder.topDismountForwardSpeed + Vector3.up * config.ladder.topDismountUpSpeed;
+            _state = MotorState.Airborne;
         }
         else if (_ladderT <= 0f && climbInput < 0f)
         {
@@ -768,10 +873,15 @@ public sealed class CharacterMotor : MonoBehaviour
         Vector3 pos = _currentSwing.PivotPosition + offset;
         _rb.MovePosition(pos);
 
-        if (_input.JumpPressed)
+        Vector3 tangent = (Mathf.Cos(_swingTheta) * _swingPlaneAxis + Mathf.Sin(_swingTheta) * Vector3.up).normalized;
+        Vector3 releaseVelocity = tangent * (_swingOmega * length * config.swing.releaseSpeedMultiplier);
+
+        // Player releases on jump. A bot can't time an apex release, so it auto-releases the moment
+        // the swing would fling it forward (toward the +Z exit, the corridor's forward axis) and
+        // upward — an up-and-across launch that carries it over the chasm to the far platform.
+        bool botAutoRelease = cameraYaw == null && releaseVelocity.z > 5f && releaseVelocity.y > 1f;
+        if (_input.JumpPressed || botAutoRelease)
         {
-            Vector3 tangent = (Mathf.Cos(_swingTheta) * _swingPlaneAxis + Mathf.Sin(_swingTheta) * Vector3.up).normalized;
-            Vector3 releaseVelocity = tangent * (_swingOmega * length * config.swing.releaseSpeedMultiplier);
             _rb.linearVelocity = releaseVelocity;
             _currentSwing = null;
             _state = MotorState.Airborne;
@@ -853,10 +963,16 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void UpdateFacing(float dt)
     {
-        Vector3 horizontal = HorizontalVelocity;
-        if (horizontal.sqrMagnitude < 0.04f) return;
+        // Face where the player is STEERING (camera-relative input), not the resulting velocity.
+        // Velocity lags behind input through acceleration, so facing it made the body rotate to catch
+        // up a beat late — that's the "turning/aim feels laggy" disconnect. Facing the input points
+        // the body where you aim right away; with no input we keep facing the current motion.
+        Vector3 faceDir = ComputeWishDirection();
+        faceDir.y = 0f;
+        if (faceDir.sqrMagnitude < 0.0001f) faceDir = HorizontalVelocity;
+        if (faceDir.sqrMagnitude < 0.04f) return;
 
-        Quaternion target = Quaternion.LookRotation(horizontal.normalized, Vector3.up);
+        Quaternion target = Quaternion.LookRotation(faceDir.normalized, Vector3.up);
         Quaternion next = Quaternion.RotateTowards(_rb.rotation, target, turnSpeedDegreesPerSecond * dt);
         _rb.MoveRotation(next);
     }

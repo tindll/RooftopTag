@@ -3,6 +3,231 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Session — rooftop playground + movement/feature work
+
+Beyond the M4 self-play loop, a run of feature + feel work driven by live testing:
+
+- **New map — Rooftop Arena** (`RooftopArena` + `RooftopGraphBuilder`, `RooftopTag/Build Rooftop Arena`):
+  7 rooftops at varied heights linked by jumps + a ramp + a ladder, full bot nav graph, chase mode
+  (player + 2 bot taggers). Single-source layout like TagArenaLayout so geometry and graph can't
+  desync. Everyone respawns at spawn on falling off (nothing below the gaps).
+- **Movement**: vault/mantle now require E (player only; bots keep auto-clamber). Slide reworked —
+  slides down any slope on CTRL, A/D *steers* (was flinging sideways), small flat-ground boost, leans
+  back. Ladder top-dismount fixed (launch up-and-forward onto the platform, was stranding climbers).
+  Swing physics strengthened + graph-connected + bot auto-release (still needs feel work).
+- **Feel/juice**: lunge dive (arms + body pitch) + slide dive-lean; lunge contact-tag (dive window,
+  max 1/lunge); bots lunge at the player. Capsule mesh moved to an aligned child (fixed floor-clip).
+- **Polish loop (this session)**: facing turned from a constant-rate 540°/s RotateTowards (a "whip")
+  to an exponential ease (`turnResponsiveness`) — smoother, and a nice side effect: bot jump accuracy
+  `jump_land_within_1.75m` climbed to **0.79**. Camera `positionSmoothTime` 0.06→0.09. Respawn grace
+  on fall. Remaining polish (camera on height changes, rooftop chase tuning) is feel-gated on the user.
+
+---
+
+## M4 loop — 11 — Live-test round 2: contact-tag, lunge dive, first-gap widen
+
+More human feel-test findings.
+
+**Contact-tag removed:** `TagAgent.OnCollisionEnter -> TryTag` tagged on any physical body contact —
+so landing on or brushing a runner tagged them with no input, contradicting the right-click-only
+design. Deleted; tagging is now exclusively the ranged attempt (player right-click / bot `TryTagInRange`).
+
+**Lunge dive (arms + body):** `TryLunge` now drives both arms up-and-forward and pitches the whole
+model forward (`DiveDuration` 0.45s, `DiveMaxPitchDeg` 32) via `LateUpdate` — purely visual, since
+`CharacterMotor` rewrites the transform's yaw-only facing every FixedUpdate before physics, so the
+pitch never reaches the collider.
+
+**First jump fixed by widening the opening gap:** the 3m opening gap was below the bots' controllable
+range — a fixed ~8.5m sprint jump flew clean over it, and walk-modulation couldn't decelerate in the
+~6m of run-up available (tried `IsShortJumpAhead` current-or-next: overshot; refined to walk only a
+short jump or its Run approach, never a long jump: recovered the long-jump regression but the 3m gap
+stayed unmakeable). Root fix: widened `TagArenaLayout.Gaps[0]` 3→6m (sprint-jumpable) and rebuilt the
+saved scene headlessly (`-executeMethod Game.EditorTools.PlaygroundBuilder.BuildTagArena` — the scene
+geometry is baked, so a layout change needs this or the editor desyncs from the runtime graph).
+Metric: `jump_land_within_1.75m 0.30→0.50`, `jump_landing_err_avg 7.3→4.84`, jump attempts 129→321,
+Drop completions appearing. win_rate still ~0.1-0.2 (noisy) — falls (~94) now from the wide 9m gap and
+the wall-run chasm, the next targets.
+
+---
+
+## M4 loop — 10 — Live-test fixes: vault deadlock + jump-commit modulation
+
+Driven by a human feel-test (bots cleared jumps + wall-run but got stuck on the orange vault ledges,
+and many failed the very first jump).
+
+**Vault/mantle deadlock (fixed):** `CharacterMotor.TryMantleOrVaultOrClimb` early-returns when the
+bot is stopped (`CurrentSpeed < 0.1`) unless jump/interact is held — so a bot that ran into the ledge
+and stopped could never trigger and stuck forever. `ParkourBotInput.ExecuteEdgeButtons` also pressed
+interact only for Climb/Ladder/Swing, never Vault/Mantle. Fix: bots now hold interact on Vault/Mantle
+edges (the ~0.55m/1.05m ledges fall in the mantle band, no speed gate, so a stalled bot pops over) and
+Mantle joins the steering-safety gap-crossing exemption. (Self-play under-reports this — its motors
+skip `Configure`, and vault completions record poorly through the mantle transition; validated live.)
+
+**Jump-commit modulation (fixed the "first jump" failures):** bots jumped at fixed ~8.5m sprint power
+regardless of gap, so the 3m opening gap made them overshoot into the next pit (same root as loop-9's
+gap-narrowing backfire). `ParkourBotInput` now walks the approach (`SprintHeld` false) when the current
+Jump edge's empty gap ≤ `shortJumpGapThreshold` (4.5m) — walk range ~4.4m matches short gaps; longer
+gaps still sprint. Metric: `jump_landing_err_avg 9.3→6.64`, `jump_land_within_1.75m 0.30→0.40`,
+takeoff avg 8.2→6.7 (the walk-approaches). win_rate 0.20 (still in the noisy 0.1-0.3 band).
+
+---
+
+## M4 loop — 9 — Layout single-source refactor; gap-size tuning isn't the lever
+
+**Refactor (the desync class of bug, killed):** added `Game.MapGeometry.TagArenaLayout` — one class
+that walks the corridor sequence once and records every walk-surface anchor. `TagArenaMapGeometry`
+now renders its boxes/ramps at those anchors, and `TagArenaParkourGraphBuilder` places its graph
+nodes at the same anchors (added a `Game.AI -> Game.MapGeometry` asmdef reference). Gap edge costs
+dropped their hardcoded strides — `ParkourGraph` derives them from node distance. Net: the graph can
+no longer drift from the physical map; changing a section length moves boxes and nodes together.
+Verified behaviour-preserving: `max_z_reached` 192.1 → 193.0, same traversal, compiles clean.
+
+**Then used it — narrowed the gaps in one edit** (`Gaps {3,5,7,9,8,7} -> {3,5,6,7,7,6}`, ≤7m):
+hypothesis was that the 8-9m gaps (past bots' ~7.5m reliable range) were the dominant fall source.
+**Result: falls got worse** (92 -> 100), win_rate 0.30 -> 0.10 — reverted. Bots jump at a fixed
+~8.5m power regardless of gap width, so *narrower* gaps make them **overshoot** the platform into the
+next pit. Gap geometry isn't the lever; the bot needs to modulate its jump to the gap.
+
+**State after direction 3:** map fully traversable (max_z ~193, runners reach the climb section),
+graph/geometry unified behind `TagArenaLayout`, jump landing ~30% on-target. **win_rate still ~0.1-0.3
+and noisy.** Falls (~90-100) are now spread across the whole route — gauntlet over/undershoots, the
+10m wall-run chasm (WallRun attempts ~10, ~0 completions), ledge drops. The remaining win_rate work is
+per-technique bot *execution* (jump commit sizing, wall-run entry/timing), not layout or pathfinding —
+a deeper AI pass. Refactor leaves that work safe to iterate: geometry and graph move together now.
+
+---
+
+## M4 loop — 8 — Root cause of the jump failures: a self-inflicted graph disconnect
+
+**Direction 3 (fix jumps + restore parkour). Observation first:** instrumented per-jump landing
+error (`JumpLandingErrors`: horizontal distance from where the bot lands to the Jump edge's target
+node). Ruled out the short-run-up theory earlier (takeoff ~7.5-8.2 m/s, enough). Landing error came
+back **9.17m avg, only 19% within 1.75m** — jumps landing a full gap off.
+
+**Root cause — graph/geometry cost confusion, self-inflicted in loop step 3:** the gauntlet's graph
+nodes sit on platform centres (z=36,43,52,63,76,88), and the Jump edge `cost` is the centre-to-centre
+*stride* (platformLength 4m + gap) = 7,9,11,13,12,11. The **actual empty gap** a bot jumps is
+`TagArenaMapGeometry`'s `{3,5,7,9,8,7}`m — all inside the ~9.6m ceiling, i.e. every gap is crossable
+(the geometry was already tapered down from the old 11/13m). Loop step 3's `AddGapJump` gate compared
+the *stride cost* (7-13) against 9.5 as if it were the jump distance, and so **severed jumpable 7-8m
+gaps**, disconnecting the entire wall-run/vault/mantle/climb section and leaving runners aiming at
+phantom/severed routes.
+
+**Change:** reverted the disconnect — all six gap edges restored (real gaps all ≤9.6m). Removed the
+`PathHasGap` no-gap flee workaround (step 6) since gaps are crossable again. Tightened
+`edgeLookahead` 1.3→0.6 (less wasted takeoff range).
+
+**Metric outcome:** `max_z_reached 36→192` — runners now traverse the **whole** map (gauntlet → wall-
+run alley → vault/mantle/climb at z189). Edge variety returning (`Drop=2` completed, `WallRun=12`
+attempted), takeoff at full sprint (8.16), jump landing within 1.75m **0.19→0.31**. **But win_rate
+still 0.00**, falls 78: the 9m gap (gap1→gap2) is at the bots' ragged jump edge, so ~69% of jumps
+there still fall short. (Also noted: Jump *completions* under-record because bots replan mid-air —
+the 0.31 landing-within-1.75m is the true success rate, not the edge-usage count.)
+
+**Decision / handoff:** structural blocker fixed and parkour restored — the map is fully traversable
+and edge types are reappearing. Remaining gap to win_rate is (a) jump reliability on the 8-9m gaps
+(narrow those gaps toward ~7m in geometry *and* re-derive the graph node z's from the geometry so they
+can't desync again — the desync is the recurring hazard here), and (b) runner evasion. Both are
+iterative tuning on a now-correct foundation, not blocked.
+
+---
+
+## M4 loop — 6-7 — Falls halved, but the win_rate wall is runner evasion
+
+**6 — runners stop routing across gaps (kept):** jump execution is ~2% reliable, so any flee path
+crossing a gap was a near-certain death — the dominant fall source. `FleeGoalNode` now rejects
+candidate goals whose path contains a Jump/SlideHop/Drop edge (`PathHasGap`); runners flee only
+along the contiguous safe corridor and survive by evasion, not by gambling on a jump. Outcome:
+`total_fallen 53->21`, jump attempts 87->8, max_z 59->46. **But win_rate still 0.00** — the
+runners that no longer fall simply get tagged instead.
+
+**7 — cascade-slow (reverted):** with falls controlled, isolated tagging as the remaining killer:
+one tagger's infection cascade clears all 11 runners inside 60s. Tried `conversionGraceDuration
+2.5->5s` to keep fewer taggers active early. No effect — `win_rate 0.00`, `total_fallen=17`.
+Reverted (rule: keep only changes that raise win_rate). A single *active* tagger catching ~1
+runner every few seconds clears 11 in 60s regardless of how slowly the cascade grows.
+
+**Diagnostic added (kept):** `jump_takeoff_speed_avg` — ruled out the short-run-up theory (bots
+take off at ~6.5-7.4 m/s, enough for the 7m gap), confirming the jump failure is aim/landing, not
+approach speed.
+
+**The wall (stopping the batch, per "skip if stuck"):** win_rate is 0.00 on a stable 10-match
+measure and has not moved across 7 iterations. The chain is fully mapped — spawn-scrum collapse
+(fixed) -> flee-off-pad falls (fixed) -> air-braked jumps (fixed) -> gap-death falls (avoided) ->
+**runner evasion can't survive a competent tagger for 60s**. That last one is not a tweak: it needs
+either much deeper runner evasion AI (juke/lead-breaking/route variety) or a structural balance/
+level change (bigger map, more escape routes, tagger handicap, or restoring the stranded parkour
+section so runners have real movement outs). Both are design-level calls for the user.
+
+---
+
+## M4 loop — 2-5 — Jump execution is the real blocker; measurement was lying
+
+**2 (diagnostic):** added `MatchMetrics.EdgeAttemptCounts` (button-press attempts) alongside the
+existing completion counts, logged as `total_edge_attempts`. First run resolved the "edges=Run
+only" mystery: `Jump=45` attempts, **0** completions — bots *try* to jump but never land on the
+target node. Not a "never attempts" bug; an execution bug.
+
+**3 — un-jumpable gaps are a false affordance:** the graph's gap gauntlet has costs 7,9,11,13,12,
+11m but max sprint-jump is ~9.6m (MOVEMENT_CAPABILITIES.md). `TagArenaParkourGraphBuilder` now only
+emits Jump edges for gaps ≤9.5m (`AddGapJump`); wider gaps get no edge. Made `FleeGoalNode`
+reachability-aware (skip nodes with a null path — an unreachable farthest node fell back to
+steering at the threat). Outcome: `Jump=92` attempts, still **0** completions — so the *jumpable*
+7m/9m gaps fail too. Gap width wasn't the (only) cause. **Debt:** disconnecting the wide gaps
+strands the wall-run/vault/mantle/climb section beyond the gauntlet — no bot can reach it, so those
+edge types are currently unreachable. Restoring them needs a level pass adding a crossable route
+(swing / downhill slide-hop) over the 11-13m gaps.
+
+**4 — air-brake misfire (real bug, fixed):** `CharacterMotor.ApplyAirAcceleration` treated
+`_input.Move.y < -0.1` as a deliberate air-brake ("press S"). That's a *player* camera-relative
+intent; AI feeds `Move` as a world-space direction (cameraYaw == null), so its `Move.y` is just the
+world-Z steering component — any bot fleeing or aiming toward -Z got air-braked mid-jump and
+dropped into the gap. Gated the brake on `cameraYaw != null`. Outcome: falls 34→19, and the
+first-ever Jump *completions* appeared — but still only a trickle.
+
+**5 — stabilized measurement + depth probe:** `MatchCount` 3→10 (3 matches was pure noise: the
+same code read 0.00 or 0.33 run-to-run), added `max_z_reached`. **Stable 10-match result:**
+`runner_win_rate=0.00 total_fallen=77 total_edge_usage=[Run=140, Jump=2] total_edge_attempts=
+[Jump=101] max_z_reached=60.6`.
+
+**Conclusion / the wall:** the earlier 0.33 readings were noise — true win_rate is 0.00. Runners
+*do* flee deep into the gauntlet (z=60.6) and *do* attempt jumps (101), but complete only ~2%
+(2/101), so fleeing into the parkour arena = death by falling (77 falls). **Jump execution
+reliability is the single lever gating win_rate** and it isn't cracked yet: needs a jump-landing
+observation (takeoff speed/position vs the gap, landing vs target node) to see whether bots take
+off too early, aim off-axis (steering jitter), or the `nodeArrivalRadius` (1.75m) is too tight to
+record near-misses. Two real bugs fixed and kept along the way (radial-flee-off-pad, air-brake
+misfire); measurement now trustworthy. Stopping the N-iteration batch here to report — next
+iteration is a focused jump-execution investigation, not a blind tweak.
+
+---
+
+## M4 loop — 1 — Runners flee into the arena instead of off the spawn pad
+
+**Baseline (loop start):** `runner_win_rate=0.00 speed_p90=8.00 total_stuck=0 total_fallen=10
+total_edge_usage=[Run=26]` — every match a <10s tagger sweep, no parkour, ~3 falls/match.
+
+**Diagnosis (structural, per M3 "stop-and-investigate" decision):** infection-tag cascade from the
+tight 2.5m spawn grid. `ParkourBotInput.ComputeFleePoint` fled *radially* to `pos + awayDir*10`,
+an off-map point; `Graph.NearestNode` snapped it to a platform-edge node, so runners marched off
+the spawn pad (the ~3 falls) instead of escaping into the corridor where their movement kit would
+buy survival. One tagger then cleared the packed remainder in seconds.
+
+**Change:** replaced radial flee with `FleeGoalNode` — runners now path to the graph node lying
+farthest in the away-from-threat direction (strictly-positive projection), guaranteeing an on-map
+goal inside the arena. Removed the now-dead `fleeDistance` field.
+
+**Metric outcome:** `runner_win_rate=0.00 -> 0.33` (one match survived the full 60s), matches no
+longer collapse (durations 59s/27s/27s vs 5-9s), Run traversals up (26 -> 68). **But** falls
+regressed hard (`total_fallen 10 -> 34`) and stuck appeared (`total_stuck 0 -> 11`).
+
+**Decision:** net-positive on the headline metric, so kept. New worst gap is edge *execution*:
+`total_edge_usage` is still `[Run=...]` only — runners flee into the corridor but walk off its
+drops/jumps (never pressing Jump) rather than traversing them, which is exactly the new falls, and
+jam at corridor ends (the stuck). Next iteration targets why no non-Run edge is ever executed.
+
+---
+
 ## M3 — Self-play harness built; first improvement cycle
 
 **Change:** Built the "self-playtest loop" from CLAUDE.md — `Assets/Tests/PlayMode/SelfPlayTests.cs`

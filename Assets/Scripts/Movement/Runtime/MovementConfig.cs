@@ -24,6 +24,7 @@ public sealed class MovementConfig : ScriptableObject
         public float skinWidth;
         public float maxHorizontalSpeed;
         public float slopeGravityInfluence;
+        public float steerRateDegrees; // how fast grounded velocity rotates toward input — preserves speed through turns
     }
 
     [Serializable]
@@ -49,6 +50,8 @@ public sealed class MovementConfig : ScriptableObject
         public float minSlideDuration;
         public float slideHopRetention;
         public float slideReentryCooldown;
+        public float airDiveForwardBoost; // mid-air slide: a one-shot forward lunge...
+        public float airDiveDownBoost;    // ...and a downward kick, to dive across/into gaps
     }
 
     [Serializable]
@@ -72,6 +75,7 @@ public sealed class MovementConfig : ScriptableObject
         public float jumpOutSpeed;
         public float jumpUpSpeed;
         public float minAirTimeBeforeHook;
+        public float slideDownSpeed; // you can't cling forever — hanging slides you slowly down the wall
     }
 
     [Serializable]
@@ -101,6 +105,8 @@ public sealed class MovementConfig : ScriptableObject
         public float climbSpeed;
         public float detachPushSpeed;
         public float entryMomentumRetention;
+        public float topDismountForwardSpeed; // launch off the top of the ladder, toward the platform
+        public float topDismountUpSpeed;      // ...and upward, to clear the wall onto it
     }
 
     [Serializable]
@@ -121,7 +127,7 @@ public sealed class MovementConfig : ScriptableObject
         acceleration = 55f,
         deceleration = 75f,
         airAcceleration = 26f,
-        airControlMultiplier = 0.5f,
+        airControlMultiplier = 0.9f, // more air strafe — A/D in the air moves you meaningfully
         airBrakeDampingRate = 3.5f,
         airBrakeReverseSpeed = 3f,
         maxSlopeAngleDegrees = 50f,
@@ -131,6 +137,7 @@ public sealed class MovementConfig : ScriptableObject
         skinWidth = 0.05f,
         maxHorizontalSpeed = 13f,
         slopeGravityInfluence = 1f,
+        steerRateDegrees = 720f,
     };
 
     public JumpSettings jump = new()
@@ -154,6 +161,8 @@ public sealed class MovementConfig : ScriptableObject
         minSlideDuration = 0.25f,
         slideHopRetention = 1f,
         slideReentryCooldown = 0.5f,
+        airDiveForwardBoost = 0.7f, // barely a nudge — the dive is mostly the pose + a little drop
+        airDiveDownBoost = 1f,
     };
 
     public WallRunSettings wallRun = new()
@@ -171,10 +180,11 @@ public sealed class MovementConfig : ScriptableObject
     public WallHookSettings wallHook = new()
     {
         detectionDistance = 0.8f,
-        maxHoldDuration = 1.2f,
-        jumpOutSpeed = 5f,
-        jumpUpSpeed = 7f,
+        maxHoldDuration = 1.6f,
+        jumpOutSpeed = 6f,
+        jumpUpSpeed = 7.5f,
         minAirTimeBeforeHook = 0.05f,
+        slideDownSpeed = 1.5f,
     };
 
     public MantleVaultSettings mantleVault = new()
@@ -183,7 +193,8 @@ public sealed class MovementConfig : ScriptableObject
         mantleMaxHeight = 2.2f,
         vaultMaxHeight = 1.1f,
         vaultMinApproachSpeed = 3f,
-        forwardCheckDistance = 0.6f,
+        forwardCheckDistance = 1f, // reach a bit further for the wall so E doesn't need you touching it
+
         mantleDuration = 0.35f,
         vaultDuration = 0.22f,
     };
@@ -201,15 +212,20 @@ public sealed class MovementConfig : ScriptableObject
         climbSpeed = 3.5f,
         detachPushSpeed = 3f,
         entryMomentumRetention = 0.5f,
+        topDismountForwardSpeed = 5f,
+        topDismountUpSpeed = 5.5f,
     };
 
     public SwingSettings swing = new()
     {
-        pumpAngularAcceleration = 2.2f,
-        pumpPhaseWindowDegrees = 25f,
-        releaseSpeedMultiplier = 1.05f,
-        maxAngularSpeed = 4.5f,
+        // Tuned up toward the design goal ("a well-timed release should be one of the fastest moves
+        // in the game"): a stronger pump builds speed faster and the release multiplier gives an
+        // extra kick, so a sprint-entry swing clears the chasm and launches you out ahead of sprint.
+        pumpAngularAcceleration = 4f,
+        pumpPhaseWindowDegrees = 30f,
+        releaseSpeedMultiplier = 1.3f,
+        maxAngularSpeed = 5.5f,
         damping = 0.02f,
-        grabRange = 1.2f,
+        grabRange = 1.5f,
     };
 }
