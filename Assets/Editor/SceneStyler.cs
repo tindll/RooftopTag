@@ -42,6 +42,8 @@ public static class SceneStyler
         for (int i = 0; i < theme.cloudCount; i++)
         {
             float length = Mathf.Lerp(theme.cloudLengthMin, theme.cloudLengthMax, (float)rng.NextDouble());
+            float width = Mathf.Lerp(theme.cloudWidthMin, theme.cloudWidthMax, (float)rng.NextDouble());
+            float thickness = Mathf.Lerp(theme.cloudThicknessMin, theme.cloudThicknessMax, (float)rng.NextDouble());
             float height = Mathf.Lerp(theme.cloudHeightMin, theme.cloudHeightMax, (float)rng.NextDouble());
             float placeAngle = (float)rng.NextDouble() * Mathf.PI * 2f;
             float placeDist = (float)rng.NextDouble() * theme.cloudDriftRadius;
@@ -53,7 +55,7 @@ public static class SceneStyler
             cloud.transform.SetParent(root.transform, false);
             cloud.transform.position = position;
             cloud.transform.rotation = Quaternion.Euler(0f, (float)rng.NextDouble() * 360f, 0f);
-            cloud.transform.localScale = new Vector3(length, 0.6f, theme.cloudWidth);
+            cloud.transform.localScale = new Vector3(length, thickness, width);
 
             var renderer = cloud.GetComponent<Renderer>();
             renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;

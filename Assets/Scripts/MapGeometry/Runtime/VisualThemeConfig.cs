@@ -74,11 +74,15 @@ public sealed class VisualThemeConfig : ScriptableObject
     public int cloudCount = 8;
     public float cloudHeightMin = 35f;
     public float cloudHeightMax = 55f;
-    public float cloudLengthMin = 40f;
-    public float cloudLengthMax = 90f;
-    public float cloudWidth = 14f;
-    public float cloudDriftSpeedMin = 0.4f;
-    public float cloudDriftSpeedMax = 1.2f;
+    public float cloudLengthMin = 30f;
+    public float cloudLengthMax = 110f;
+    public float cloudWidthMin = 8f;
+    public float cloudWidthMax = 26f;
+    /// <summary>Vertical scale — was a flat hardcoded 0.6, which read as paper-thin pancakes.</summary>
+    public float cloudThicknessMin = 3f;
+    public float cloudThicknessMax = 8f;
+    public float cloudDriftSpeedMin = 3f;
+    public float cloudDriftSpeedMax = 7f;
     /// <summary>Radius of the drift area centered on the map — a cloud that drifts past this wraps
     /// back around to the opposite edge instead of drifting away forever.</summary>
     public float cloudDriftRadius = 120f;
