@@ -1,7 +1,9 @@
 {
     "name": "Game.MapGeometry",
     "references": [
-        "Game.Movement"
+        "Game.Movement",
+        "Unity.RenderPipelines.Universal.Runtime",
+        "Unity.RenderPipelines.Core.Runtime"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
