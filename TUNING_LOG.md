@@ -3,6 +3,27 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Player facing decoupled from movement input (S no longer turns you around)
+
+**Report:** pressing S span the character 180° to face away from the camera instead of just
+backpedaling — same for pure A/D strafing, which faced the body sideways.
+
+**Root cause:** `CharacterMotor.UpdateFacing` always faced the camera-relative wish direction
+(`ComputeWishDirection()`), so the body's facing was slaved to WASD input rather than to the
+camera — W faced forward, S faced backward, A/D faced sideways, exactly like a "move in the
+direction you're pressing" controller, not a strafe one.
+
+**Fix:** for the local player (`cameraYaw != null`), `UpdateFacing` now always targets the flattened
+camera forward, full stop — movement input never rotates the body anymore. WASD is pure translation
+(forward/back/strafe); only the camera (mouse-look) turns the character. This also fixes lunge/tag
+reach, which uses `transform.forward` — a Tagger can now backpedal or circle while keeping the
+reach aimed at their target, instead of it spinning away on S. Bots (`cameraYaw == null`) are
+unchanged — they have no camera to aim with, so they still face their steering direction as before.
+
+**Verified:** compile-check clean, all 3 scenes rebuilt without error, full PlayMode suite 23/23
+passing (no existing test configures a non-null `cameraYaw`, so this only affects real player
+control, not bots/self-play). Needs your own feel-check like the other presentation changes.
+
 ## Movement audio feedback — wind + landing thump/squash
 
 **Change:** the movement spec calls for "wind audio scaling with velocity" and "landing effects" as

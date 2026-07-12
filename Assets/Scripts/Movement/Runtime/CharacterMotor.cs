@@ -1008,13 +1008,23 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void UpdateFacing(float dt)
     {
-        // Face where the player is STEERING (camera-relative input), not the resulting velocity.
-        // Velocity lags behind input through acceleration, so facing it made the body rotate to catch
-        // up a beat late — that's the "turning/aim feels laggy" disconnect. Facing the input points
-        // the body where you aim right away; with no input we keep facing the current motion.
-        Vector3 faceDir = ComputeWishDirection();
-        faceDir.y = 0f;
-        if (faceDir.sqrMagnitude < 0.0001f) faceDir = HorizontalVelocity;
+        Vector3 faceDir;
+        if (cameraYaw != null)
+        {
+            // Player: always face the camera's look direction, full stop — movement input never
+            // turns the body. WASD is pure translation (strafe left/right, backpedal on S) so a
+            // Tagger can keep a lunge/tag reach aimed at a target while circling or backing away,
+            // instead of spinning to face away from them the moment they hold S.
+            faceDir = Vector3.ProjectOnPlane(cameraYaw.forward, Vector3.up);
+        }
+        else
+        {
+            // Bots have no camera to aim with, so they still face where they're steering (the
+            // world-space wish direction) — unchanged from before this player-only fix.
+            faceDir = ComputeWishDirection();
+            faceDir.y = 0f;
+            if (faceDir.sqrMagnitude < 0.0001f) faceDir = HorizontalVelocity;
+        }
         if (faceDir.sqrMagnitude < 0.04f) return;
 
         Quaternion target = Quaternion.LookRotation(faceDir.normalized, Vector3.up);
