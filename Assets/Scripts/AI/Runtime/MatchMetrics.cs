@@ -27,6 +27,14 @@ public sealed class MatchMetrics
     public float MatchDuration;
     /// <summary>Farthest +Z any agent reached this match — the corridor runs along +Z, so this shows how deep into the gap gauntlet (gap0 z=36, gap1 z=43, gap2 z=52) runners actually get.</summary>
     public float MaxZReached;
+    /// <summary>
+    /// Fraction of the agents that STARTED the match as Runner and were still Runner (never tagged)
+    /// at round end. A secondary metric alongside <see cref="Winner"/>'s strict all-or-nothing win:
+    /// a Runner-win requires every single Runner to survive independently, which compounds brutally
+    /// across 10 agents (even a 90% per-Runner survival chance only yields ~35% for all ten), so
+    /// win_rate alone gave no gradient to tune against once it hit 0. This gives partial credit.
+    /// </summary>
+    public float RunnerSurvivalFraction;
 
     public void RecordEdgeUsage(ParkourEdgeType type)
     {

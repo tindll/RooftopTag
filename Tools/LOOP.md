@@ -13,12 +13,27 @@ batch `METRIC` lines. Editor GUI must be CLOSED (project lock) — `taskkill //I
 first if a run errors with a lock.
 
 ## Target bands (from CLAUDE.md / TUNING_LOG.md)
-- `runner_win_rate` **0.40–0.60** at Skilled difficulty.
+- `runner_avg_survival` **0.50–0.70** at Skilled difficulty — the primary tuning target now (see
+  "runner_win_rate wall" below for why).
+- `runner_win_rate` tracked, not primarily tuned against — a strict all-or-nothing metric (every
+  single Runner must survive independently) that compounds too harshly across 10 agents to give a
+  usable gradient; CLAUDE.md's 0.40–0.60 band for it is realistically a human-playtest target, not
+  a bot-self-play one. Still logged for visibility; a healthy `runner_avg_survival` should pull it
+  off zero over time even if it never hits the full band via bots alone.
 - `total_edge_usage` — every reachable edge type used at least a few times per batch
   (Run, Jump, WallRun, Vault, Mantle, Climb, Ladder, Swing). Baseline uses **Run only**.
 - `total_stuck` **0**.
 - `total_fallen` — low single digits per match at most.
 - `speed_p90` ~ sprint speed (8 m/s), not pinned to the 13 m/s cap.
+
+### runner_win_rate wall (resolved 2026-07-12)
+Earlier loops (see "M3 self-play loop — 1/2" below) fixed real structural issues (spawn clustering,
+a late-game-phase test confound) but `runner_win_rate` stayed at 0.00 for 3 straight batches — the
+LOOP.md stop condition triggered. Root cause: a Runner-win requires ALL 10 Runners to survive
+independently, so even a 90% per-agent survival chance only yields ~35% for all ten (and the band's
+low end, 40%, needs ~95% per-agent survival — a very high bar). Decision (user call): keep
+`runner_win_rate` as a tracked/reported number but tune against the new `runner_avg_survival`
+metric instead, which has an actual gradient to iterate against.
 
 ## Baseline (this loop's start)
 `matches=3 runner_win_rate=0.00 speed_p50=4.09 speed_p90=8.00 total_stuck=0 total_fallen=10

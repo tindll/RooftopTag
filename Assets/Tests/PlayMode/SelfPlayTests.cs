@@ -121,6 +121,10 @@ public sealed class SelfPlayTests
         // Let RoundController.Start() assign roles before the match clock starts.
         yield return null;
 
+        // Snapshot who started as Runner — role conversion only ever goes Runner -> Tagger, never
+        // back, so checking which of these are still Role.Runner at round end gives survival.
+        var originalRunners = agents.Where(a => a.Role == Role.Runner).ToList();
+
         var lastCheckPositions = new Dictionary<TagAgent, Vector3>();
         foreach (TagAgent agent in agents) lastCheckPositions[agent] = agent.transform.position;
         var countedStuck = new HashSet<TagAgent>();
@@ -168,6 +172,9 @@ public sealed class SelfPlayTests
 
         metrics.MatchDuration = elapsed;
         metrics.Winner = controller.ResultMessage;
+        metrics.RunnerSurvivalFraction = originalRunners.Count > 0
+            ? originalRunners.Count(a => a.Role == Role.Runner) / (float)originalRunners.Count
+            : 0f;
 
         // Clean up everything this match created (geometry + agents + controller), regardless of
         // parenting — the map-geometry helpers create top-level objects with no shared root, so a
@@ -183,7 +190,8 @@ public sealed class SelfPlayTests
         string edgeUsage = string.Join(", ", metrics.EdgeUsageCounts.Select(kv => $"{kv.Key}={kv.Value}"));
         string ttft = metrics.TimeToFirstTag.HasValue ? $"{metrics.TimeToFirstTag.Value:0.00}" : "none";
         Debug.Log($"METRIC selfplay_match={matchIndex} winner='{metrics.Winner}' duration={metrics.MatchDuration:0.00} " +
-                  $"time_to_first_tag={ttft} stuck={metrics.StuckAgentCount} fallen={metrics.FallCount} edges=[{edgeUsage}]");
+                  $"time_to_first_tag={ttft} stuck={metrics.StuckAgentCount} fallen={metrics.FallCount} " +
+                  $"runner_survival={metrics.RunnerSurvivalFraction:0.00} edges=[{edgeUsage}]");
     }
 
     private static void LogBatchSummary(IReadOnlyList<MatchMetrics> results)
@@ -191,6 +199,9 @@ public sealed class SelfPlayTests
         int runnerWins = results.Count(m => m.Winner.Contains("Runners win"));
         int taggerWins = results.Count(m => m.Winner.Contains("Taggers win"));
         float runnerWinRate = results.Count > 0 ? runnerWins / (float)results.Count : 0f;
+        // Secondary metric alongside the strict all-or-nothing runner_win_rate above — see
+        // MatchMetrics.RunnerSurvivalFraction for why win_rate alone gave no tuning gradient.
+        float avgRunnerSurvival = results.Count > 0 ? results.Average(m => m.RunnerSurvivalFraction) : 0f;
 
         var allSpeeds = results.SelectMany(m => m.SpeedSamples).OrderBy(s => s).ToList();
         float p50 = Percentile(allSpeeds, 0.5f);
@@ -219,6 +230,7 @@ public sealed class SelfPlayTests
         int totalFallen = results.Sum(m => m.FallCount);
 
         Debug.Log($"METRIC selfplay_batch matches={results.Count} runner_win_rate={runnerWinRate:0.00} " +
+                  $"runner_avg_survival={avgRunnerSurvival:0.00} " +
                   $"speed_p50={p50:0.00} speed_p90={p90:0.00} total_stuck={totalStuck} total_fallen={totalFallen} " +
                   $"total_edge_usage=[{edgeUsageSummary}] total_edge_attempts=[{edgeAttemptSummary}] " +
                   $"max_z_reached={results.Max(m => m.MaxZReached):0.0} " +

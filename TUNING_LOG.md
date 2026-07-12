@@ -3,7 +3,31 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
-## Wind audio removed entirely
+## Added runner_avg_survival metric (user decision on the win-rate wall) — reveals a sharper finding
+
+**Decision:** per the earlier-flagged design question, added `MatchMetrics.RunnerSurvivalFraction`
+(fraction of agents that started as Runner and were still Runner at round end) alongside the
+existing strict `runner_win_rate`, both logged now (`selfplay_batch runner_win_rate=... runner_avg_
+survival=...`). `Tools/LOOP.md` updated to tune against `runner_avg_survival` (target 0.50-0.70)
+going forward, with `runner_win_rate` kept only for visibility.
+
+**First measurement is worse than the old theory predicted:** `runner_avg_survival=0.00` across all
+10 batch matches — not partial credit, literally every single Runner got tagged in every single
+match. The earlier "compounding probability" theory (even 90% per-Runner survival only yields ~35%
+all-survive) implied a healthy per-Runner survival rate hiding behind a harsh AND-of-ten win
+condition — but 0.00 average survival means there's no hidden healthy rate; Runners aren't
+individually surviving at any real rate in this test scenario at all.
+
+**Likely real root cause, found while investigating (not yet acted on):** `SelfPlayTests` and the
+actual `TagArena.unity` scene both build their geometry from the same
+`TagArenaMapGeometry.BuildMainCorridor` — a single linear corridor, not a branching map. CLAUDE.md's
+map design explicitly calls for "no dead ends... every area reachable and leavable by at least two
+parkour routes," which a single corridor cannot satisfy — there's nowhere for a Runner to double
+back or juke, only forward or caught. Separately, `PlaygroundBuilder.BuildTagArena` builds the real
+scene as a 3-agent "chase me" mode (1 player + 2 bot Taggers), not the 12-agent 2-Tagger/10-Runner
+configuration self-play tests — so self-play's whole scenario may not correspond to any actual
+playable mode as currently built. This is a map/mode-design gap, not a bot-tuning problem; flagged
+for a decision rather than guessed at further.
 
 **Report:** the AudioLowPassFilter-based redo from the previous entry was worse, not better —
 described directly as "ear rape." Two attempts at procedural wind synthesis in a row have both
