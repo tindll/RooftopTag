@@ -20,7 +20,8 @@ public sealed class RoundController : MonoBehaviour
     private readonly List<TagAgent> _agents = new();
     private readonly Dictionary<TagAgent, (Vector3 position, Quaternion rotation)> _spawnStates = new();
 
-    // An agent below this height has fallen off the map: Runners are eliminated, Taggers respawn.
+    // An agent below this height has fallen off the map: it respawns at its start, and a Runner is
+    // converted to a Tagger on the way back (the map itself "tags" you).
     private const float FallResetY = -15f;
     private readonly Dictionary<TagAgent, TagAgent> _taggerClaims = new();
     private TagAgent? _localPlayerAgent;
@@ -67,7 +68,7 @@ public sealed class RoundController : MonoBehaviour
 
         foreach (TagAgent agent in _agents)
         {
-            if (agent == self || agent.Role != Role.Runner || agent.IsEliminated) continue;
+            if (agent == self || agent.Role != Role.Runner) continue;
             float sqrDist = (agent.transform.position - self.transform.position).sqrMagnitude;
 
             if (sqrDist < nearestAnySqrDist)
@@ -104,7 +105,7 @@ public sealed class RoundController : MonoBehaviour
 
         foreach (TagAgent agent in _agents)
         {
-            if (agent == self || agent.Role != targetRole || agent.IsEliminated) continue;
+            if (agent == self || agent.Role != targetRole) continue;
             float sqrDist = (agent.transform.position - self.transform.position).sqrMagnitude;
             if (sqrDist < nearestSqrDist)
             {
@@ -150,10 +151,6 @@ public sealed class RoundController : MonoBehaviour
 
         for (int i = 0; i < shuffled.Count; i++)
         {
-            // Bring back anyone eliminated last round (a Runner who fell off) before re-rolling their
-            // spawn/role — otherwise a Runner who died once would stay dead across every restart.
-            shuffled[i].Revive();
-
             (Vector3 position, Quaternion rotation) = _spawnStates[shuffled[i]];
             bool isTagger = i < _config.taggerCount;
 
@@ -207,28 +204,19 @@ public sealed class RoundController : MonoBehaviour
         int runnersRemaining = 0;
         foreach (TagAgent agent in _agents)
         {
-            // Already out of the round (a Runner who fell): skip entirely — no respawn, no speed
-            // multiplier, and crucially not counted toward runnersRemaining below.
-            if (agent.IsEliminated) continue;
-
             if (agent.transform.position.y < FallResetY
                 && _spawnStates.TryGetValue(agent, out (Vector3 pos, Quaternion rot) spawn))
             {
-                if (agent.Role == Role.Runner)
-                {
-                    // A Runner who falls off the map dies — eliminated for the rest of the round (no
-                    // respawn, no longer counted, no longer targetable or on the minimap). If this was
-                    // the last Runner, the runnersRemaining == 0 check below ends the round this same
-                    // frame with the existing "Taggers win" result.
-                    agent.Eliminate();
-                    continue;
-                }
-
-                // Taggers, by contrast, auto-respawn at their start — there's nothing below the
-                // rooftop gaps to land on, and a permanently-lost Tagger would just stall the round.
+                // Anyone (bot or player) who falls off the map respawns at their start — there's
+                // nothing below the rooftop gaps to land on. A Runner is also converted to a Tagger
+                // on the way back: falling off reads as "the map itself tagged you". A Tagger keeps
+                // its role. If this converts the last Runner, the runnersRemaining == 0 check below
+                // ends the round this same frame with the existing "Taggers win" result.
+                Role respawnRole = agent.Role == Role.Runner ? Role.Tagger : agent.Role;
                 agent.Motor.ResetState(spawn.pos, spawn.rot);
-                // Brief grace on respawn so you don't reappear right into another tagger's reach.
-                agent.SetRole(agent.Role, startGrace: true);
+                // Brief grace on respawn so you don't reappear right into a tagger's reach (and, for a
+                // freshly-converted Runner, so the conversion telegraphs the same way a normal tag does).
+                agent.SetRole(respawnRole, startGrace: true);
             }
 
             agent.Motor.ExternalSpeedMultiplier = agent.Role == Role.Tagger ? multiplier : 1f;
@@ -267,7 +255,7 @@ public sealed class RoundController : MonoBehaviour
 
         int runnersRemaining = 0;
         foreach (TagAgent agent in _agents)
-            if (agent.Role == Role.Runner && !agent.IsEliminated) runnersRemaining++;
+            if (agent.Role == Role.Runner) runnersRemaining++;
         GUI.Label(new Rect(pad, pad + 26, 320, 28), $"Runners remaining: {runnersRemaining}", style);
 
         if (_localPlayerAgent != null)
@@ -404,7 +392,7 @@ public sealed class RoundController : MonoBehaviour
 
         foreach (TagAgent agent in _agents)
         {
-            if (agent == _localPlayerAgent || agent.IsEliminated) continue; // eliminated Runners drop off the minimap
+            if (agent == _localPlayerAgent) continue;
 
             Vector3 offset = agent.transform.position - playerPos;
             Vector2 mapOffset = new(offset.x * worldToMinimapScale, -offset.z * worldToMinimapScale);

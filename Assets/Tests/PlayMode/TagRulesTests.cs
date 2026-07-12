@@ -124,13 +124,13 @@ public sealed class TagRulesTests
     }
 
     [UnityTest]
-    public IEnumerator RoundController_RunnerFallsOffMap_EliminatedAndTaggersWin()
+    public IEnumerator RoundController_RunnerFallsOffMap_ConvertedToTaggerAndRespawns()
     {
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
 
         var config = ScriptableObject.CreateInstance<TagRulesConfig>();
-        config.taggerCount = 1; // 2 agents → exactly one Runner, so dropping it empties the Runner pool
+        config.taggerCount = 1; // 2 agents → exactly one Runner, so converting it empties the Runner pool
 
         var controllerGo = new GameObject("RoundController");
         controllerGo.transform.SetParent(_sceneRoot.transform, false);
@@ -145,18 +145,70 @@ public sealed class TagRulesTests
         yield return null; // RoundController.Start() assigns roles
         yield return new WaitForFixedUpdate();
 
-        // Teleport the sole Runner far below the fall threshold and let RoundController.Update catch it.
+        // Capture the sole Runner (and its spawn), then drop it far below the fall threshold and let
+        // RoundController.Update catch it.
         TagAgent runner = a.Role == Role.Runner ? a : b;
+        Vector3 spawnPos = runner.transform.position;
         runner.Motor.ResetState(new Vector3(0f, -100f, 0f), Quaternion.identity);
 
-        yield return null; // RoundController.Update runs the fall check → Eliminate → round ends this frame
-        yield return null;
+        yield return null; // RoundController.Update runs the fall check → convert to Tagger + respawn
+        yield return new WaitForFixedUpdate();
 
-        Debug.Log($"METRIC runner_fall_result='{controller.ResultMessage}' eliminated={runner.IsEliminated}");
-        Assert.IsTrue(runner.IsEliminated, "A Runner that falls off the map should be eliminated.");
-        Assert.IsFalse(runner.gameObject.activeSelf, "An eliminated Runner should be deactivated, not respawned.");
-        Assert.IsTrue(controller.IsRoundOver, "Eliminating the last Runner should end the round.");
+        Debug.Log($"METRIC runner_fall_result='{controller.ResultMessage}' role={runner.Role} " +
+                  $"active={runner.gameObject.activeSelf} respawn_dist={Vector3.Distance(runner.transform.position, spawnPos):0.00}");
+        // New behavior (replaces elimination): a Runner who falls off the map is converted to a Tagger
+        // and respawned at its start — NOT deactivated.
+        Assert.AreEqual(Role.Tagger, runner.Role, "A Runner that falls off the map should be converted to a Tagger.");
+        Assert.IsTrue(runner.gameObject.activeSelf, "A converted Runner should stay active (respawned, not deactivated).");
+        Assert.Less(Vector3.Distance(runner.transform.position, spawnPos), 2f, "A converted Runner should respawn back near its spawn point.");
+        // Same win-condition mechanism as before, now reached via role-conversion: converting the last
+        // Runner leaves zero Runners, so the round still ends "Taggers win" this same frame.
+        Assert.IsTrue(controller.IsRoundOver, "Converting the last Runner to a Tagger should end the round.");
         StringAssert.Contains("Taggers win", controller.ResultMessage);
+    }
+
+    [UnityTest]
+    public IEnumerator RoundController_TaggerFallsOffMap_RespawnsAndKeepsRole()
+    {
+        // Regression (user report): "when I'm a tagger and fall off the map, I just keep falling, I
+        // don't respawn or anything". A Tagger who drops below the fall threshold must be respawned at
+        // its start (keeping its role), not left falling.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(40f, 1f, 40f));
+
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.taggerCount = 2; // 3 agents → 2 Taggers, 1 Runner, so the round stays live after a Tagger falls
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform, false);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        controller.Configure(config);
+
+        (_, _, TagAgent a, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f));
+        (_, _, TagAgent b, _) = CreateTagAgent(new Vector3(8f, 1.1f, 0f));
+        (_, _, TagAgent c, _) = CreateTagAgent(new Vector3(16f, 1.1f, 0f));
+        controller.RegisterAgent(a, isLocalPlayer: false);
+        controller.RegisterAgent(b, isLocalPlayer: false);
+        controller.RegisterAgent(c, isLocalPlayer: false);
+
+        yield return null; // RoundController.Start() assigns roles
+        yield return new WaitForFixedUpdate();
+
+        TagAgent tagger = a.Role == Role.Tagger ? a : b.Role == Role.Tagger ? b : c;
+        Vector3 spawnPos = tagger.transform.position;
+        tagger.Motor.ResetState(new Vector3(0f, -100f, 0f), Quaternion.identity);
+
+        yield return null; // RoundController.Update runs the fall check → respawn
+        yield return new WaitForFixedUpdate();
+
+        Debug.Log($"METRIC tagger_fall_result role={tagger.Role} active={tagger.gameObject.activeSelf} " +
+                  $"y={tagger.transform.position.y:0.0} respawn_dist={Vector3.Distance(tagger.transform.position, spawnPos):0.00} " +
+                  $"round_over={controller.IsRoundOver}");
+        Assert.Greater(tagger.transform.position.y, -15f, "A fallen Tagger should be respawned above the fall threshold, not left falling.");
+        Assert.Less(Vector3.Distance(tagger.transform.position, spawnPos), 3f, "A fallen Tagger should respawn back near its spawn point.");
+        Assert.AreEqual(Role.Tagger, tagger.Role, "A fallen Tagger should keep its role after respawning.");
+        Assert.IsTrue(tagger.gameObject.activeSelf, "A fallen Tagger should remain active after respawning.");
+        Assert.IsFalse(controller.IsRoundOver, "A Runner still remains, so the round should not be over.");
     }
 
     [UnityTest]

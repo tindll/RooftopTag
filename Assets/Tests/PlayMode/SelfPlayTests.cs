@@ -182,10 +182,11 @@ public sealed class SelfPlayTests
 
         metrics.MatchDuration = elapsed;
         metrics.Winner = controller.ResultMessage;
-        // A Runner who fell off the map is eliminated (still Role.Runner, but IsEliminated) — it did
-        // NOT survive, so exclude it from the survivor count.
+        // A Runner who fell off the map is converted to a Tagger (the map "tags" them), so it no
+        // longer reads as Role.Runner — counting those still holding Role.Runner already excludes
+        // both tagged and fallen runners from the survivor count.
         metrics.RunnerSurvivalFraction = originalRunners.Count > 0
-            ? originalRunners.Count(a => a.Role == Role.Runner && !a.IsEliminated) / (float)originalRunners.Count
+            ? originalRunners.Count(a => a.Role == Role.Runner) / (float)originalRunners.Count
             : 0f;
 
         // Clean up everything this match created (geometry + agents + controller), regardless of

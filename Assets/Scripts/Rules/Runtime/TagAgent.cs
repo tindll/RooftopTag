@@ -91,16 +91,6 @@ public sealed class TagAgent : MonoBehaviour
 
     public Role Role { get; private set; } = Role.Runner;
 
-    /// <summary>
-    /// A Runner who falls off the map is eliminated for the rest of the round: <see cref="Eliminate"/>
-    /// deactivates the GameObject so it stops simulating, rendering, colliding, and being targetable —
-    /// its Collider, Rigidbody, and its own Update/FixedUpdate all switch off with the GameObject. It
-    /// stays registered with the <see cref="RoundController"/> so a round restart can bring it back via
-    /// <see cref="Revive"/>. Taggers are never eliminated (they auto-respawn instead), so in practice
-    /// this only ever applies to Runners.
-    /// </summary>
-    public bool IsEliminated { get; private set; }
-
     public bool IsInGrace => _graceRemaining > 0f;
     public float LungeCooldownRemaining => Mathf.Max(0f, _lungeCooldownRemaining);
     public CharacterMotor Motor => _motor;
@@ -250,24 +240,6 @@ public sealed class TagAgent : MonoBehaviour
         Role = role;
         if (startGrace) _graceRemaining = _config.conversionGraceDuration;
         UpdateColor();
-    }
-
-    /// <summary>Removes the agent from play for the rest of the round. Deactivating the GameObject also
-    /// disables its Collider, Rigidbody, and every per-frame callback, so nothing else needs to
-    /// special-case it beyond the RoundController's own <see cref="IsEliminated"/> skips.</summary>
-    public void Eliminate()
-    {
-        if (IsEliminated) return;
-        IsEliminated = true;
-        gameObject.SetActive(false);
-    }
-
-    /// <summary>Reverses <see cref="Eliminate"/> on a round restart so a Runner who died last round returns to play.</summary>
-    public void Revive()
-    {
-        if (!IsEliminated) return;
-        IsEliminated = false;
-        gameObject.SetActive(true);
     }
 
     public void TryLunge()
