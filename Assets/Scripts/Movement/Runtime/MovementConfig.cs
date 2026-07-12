@@ -140,6 +140,10 @@ public sealed class MovementConfig : ScriptableObject
 
         // Window after attach during which release input is ignored, so the grab press can't instantly bail.
         public float attachReleaseGraceSeconds;
+
+        // Max polar angle (degrees) the bob may reach, measured from straight-down. 90 = horizontal;
+        // slightly above allows an aggressive rim without letting the bob pump up over the pivot.
+        public float maxSwingAngleDegrees;
     }
 
     public GroundSettings ground = new()
@@ -235,7 +239,7 @@ public sealed class MovementConfig : ScriptableObject
 
     public LadderSettings ladder = new()
     {
-        climbSpeed = 3.5f,
+        climbSpeed = 9f, // was 3.5 — well under sprint speed (8); user wants ladders to feel "way faster"
         detachPushSpeed = 3f,
         entryMomentumRetention = 0.5f,
         // Off-the-top launch, tuned down from 5 / 5.5: it read as "flying off like a big jump".
@@ -263,5 +267,6 @@ public sealed class MovementConfig : ScriptableObject
         releaseSpeedMultiplier = 1.15f,
         jumpReleaseBonus = 1.5f,
         attachReleaseGraceSeconds = 0.15f,
+        maxSwingAngleDegrees = 95f,
     };
 }

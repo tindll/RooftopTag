@@ -158,6 +158,9 @@ public sealed class CharacterMotor : MonoBehaviour
     public void ResetState(Vector3 position, Quaternion rotation)
     {
         _currentLadder = null;
+        // Release the rope claim before clearing, or a hard reset would leak a permanent claim that
+        // locks the swing out for the rest of the match.
+        _currentSwing?.ReleaseClaim(this);
         _currentSwing = null;
         _swingVelocity = Vector3.zero;
         _swingGrace = 0f;
@@ -957,6 +960,7 @@ public sealed class CharacterMotor : MonoBehaviour
     {
         if (_currentSwing is null)
         {
+            _currentSwing?.ReleaseClaim(this); // no-op here (already null), covered for completeness
             _state = MotorState.Airborne;
             return;
         }
@@ -989,6 +993,35 @@ public sealed class CharacterMotor : MonoBehaviour
         Vector3 onSphere = pivot + (transform.position - pivot).normalized * length;
         _rb.MovePosition(onSphere);
 
+        // Height cap: the bob may not pump past maxSwingAngleDegrees of polar angle from straight-down
+        // (90 = horizontal; a bit above lets an aggressive rim ride without flipping over the top).
+        Vector3 cappedDir = (onSphere - pivot).normalized;
+        float polarAngle = Vector3.Angle(Vector3.down, cappedDir);
+        if (polarAngle > config.swing.maxSwingAngleDegrees)
+        {
+            // Azimuth = the horizontal (compass) direction of the rope. Degenerate straight-up case
+            // (bob directly over the pivot): the horizontal projection vanishes, so pick any axis.
+            Vector3 azimuth = Vector3.ProjectOnPlane(cappedDir, Vector3.up);
+            azimuth = azimuth.sqrMagnitude > 1e-6f ? azimuth.normalized : Vector3.forward;
+
+            // Rotate the rope back to exactly the cap angle, staying in the vertical plane that
+            // contains this azimuth, and re-snap the bob onto that clamped cone.
+            float capRad = config.swing.maxSwingAngleDegrees * Mathf.Deg2Rad;
+            Vector3 clampedDir = Vector3.down * Mathf.Cos(capRad) + azimuth * Mathf.Sin(capRad);
+            Vector3 clampedPos = pivot + clampedDir * length;
+            _rb.MovePosition(clampedPos);
+
+            // Tangent pointing toward INCREASING polar angle at the cap: d(ropeDir)/dθ = up*sinθ +
+            // azimuth*cosθ. Built from the cap angle directly (not ProjectOnPlane(azimuth, ropeDir),
+            // whose normalization flips sign past 90° — which our ~95° cap exceeds). Removing the
+            // velocity component along it stops further climbing while keeping the orbital
+            // (perpendicular) component, so you can still swing AROUND the rim.
+            Vector3 climbDir = (Vector3.up * Mathf.Sin(capRad) + azimuth * Mathf.Cos(capRad)).normalized;
+            if (Vector3.Dot(_swingVelocity, climbDir) > 0f)
+                _swingVelocity -= Vector3.Project(_swingVelocity, climbDir);
+            _rb.linearVelocity = _swingVelocity;
+        }
+
         // Rope-slack limitation: slack (the bob going over the top / the rope going taut-to-slack) is
         // not modeled — with maxTangentialSpeed=12 the bob can't reach the ~12.5 m/s needed to go over
         // the top at L=4, so it stays a well-behaved taut pendulum in practice.
@@ -1009,6 +1042,7 @@ public sealed class CharacterMotor : MonoBehaviour
         {
             if (jumpRelease) releaseVel += Vector3.up * config.swing.jumpReleaseBonus;
             _rb.linearVelocity = releaseVel;
+            _currentSwing.ReleaseClaim(this); // free the rope for the next user before clearing
             _currentSwing = null;
             _state = MotorState.Airborne;
             SwingReleased?.Invoke();
@@ -1032,6 +1066,9 @@ public sealed class CharacterMotor : MonoBehaviour
 
             if (_currentSwing is null && col.TryGetComponent(out ChainSwingInteractable swing))
             {
+                // One user per rope: if someone else holds this swing, skip it and keep scanning the
+                // other overlap results for a free swing/ladder.
+                if (!swing.TryClaim(this)) continue;
                 AttachToSwing(swing);
                 return true;
             }

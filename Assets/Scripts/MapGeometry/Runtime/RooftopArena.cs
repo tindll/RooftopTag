@@ -286,17 +286,8 @@ public static class RooftopArena
             new Vector3(1f, 0.3f, 12f),
             TagArenaMapGeometry.SurfaceRole.WallBody);
 
-        // Thin chain visual from the beam down to the grab point (collider stripped so only the live
-        // trigger the interactable builder adds detects the grab).
-        var chainGo = new GameObject("SwingChainVisual");
-        chainGo.transform.SetParent(parent, false);
-        chainGo.transform.position = pivot + Vector3.down * (length * 0.5f);
-        chainGo.transform.localScale = new Vector3(0.1f, length, 0.1f);
-        var chainCube = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        chainCube.name = "SwingChainSurface";
-        chainCube.transform.SetParent(chainGo.transform, false);
-        Object.DestroyImmediate(chainCube.GetComponent<BoxCollider>());
-        chainCube.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.WallBody);
+        // The chain itself is drawn at runtime by ChainSwingInteractable's LineRenderer (which also
+        // follows the swinger), so no static chain visual is emitted here — only the overhead beam.
 
         return (pivot, length, exitDir);
     }

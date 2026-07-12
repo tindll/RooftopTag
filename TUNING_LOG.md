@@ -3,6 +3,28 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Swing polish — follow rope visual, single occupancy, height cap (2026-07-12, same session)
+
+**Feel-test round 2:** rope visual never moves with the swinger (there was none — only an editor
+gizmo + a static chain box); one rope should hold one user at a time; pumping could climb ABOVE the
+pivot ("a bit too crazy").
+
+**Changes:** `ChainSwingInteractable` now owns a runtime `LineRenderer` rope — pivot→occupant hands
+while held, straight-down rest hang otherwise (static chain-box visuals removed from the builders);
+claim/release occupancy (`TryClaim`/`ReleaseClaim`, destroyed-occupant-safe) gates attach, released
+on E/Jump release AND `ResetState` (a round reset would otherwise leak a permanent claim and brick
+the rope); polar-angle cap `swing.maxSwingAngleDegrees = 95` — position clamps onto the cap cone
+and the climbing velocity component is cancelled while the orbital component is preserved (you can
+still swing around the rim, just not over the top). Subtle math note: the climb direction is built
+analytically (`up·sinθ + azimuth·cosθ`) because the naive projection formula flips sign past 90°,
+which a 95° cap crosses.
+
+**Measured:** aggressive 6s pump maxes at 49° polar / 4.6m height (pivot at 8m) — cap holds with
+huge margin under test pumping; release speeds unchanged (11.93 / 8.00 E). One test iteration: the
+occupancy test's second player fell out of grab range while its grabs were being denied (freefall
+during the denial loop) — test now teleports it back before the re-attach; implementation was
+correct. 19/19 movement suite; self-play stuck 103 ≤ baseline.
+
 ## Swing-rope rework — omnidirectional, E-release, momentum-true launches (2026-07-12)
 
 **Feel-test report:** E should release (was a no-op — Jump only); the rope only swung in one

@@ -374,6 +374,133 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
+    public IEnumerator Swing_SecondPlayerCannotAttachWhileOccupied()
+    {
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -20f, 0f), new Vector3(300f, 1f, 300f));
+
+        const float length = 4f;
+        Vector3 pivot = new(0f, 8f, 0f);
+        ChainSwingInteractable swing = CreateSwing(_sceneRoot.transform, pivot, length);
+
+        float startAngleRad = 30f * Mathf.Deg2Rad;
+        Vector3 startPos = pivot + new Vector3(Mathf.Sin(startAngleRad), -Mathf.Cos(startAngleRad), 0f) * length;
+        (GameObject goA, CharacterMotor motorA, ScriptedCharacterInput inputA) = CreatePlayer(startPos);
+
+        inputA.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnSwing, motorA.CurrentState, "Player A should attach to the unclaimed swing.");
+        Assert.AreSame(motorA, swing.Occupant, "Occupant should be player A's motor after A attaches.");
+
+        // Player B, spawned within grab range of the same chain, should never be able to attach
+        // while A holds the claim, even when hammering Interact.
+        (GameObject goB, CharacterMotor motorB, ScriptedCharacterInput inputB) = CreatePlayer(startPos + new Vector3(0.3f, 0f, 0f));
+
+        float elapsed = 0f;
+        while (elapsed < 0.5f)
+        {
+            inputB.PressInteract();
+            yield return new WaitForFixedUpdate();
+            elapsed += Time.fixedDeltaTime;
+            Assert.AreNotEqual(MotorState.OnSwing, motorB.CurrentState, "Player B should not be able to attach to a swing already occupied by player A.");
+        }
+
+        Assert.IsTrue(swing.IsOccupied, "Swing should still be occupied by A.");
+        Assert.AreSame(motorA, swing.Occupant, "Occupant should still be A while A remains attached.");
+
+        // A releases; the claim should free up and B should now be able to attach.
+        inputA.PressJump();
+        yield return RunForSeconds(0.1f);
+        Assert.AreNotEqual(MotorState.OnSwing, motorA.CurrentState, "A should have released the swing.");
+        Assert.IsFalse(swing.IsOccupied, "Swing should no longer be occupied after A releases.");
+
+        // B has been in freefall the whole time its grabs were denied (~0.5s ≈ 1.2m+), so it has
+        // dropped below the 1.2m grab range by now — teleport it back beside the chain before the
+        // re-attach attempt; this test is about the CLAIM freeing up, not about B's air time.
+        motorB.ResetState(startPos + new Vector3(0.3f, 0f, 0f), Quaternion.identity);
+        yield return new WaitForFixedUpdate();
+        inputB.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnSwing, motorB.CurrentState, "B should now be able to attach after A released the claim.");
+
+        AssertNoPhysicsExplosion(motorA);
+        AssertNoPhysicsExplosion(motorB);
+    }
+
+    [UnityTest]
+    public IEnumerator Swing_ReleaseClearsOccupancy_OnReset()
+    {
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -20f, 0f), new Vector3(300f, 1f, 300f));
+
+        const float length = 4f;
+        Vector3 pivot = new(0f, 8f, 0f);
+        ChainSwingInteractable swing = CreateSwing(_sceneRoot.transform, pivot, length);
+
+        float startAngleRad = 30f * Mathf.Deg2Rad;
+        Vector3 startPos = pivot + new Vector3(Mathf.Sin(startAngleRad), -Mathf.Cos(startAngleRad), 0f) * length;
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(startPos);
+
+        input.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should attach to the swing when in range and interacting.");
+        Assert.IsTrue(swing.IsOccupied, "Precondition: swing should be occupied after attaching.");
+
+        // Regression test: a round reset used to leak a permanent claim, bricking the rope for
+        // every subsequent round because IsOccupied never went back to false.
+        motor.ResetState(new Vector3(50f, 1.1f, 50f), Quaternion.identity);
+        yield return new WaitForFixedUpdate();
+
+        Assert.IsFalse(swing.IsOccupied, "ResetState should release any swing claim the motor was holding.");
+        Assert.IsNull(swing.Occupant, "Occupant should be cleared after ResetState.");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
+    public IEnumerator Swing_CannotExceedMaxAngle()
+    {
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -20f, 0f), new Vector3(300f, 1f, 300f));
+
+        const float length = 4f;
+        Vector3 pivot = new(0f, 8f, 0f);
+        ChainSwingInteractable swing = CreateSwing(_sceneRoot.transform, pivot, length);
+
+        float startAngleRad = 30f * Mathf.Deg2Rad;
+        Vector3 startPos = pivot + new Vector3(Mathf.Sin(startAngleRad), -Mathf.Cos(startAngleRad), 0f) * length;
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(startPos);
+
+        input.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should attach to the swing when in range and interacting.");
+
+        // Aggressive alternating pump (old square-wave style) is good at pouring energy into the
+        // pendulum — without the polar-angle cap, sustained pumping climbs past the pivot.
+        float maxAngle = 0f;
+        float maxHeight = go.transform.position.y;
+        float elapsed = 0f;
+        while (elapsed < 6f)
+        {
+            input.Move = new Vector2(0f, Mathf.Sign(Mathf.Sin(elapsed * 3f)));
+            yield return new WaitForFixedUpdate();
+            elapsed += Time.fixedDeltaTime;
+
+            float angle = Vector3.Angle(Vector3.down, (go.transform.position - pivot).normalized);
+            if (angle > maxAngle) maxAngle = angle;
+            if (go.transform.position.y > maxHeight) maxHeight = go.transform.position.y;
+
+            AssertNoPhysicsExplosion(motor);
+        }
+
+        Debug.Log($"METRIC swing_max_polar_angle_deg={maxAngle:0.00} swing_max_height_m={maxHeight:0.00} pivot_y={pivot.y:0.00}");
+        Assert.LessOrEqual(maxAngle, _config.swing.maxSwingAngleDegrees + 5f,
+            "Swing should never exceed maxSwingAngleDegrees from straight-down by more than a small numerical-integration tolerance.");
+        Assert.LessOrEqual(maxHeight, pivot.y + 0.5f,
+            "Even with sustained aggressive pumping, the swing should never carry the player above the pivot.");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
     public IEnumerator Climb_ReachesThresholdHeightLedge()
     {
         _sceneRoot = new GameObject("TestScene");
