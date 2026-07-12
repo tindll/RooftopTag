@@ -3,6 +3,38 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Visual pass — golden hour over the construction site (2026-07-12)
+
+**What was added** (plan: `docs/superpowers/plans/2026-07-12-visual-pass.md`, executed task-by-task
+via executor-routed subagents — sonnet for mechanical/specified tasks, opus for shader/URP/nav-risk
+tasks): gradient dusk skybox shader + `SceneStyler` (sun, trilight ambient, exponential fog, street
+haze planes, URP post volume with bloom/warm grade/vignette, crane + skyline silhouettes — all
+Editor-build-time only, never in headless self-play); semantic `SurfaceRole` materials (concrete
+palette with seeded per-building value jitter, safety-orange emissive strictly for interactables);
+emissive rim trims (collider-less) outlining every walkable roof/platform edge; tagger red emissive
+glow / pale non-emissive runners / pulsing conversion-grace; seeded rooftop props (`RoofPropDresser`
+— physical AC units/vents + visual-only antennas/pipes) gated by a unit-tested nav-clearance rule
+(6/6 `PropClearanceTests`) keeping link corridors, graph anchors and spawn points free; headless
+`ScreenshotTool` for the visual-review loop.
+
+**Self-play metric deltas (props are the only physical change — gate from the plan):** baseline →
+final: `total_stuck` 107 → 107, `total_fallen` 0 → 0, `runner_avg_survival` 0.00 → 0.00,
+`max_distance_from_spawn` 25.4 → 25.0, `speed_p50` 1.80 → 2.37 (known batch noise). Gate passed —
+props do not disturb navigation. (Survival remaining at 0.00 is the pre-existing graph-density
+problem documented below under "Tag Arena rebuilt on branching RooftopArena geometry" — not a
+visual-pass regression.) Full regression: 27/27 across MovementMetrics/TagRules/PropClearance.
+
+**Visual review (5 headless screenshots, `Tools/screenshots/`):** gameplay-range shots match the
+approved mockup — crimson→orange dusk gradient, muted purple-grey concrete, warm rim trims reading
+as sunset rim-light on every edge, safety-orange ladder panels, haze drowning the street, cranes +
+skyline silhouettes, no z-fighting, no missing-material magenta. Far high vista shots wash out into
+uniform warm fog — consistent with the spec's "street drowns in warm haze" and not a view players
+reach; if it reads too thick in the feel-test, `VisualThemeConfig.fogDensity` (0.010) is the single
+knob to lower.
+
+**Decision:** kept all theme defaults as-designed; nothing reverted. Human feel-test pending —
+metrics catch broken, only humans catch un-fun.
+
 ## Tag Arena rebuilt on branching RooftopArena geometry — infrastructure solid, uncovered a deeper bot-pathing gap
 
 **Change (user decision: extend RooftopArena into the real Tag Arena, per the previous entry's
