@@ -474,15 +474,19 @@ public sealed class MovementMetricsTests
         yield return new WaitForFixedUpdate();
         Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should attach to the swing when in range and interacting.");
 
-        // Aggressive alternating pump (square-wave style) pours as much energy into the pendulum as this
-        // model allows. The height-dependent energy cap (no hard angle wall) should let the bob climb but
-        // converge to a BOUNDED apex set by the energy budget, never running away over the pivot.
+        // Resonance pump: always push along the swing plane (X — the attach offset's plane) in the
+        // direction of current motion, the most energy-efficient pump this model allows. (An earlier
+        // version pumped a time-based square wave on the ORTHOGONAL axis, which curved the bob into a
+        // lazy orbit instead of amplifying the arc — it under-filled the energy budget and never
+        // genuinely exercised the height-dependent cap this test exists to prove.) The cap should let
+        // the bob climb but converge to a BOUNDED apex set by the energy budget, never over the pivot.
         float maxAngle = 0f;
         float maxHeight = go.transform.position.y;
         float elapsed = 0f;
         while (elapsed < 6f)
         {
-            input.Move = new Vector2(0f, Mathf.Sign(Mathf.Sin(elapsed * 3f)));
+            float vx = motor.Velocity.x;
+            input.Move = new Vector2(vx == 0f ? 1f : Mathf.Sign(vx), 0f);
             yield return new WaitForFixedUpdate();
             elapsed += Time.fixedDeltaTime;
 

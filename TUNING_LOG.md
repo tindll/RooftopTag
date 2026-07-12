@@ -3,6 +3,35 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## BREAKTHROUGH: dense parkour graph — bots finally navigate (2026-07-12)
+
+**The one-node-per-roof problem is fixed** (5 nodes per roof — center + 4 inset edge-midpoints,
+8 intra-roof edges, all link kinds rewired lip-to-lip via closest-pair; 136 nodes / ~253 edges vs
+the old 32 nodes). First batch: `total_edge_usage=[Run=953, Jump=35, Vault=10]` — **nonzero for the
+first time in the project's history** — with hundreds of special-edge attempts (Swing=333,
+Climb=471, Ladder=54, WallRun=36), `max_distance_from_spawn` 41→54.6 (deep construction-zone
+roaming), and jump telemetry finally populated. New baseline committed. LOOP.md's "don't tune
+against self-play" warning is hereby LIFTED — the metrics mean something now.
+
+**What the fresh data says (next iteration targets, in order of signal):**
+1. **Special-edge attempts don't convert to completions**: Swing 333 attempts/0 completions, Climb
+   471/0, WallRun 36/0, Ladder 54/0. Bots route through these edges and press the right buttons but
+   fail the execution (or completion-recording only fires on node arrivals they never achieve).
+   This is the next single most impactful fix. Note swing physics was re-tuned mid-measurement
+   (energy cap + trim), so re-measure before diagnosing swing specifically.
+2. Jump quality: only 31% land within 1.75m of target (avg error 3.09m) — landing-precision tuning
+   (takeoff speed avg 4.41 suggests many walk-speed short-jump takeoffs).
+3. `runner_avg_survival` still 0.00 — but now measured under REAL navigation; re-judge after fix #1
+   since escape routes through special edges are exactly what runners lack.
+
+**Also this pass** (all gated, committed separately): RooftopArena.unity is now the MAIN 12-agent
+game scene (TagArena.unity = 3-agent chase-me debug); arms-up hang pose while swinging/laddering;
+live bot-difficulty selector in the settings menu; fixed the concurrent session's
+`SystemInfo.graphicsDeviceType`-in-field-initializer crash (Unity forbids it — threw on every
+ChainSwing instantiation, failing 15 tests); rewrote the energy-cap test's pump to resonance-pump
+in the swing plane (the old orthogonal square-wave under-filled the energy budget) — it now hits
+the analytic ceiling exactly (9.10m measured vs 9.10m predicted, 106° max, well under the pivot).
+
 ## Swing polish — follow rope visual, single occupancy, height cap (2026-07-12, same session)
 
 **Feel-test round 2:** rope visual never moves with the swinger (there was none — only an editor
