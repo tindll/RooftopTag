@@ -28,6 +28,28 @@ public sealed class TagArenaBootstrap : MonoBehaviour
     // the player is assigned a role like any other agent, per CLAUDE.md's actual ruleset.
     [SerializeField] private bool forcePlayerAsRunner = true;
 
+    // Kept alive past Awake so ApplyDifficulty can re-Configure every bot at runtime (e.g. from the
+    // settings menu's live "Bot difficulty" row) without rebuilding the round.
+    private readonly System.Collections.Generic.List<(ParkourBotInput input, TagAgent agent)> _bots = new();
+    private RoundController _roundController = null!;
+    private ParkourGraph? _graph;
+    private BotConfig _botConfig = null!;
+
+    /// <summary>Current bot difficulty. Mirrors the serialized field so restarts stay consistent with the last live change.</summary>
+    public BotDifficulty Difficulty => difficulty;
+
+    /// <summary>
+    /// Re-configures every spawned bot with a new difficulty immediately (ParkourBotInput.Configure
+    /// is instant — no restart needed) and updates the serialized field so a scene restart keeps
+    /// using the newly selected difficulty.
+    /// </summary>
+    public void ApplyDifficulty(BotDifficulty newDifficulty)
+    {
+        difficulty = newDifficulty;
+        foreach ((ParkourBotInput input, TagAgent agent) in _bots)
+            input.Configure(agent, _roundController, _graph, _botConfig, newDifficulty);
+    }
+
     private void Awake()
     {
         var tagConfig = ScriptableObject.CreateInstance<TagRulesConfig>();
@@ -42,6 +64,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         var roundControllerGo = new GameObject("RoundController");
         RoundController roundController = roundControllerGo.AddComponent<RoundController>();
         roundController.Configure(tagConfig);
+        _roundController = roundController;
+        _graph = graph;
+        _botConfig = botConfig;
 
         PlayerInputProvider inputProvider = playerRoot.AddComponent<PlayerInputProvider>();
         CharacterMotor playerMotor = playerRoot.AddComponent<CharacterMotor>();
@@ -55,7 +80,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         rig.Configure(playerMotor, mainCamera, cameraYawPivot, groundMask);
         roundController.SetCameraRig(rig);
 
-        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig);
+        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig, this);
 
         var bots = new System.Collections.Generic.List<ParkourBotInput>(botRoots.Length);
         foreach (GameObject botRoot in botRoots)
@@ -69,6 +94,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
             botInput.Configure(botAgent, roundController, graph, botConfig, difficulty);
             roundController.RegisterAgent(botAgent, isLocalPlayer: false);
             bots.Add(botInput);
+            _bots.Add((botInput, botAgent));
         }
 
         var debugVisualizerGo = new GameObject("ParkourDebugVisualizer");

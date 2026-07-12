@@ -1,5 +1,6 @@
 #nullable enable
 
+using Game.AI;
 using Game.CameraSystem;
 using Game.Movement;
 using UnityEngine;
@@ -36,6 +37,10 @@ public sealed class SettingsMenu : MonoBehaviour
     private PlayerInputProvider _input = null!;
     private ThirdPersonCameraRig _cameraRig = null!;
 
+    // Null when this menu is attached by PlaygroundBootstrap (no bots exist there) — the bot
+    // difficulty row is only drawn when a bootstrap callback is actually wired up.
+    private TagArenaBootstrap? _botDifficultyBootstrap;
+
     private bool _open;
     private Rect _windowRect = new(20, 20, 320, 10);
 
@@ -47,11 +52,17 @@ public sealed class SettingsMenu : MonoBehaviour
     private float _mouseSensitivity;
     private float _keyboardTurnSpeed;
 
-    /// <summary>Wires the menu to the local player's concrete input provider and camera rig. Must be called once, right after both are created.</summary>
-    public void Configure(PlayerInputProvider input, ThirdPersonCameraRig cameraRig)
+    /// <summary>
+    /// Wires the menu to the local player's concrete input provider and camera rig. Must be called
+    /// once, right after both are created. <paramref name="botDifficultyBootstrap"/> is optional —
+    /// pass it only when bots exist (Tag Arena / Rooftop Arena) to enable the live "Bot difficulty"
+    /// row; PlaygroundBootstrap has no bots and omits it, so the row stays hidden there.
+    /// </summary>
+    public void Configure(PlayerInputProvider input, ThirdPersonCameraRig cameraRig, TagArenaBootstrap? botDifficultyBootstrap = null)
     {
         _input = input;
         _cameraRig = cameraRig;
+        _botDifficultyBootstrap = botDifficultyBootstrap;
     }
 
     private void Start()
@@ -95,6 +106,13 @@ public sealed class SettingsMenu : MonoBehaviour
         GUILayout.Label("Sensitivity", GUI.skin.box);
         DrawSensitivitySliders();
 
+        if (_botDifficultyBootstrap != null)
+        {
+            GUILayout.Space(8);
+            GUILayout.Label("Bots", GUI.skin.box);
+            DrawBotDifficultyRow(_botDifficultyBootstrap);
+        }
+
         GUILayout.Space(8);
         if (GUILayout.Button("Close")) _open = false;
 
@@ -115,6 +133,32 @@ public sealed class SettingsMenu : MonoBehaviour
         GUI.enabled = true;
 
         GUILayout.EndHorizontal();
+    }
+
+    /// <summary>Cycles Casual/Skilled/Scary and applies instantly (ParkourBotInput.Configure is instant — no restart needed).</summary>
+    private void DrawBotDifficultyRow(TagArenaBootstrap bootstrap)
+    {
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Difficulty (live)", GUILayout.Width(140));
+
+        BotDifficulty current = bootstrap.Difficulty;
+        if (GUILayout.Button("<", GUILayout.Width(30)))
+            bootstrap.ApplyDifficulty(CycleDifficulty(current, -1));
+
+        GUILayout.Label(current.ToString(), GUILayout.Width(70));
+
+        if (GUILayout.Button(">", GUILayout.Width(30)))
+            bootstrap.ApplyDifficulty(CycleDifficulty(current, 1));
+
+        GUILayout.EndHorizontal();
+    }
+
+    private static BotDifficulty CycleDifficulty(BotDifficulty current, int step)
+    {
+        var values = (BotDifficulty[])System.Enum.GetValues(typeof(BotDifficulty));
+        int index = System.Array.IndexOf(values, current);
+        int next = (index + step + values.Length) % values.Length;
+        return values[next];
     }
 
     private void DrawSensitivitySliders()
