@@ -127,6 +127,12 @@ public static class RooftopArena
             }
         }
 
+        // Physical props (AC units, vents) plus visual-only dressing — placement gated by the
+        // nav-clearance rule so link corridors, graph anchors and spawn points stay free (see
+        // RoofPropDresser). Lives here, not SceneStyler, because physical props must exist
+        // identically in saved scenes AND headless self-play.
+        RoofPropDresser.DressRoofs(root.transform);
+
         Debug.Log($"ROOFTOP_BUILD: {Roofs.Length} roofs, {Links.Length} links; sprintSpeed={config.ground.sprintSpeed}");
         return ladder;
     }
