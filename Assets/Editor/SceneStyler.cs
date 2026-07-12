@@ -25,6 +25,8 @@ public static class SceneStyler
         CreatePostVolume(theme);
         CreateSilhouettes(theme);
         CreateClouds(theme);
+        CreatePlanes(theme);
+        CreateAmbience(theme);
 
         // Roof-cluster-only dressing: cosmetic building masses under each playable roof and drifting
         // street cars far below. Gated on the RooftopArena root that RooftopArena.Build creates (only
@@ -91,6 +93,85 @@ public static class SceneStyler
             float speed = Mathf.Lerp(theme.cloudDriftSpeedMin, theme.cloudDriftSpeedMax, (float)rng.NextDouble());
             cloud.AddComponent<CloudDrifter>().Configure(direction, speed, center, theme.cloudDriftRadius);
         }
+    }
+
+    /// <summary>Small low-poly plane silhouettes flying in a straight line above the cloud band,
+    /// noticeably faster than the clouds (PlaneDrifter vs CloudDrifter speed ranges) and always
+    /// nose-aligned to their travel direction. Each plane is a parent GameObject with four stripped
+    /// box primitives: fuselage, main wings, tail wing, vertical stabilizer — matching this project's
+    /// boxy greybox silhouette language and reusing the same silhouette-dark material as the skyline
+    /// and cranes. On the "Dressing" layer (minimap-culled, same rationale as CreateClouds). No
+    /// colliders. Fixed seed: identical layout on every rebuild.</summary>
+    public static void CreatePlanes(VisualThemeConfig theme)
+    {
+        var root = new GameObject("Planes");
+        var rng = new System.Random(7331); // fixed seed: identical layout on every rebuild
+        var center = new Vector3(6f, 0f, 13f); // matches cloud/silhouette dressing's play-area center offset
+        int dressingLayer = LayerMask.NameToLayer("Dressing");
+        Material material = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Silhouette);
+
+        for (int i = 0; i < theme.planeCount; i++)
+        {
+            var plane = new GameObject($"Plane_{i}");
+            plane.transform.SetParent(root.transform, false);
+
+            float height = Mathf.Lerp(theme.planeHeightMin, theme.planeHeightMax, (float)rng.NextDouble());
+            float placeAngle = (float)rng.NextDouble() * Mathf.PI * 2f;
+            float placeDist = (float)rng.NextDouble() * theme.planeDriftRadius;
+            plane.transform.position = center + new Vector3(Mathf.Cos(placeAngle) * placeDist, height, Mathf.Sin(placeAngle) * placeDist);
+
+            float s = theme.planeScale;
+            // Layout (local space, nose along +Z — matches PlaneDrifter's LookRotation(direction, up)):
+            // fuselage stretched along the travel axis, wings crossing it near midship, tail wing +
+            // vertical stabilizer clustered at the rear.
+            PlanePart(plane.transform, "Fuselage", Vector3.zero, new Vector3(0.5f, 0.5f, 3f) * s, material, dressingLayer);
+            PlanePart(plane.transform, "Wings", new Vector3(0f, 0f, 0.1f) * s, new Vector3(4f, 0.15f, 0.8f) * s, material, dressingLayer);
+            PlanePart(plane.transform, "TailWing", new Vector3(0f, 0f, -1.3f) * s, new Vector3(1.2f, 0.1f, 0.5f) * s, material, dressingLayer);
+            PlanePart(plane.transform, "VerticalStabilizer", new Vector3(0f, 0.35f, -1.3f) * s, new Vector3(0.1f, 0.6f, 0.5f) * s, material, dressingLayer);
+
+            float headingAngle = (float)rng.NextDouble() * Mathf.PI * 2f;
+            var direction = new Vector3(Mathf.Cos(headingAngle), 0f, Mathf.Sin(headingAngle));
+            float speed = Mathf.Lerp(theme.planeSpeedMin, theme.planeSpeedMax, (float)rng.NextDouble());
+            plane.AddComponent<PlaneDrifter>().Configure(direction, speed, center, theme.planeDriftRadius);
+        }
+    }
+
+    private static void PlanePart(Transform parent, string name, Vector3 localPosition, Vector3 size, Material material, int dressingLayer)
+    {
+        GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        go.name = name;
+        if (dressingLayer >= 0) go.layer = dressingLayer;
+        Object.DestroyImmediate(go.GetComponent<BoxCollider>());
+        go.transform.SetParent(parent, false);
+        go.transform.localPosition = localPosition;
+        go.transform.localScale = size;
+        go.GetComponent<Renderer>().sharedMaterial = material;
+    }
+
+    /// <summary>City ambience audio bed: a looping 2D AudioSource that starts on scene load. Loaded
+    /// via AssetDatabase — safe here because SceneStyler is Editor-only (see class-level remarks) and
+    /// this method only ever runs at editor scene-build time, never in the headless self-play
+    /// harness. The clip is being sourced separately and may not exist yet at build time; this MUST
+    /// NOT fail the build when it doesn't — it logs and returns. AudioClip is a Unity-native asset
+    /// type, so (unlike this project's custom-asmdef script types, e.g. VisualThemeConfig itself) the
+    /// scene can safely persist a direct reference to it; the deserialization workaround referenced
+    /// elsewhere in this project only affects script-type references, not native asset types.</summary>
+    public static void CreateAmbience(VisualThemeConfig theme)
+    {
+        AudioClip clip = UnityEditor.AssetDatabase.LoadAssetAtPath<AudioClip>(theme.ambienceClipPath);
+        if (clip == null)
+        {
+            Debug.Log($"AMBIENCE_SKIPPED: no clip at {theme.ambienceClipPath}");
+            return;
+        }
+
+        var go = new GameObject("CityAmbience");
+        var source = go.AddComponent<AudioSource>();
+        source.clip = clip;
+        source.loop = true;
+        source.playOnAwake = true;
+        source.spatialBlend = 0f; // 2D: ambience bed, not positional
+        source.volume = theme.ambienceVolume;
     }
 
     /// <summary>Far-city dressing outside the playable bounds (play area spans roughly x/z -48..30):

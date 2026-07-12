@@ -126,6 +126,30 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// back around to the opposite edge instead of drifting away forever.</summary>
     public float cloudDriftRadius = 120f;
 
+    [Header("Planes")]
+    /// <summary>Small low-poly plane silhouettes flying straight above the cloud band — count kept
+    /// low (they're fast, so a handful reads as steady traffic without cluttering the sky).</summary>
+    public int planeCount = 3;
+    public float planeHeightMin = 65f;
+    public float planeHeightMax = 85f;
+    /// <summary>Noticeably faster than <see cref="cloudDriftSpeedMin"/>/Max (3-7) so planes read as
+    /// distinct high-altitude traffic rather than just another cloud.</summary>
+    public float planeSpeedMin = 8f;
+    public float planeSpeedMax = 14f;
+    /// <summary>Radius of the drift area centered on the map — reuses the clouds' wrap convention
+    /// (see <see cref="cloudDriftRadius"/>) so planes loop within the same visible bounds.</summary>
+    public float planeDriftRadius = 120f;
+    /// <summary>Uniform scale factor applied to the whole plane silhouette (fuselage + wings + tail).</summary>
+    public float planeScale = 1f;
+
+    [Header("Ambience")]
+    /// <summary>Path to a pre-authored looping city ambience clip (car horns, distant traffic) — a
+    /// quiet-but-present street bed, per feel-test. Procedural synthesis is banned for this project
+    /// (two prior attempts failed badly — see TUNING_LOG "Wind audio removed entirely"). The file may
+    /// not exist yet at build time; SceneStyler.CreateAmbience must skip cleanly rather than fail.</summary>
+    public string ambienceClipPath = "Assets/Audio/city-ambience.ogg";
+    [Range(0f, 1f)] public float ambienceVolume = 0.10f;
+
     [Header("Post-processing")]
     public float bloomIntensity = 0.65f;
     public float bloomThreshold = 1.0f;
