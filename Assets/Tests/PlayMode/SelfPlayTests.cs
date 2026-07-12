@@ -86,11 +86,11 @@ public sealed class SelfPlayTests
         Scene activeScene = SceneManager.GetActiveScene();
         var rootsBefore = new HashSet<GameObject>(activeScene.GetRootGameObjects());
 
-        // Ladder InteractableMarker construction is skipped here — that helper lives in the
+        // Ladder/Swing InteractableMarker construction is skipped here — that helper lives in the
         // Editor-only Game.EditorTools assembly (PlaygroundBuilder.BuildRoofLadder), not callable
         // from a PlayMode test. The Ladder edge (Tower access) isn't exercised by self-play as a
         // result — same gap that already existed on the old corridor (blocked there by a dead-end).
-        RooftopArena.BuildAndGetLadder(movementConfig);
+        RooftopArena.Build(movementConfig);
         TagArenaMapGeometry.BuildFallCatchPlane();
 
         var controllerGo = new GameObject("SelfPlayRoundController");

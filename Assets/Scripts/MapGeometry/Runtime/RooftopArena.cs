@@ -32,14 +32,28 @@ public static class RooftopArena
         public Vector3 Walk => new(Center.x, Center.y + 0.1f, Center.z);
     }
 
-    public enum LinkKind { Jump, Ramp, Ladder }
+    public enum LinkKind { Jump, Ramp, Ladder, WallRun, Swing, ClimbWall, VaultWall }
 
     public readonly struct Link
     {
         public readonly int From;
         public readonly int To;
         public readonly LinkKind Kind;
-        public Link(int from, int to, LinkKind kind) { From = from; To = to; Kind = kind; }
+        public readonly float Param; // per-kind extra data; currently only Swing uses it (chain length)
+        public Link(int from, int to, LinkKind kind, float param = 0f) { From = from; To = to; Kind = kind; Param = param; }
+    }
+
+    /// <summary>Live interactable anchors gathered while building the arena, so PlaygroundBuilder
+    /// (ladders) and the runtime self-play harness (ladders + swings) can spawn the matching
+    /// interactable components/markers without re-deriving them from the link table.</summary>
+    public readonly struct ArenaInteractables
+    {
+        public readonly List<(Vector3 bottom, Vector3 top, Vector3 outward)> Ladders;
+        public readonly List<(Vector3 pivot, float length, Vector3 exitDir)> Swings;
+        public ArenaInteractables(List<(Vector3, Vector3, Vector3)> ladders, List<(Vector3, float, Vector3)> swings)
+        {
+            Ladders = ladders; Swings = swings;
+        }
     }
 
     // A spread of rooftops. Neighbours sit ~13m apart (≈5m gaps) with height steps kept small enough
@@ -88,14 +102,14 @@ public static class RooftopArena
 
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
 
-    /// <summary>Build all roof boxes + ramps. Returns the ladder link's (bottom, top) anchors so
-    /// PlaygroundBuilder can place the InteractableMarker ladder, and the graph can align to it.</summary>
-    public static (Vector3 bottom, Vector3 top, Vector3 outward)? BuildAndGetLadder(MovementConfig config) =>
-        BuildAndGetLadder(config, out _);
+    /// <summary>Build all roof boxes + ramps. Returns the interactable anchors (ladders, swings) so
+    /// PlaygroundBuilder can place their InteractableMarkers, and the graph can align to them.</summary>
+    public static ArenaInteractables Build(MovementConfig config) =>
+        Build(config, out _);
 
-    /// <summary>Same as <see cref="BuildAndGetLadder(MovementConfig)"/>, additionally returning the
+    /// <summary>Same as <see cref="Build(MovementConfig)"/>, additionally returning the
     /// directional light it created so callers (PlaygroundBuilder) can thread it into SceneStyler.</summary>
-    public static (Vector3 bottom, Vector3 top, Vector3 outward)? BuildAndGetLadder(MovementConfig config, out Light sun)
+    public static ArenaInteractables Build(MovementConfig config, out Light sun)
     {
         sun = TagArenaMapGeometry.CreateLight();
         var root = new GameObject("RooftopArena");
@@ -112,7 +126,8 @@ public static class RooftopArena
             TagArenaMapGeometry.AddTopRim(roofBox);
         }
 
-        (Vector3, Vector3, Vector3)? ladder = null;
+        var ladders = new List<(Vector3, Vector3, Vector3)>();
+        var swings = new List<(Vector3, float, Vector3)>();
         foreach (Link link in Links)
         {
             switch (link.Kind)
@@ -121,7 +136,19 @@ public static class RooftopArena
                     BuildRamp(root.transform, Roofs[link.From], Roofs[link.To]);
                     break;
                 case LinkKind.Ladder:
-                    ladder = LadderAnchors(Roofs[link.From], Roofs[link.To]);
+                    ladders.Add(LadderAnchors(Roofs[link.From], Roofs[link.To]));
+                    break;
+                case LinkKind.WallRun:
+                    // built in a later task
+                    break;
+                case LinkKind.Swing:
+                    // built in a later task
+                    break;
+                case LinkKind.ClimbWall:
+                    // built in a later task
+                    break;
+                case LinkKind.VaultWall:
+                    // built in a later task
                     break;
                 // Jump links need no geometry — the gap between roofs IS the jump.
             }
@@ -134,7 +161,7 @@ public static class RooftopArena
         RoofPropDresser.DressRoofs(root.transform);
 
         Debug.Log($"ROOFTOP_BUILD: {Roofs.Length} roofs, {Links.Length} links; sprintSpeed={config.ground.sprintSpeed}");
-        return ladder;
+        return new ArenaInteractables(ladders, swings);
     }
 
     private static void BuildRamp(Transform parent, Roof from, Roof to)

@@ -95,8 +95,8 @@ public static class PlaygroundBuilder
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
-        var ladder = RooftopArena.BuildAndGetLadder(movementConfig, out Light sun);
-        if (ladder.HasValue) BuildRoofLadder(ladder.Value.bottom, ladder.Value.top, ladder.Value.outward);
+        RooftopArena.ArenaInteractables interactables = RooftopArena.Build(movementConfig, out Light sun);
+        foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward);
         TagArenaMapGeometry.BuildFallCatchPlane();
 
         Vector3[] spawnPoints = RooftopArena.SpawnPoints(TagArenaAgentCount);
@@ -130,8 +130,8 @@ public static class PlaygroundBuilder
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
-        var ladder = RooftopArena.BuildAndGetLadder(movementConfig, out Light sun);
-        if (ladder.HasValue) BuildRoofLadder(ladder.Value.bottom, ladder.Value.top, ladder.Value.outward);
+        RooftopArena.ArenaInteractables interactables = RooftopArena.Build(movementConfig, out Light sun);
+        foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward);
 
         Vector3[] spawns = RooftopArena.SpawnPoints(RooftopAgentCount);
         GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, spawns[0], new Color(0.2f, 0.6f, 1f));
