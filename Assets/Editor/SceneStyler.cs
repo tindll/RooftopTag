@@ -96,6 +96,12 @@ public static class SceneStyler
         Vignette vignette = profile.Add<Vignette>();
         vignette.intensity.Override(theme.vignetteIntensity);
 
+        // Camera-driven motion blur (URP's built-in per-object/camera type — no extra renderer
+        // feature needed). Kept subtle; see VisualThemeConfig.motionBlurIntensity's doc comment.
+        MotionBlur motionBlur = profile.Add<MotionBlur>();
+        motionBlur.quality.Override(MotionBlurQuality.Medium);
+        motionBlur.intensity.Override(theme.motionBlurIntensity);
+
         volume.profile = profile;
     }
 
