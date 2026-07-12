@@ -86,26 +86,30 @@ public static class RooftopArena
         new(7, 11, LinkKind.Ladder),
     };
 
-    public static readonly Color RoofColor = new(0.5f, 0.5f, 0.55f);
-    public static readonly Color WallColor = new(0.38f, 0.36f, 0.4f);
-
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
 
     /// <summary>Build all roof boxes + ramps. Returns the ladder link's (bottom, top) anchors so
     /// PlaygroundBuilder can place the InteractableMarker ladder, and the graph can align to it.</summary>
-    public static (Vector3 bottom, Vector3 top, Vector3 outward)? BuildAndGetLadder(MovementConfig config)
+    public static (Vector3 bottom, Vector3 top, Vector3 outward)? BuildAndGetLadder(MovementConfig config) =>
+        BuildAndGetLadder(config, out _);
+
+    /// <summary>Same as <see cref="BuildAndGetLadder(MovementConfig)"/>, additionally returning the
+    /// directional light it created so callers (PlaygroundBuilder) can thread it into SceneStyler.</summary>
+    public static (Vector3 bottom, Vector3 top, Vector3 outward)? BuildAndGetLadder(MovementConfig config, out Light sun)
     {
-        TagArenaMapGeometry.CreateLight();
+        sun = TagArenaMapGeometry.CreateLight();
         var root = new GameObject("RooftopArena");
 
-        foreach (Roof r in Roofs)
+        for (int i = 0; i < Roofs.Length; i++)
         {
+            Roof r = Roofs[i];
             // A building: a tall box whose TOP face is the walkable roof at height r.Center.y.
             float bodyHeight = r.Center.y + BuildingSkirt; // extends below ground for a solid look
             float centerY = r.Center.y - bodyHeight * 0.5f;
-            TagArenaMapGeometry.CreateBox(r.Name, root.transform,
+            GameObject roofBox = TagArenaMapGeometry.CreateBox(r.Name, root.transform,
                 new Vector3(r.Center.x, centerY, r.Center.z),
-                new Vector3(r.SizeX, bodyHeight, r.SizeZ), RoofColor);
+                new Vector3(r.SizeX, bodyHeight, r.SizeZ), TagArenaMapGeometry.SurfaceRole.WallBody, seed: i + 1);
+            TagArenaMapGeometry.AddTopRim(roofBox);
         }
 
         (Vector3, Vector3, Vector3)? ladder = null;
@@ -155,7 +159,7 @@ public static class RooftopArena
         box.transform.position = mid - localUp * (thickness * 0.5f);
         box.transform.rotation = rot;
         box.transform.localScale = new Vector3(3f, thickness, length3D);
-        TagArenaMapGeometry.ApplyMaterial(box, WallColor);
+        box.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Ramp);
     }
 
     public static (Vector3 bottom, Vector3 top, Vector3 outward) LadderAnchors(Roof from, Roof to)

@@ -3,6 +3,7 @@
 using System.Collections.Generic;
 using Game.Movement;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 
 namespace Game.MapGeometry;
 
@@ -26,18 +27,141 @@ namespace Game.MapGeometry;
 public static class TagArenaMapGeometry
 {
     private static readonly Dictionary<string, Material> MaterialCache = new();
+    private static readonly Dictionary<string, Material> RoleMaterialCache = new();
 
     public static readonly Color GreyColor = new(0.55f, 0.55f, 0.55f);
     public static readonly Color BlueGrey = new(0.45f, 0.55f, 0.65f);
     public static readonly Color BrownColor = new(0.5f, 0.35f, 0.25f);
     public static readonly Color OrangeColor = new(0.85f, 0.5f, 0.2f);
 
+    /// <summary>Semantic surface role — the theme decides what each role looks like.
+    /// Interactable is reserved strictly for things the player can use (spec: gameplay color language).</summary>
+    public enum SurfaceRole { Floor, WallBody, Ramp, Interactable, Trim, Silhouette }
+
+    private static VisualThemeConfig? _theme;
+    public static VisualThemeConfig Theme => _theme ??= ScriptableObject.CreateInstance<VisualThemeConfig>();
+
+    public static Material GetMaterial(SurfaceRole role, int seed = 0)
+    {
+        string key = $"{role}:{seed}";
+        if (RoleMaterialCache.TryGetValue(key, out Material cached)) return cached;
+
+        VisualThemeConfig t = Theme;
+        Material material = role switch
+        {
+            SurfaceRole.Floor => PlainMaterial(t.concreteFloor),
+            SurfaceRole.WallBody => PlainMaterial(JitterValue(t.concreteWall, seed, t.wallValueJitter)),
+            SurfaceRole.Ramp => PlainMaterial(t.concreteRamp),
+            SurfaceRole.Interactable => EmissiveMaterial(t.interactableColor, t.interactableEmissiveIntensity),
+            SurfaceRole.Trim => EmissiveMaterial(t.rimColor, t.rimEmissiveIntensity),
+            SurfaceRole.Silhouette => PlainMaterial(t.silhouetteColor),
+            _ => PlainMaterial(t.concreteFloor),
+        };
+        RoleMaterialCache[key] = material;
+        return material;
+    }
+
+    private static Material PlainMaterial(Color color)
+    {
+        Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+        return new Material(shader) { color = color };
+    }
+
+    private static Material EmissiveMaterial(Color color, float intensity)
+    {
+        Material m = PlainMaterial(color);
+        m.EnableKeyword("_EMISSION");
+        m.SetColor("_EmissionColor", color * intensity);
+        return m;
+    }
+
+    /// <summary>Deterministic per-seed brightness variation (FNV hash — stable across runs and
+    /// machines, unlike string.GetHashCode) so rebuilt scenes are byte-comparable.</summary>
+    private static Color JitterValue(Color color, int seed, float amount)
+    {
+        if (seed == 0 || amount <= 0f) return color;
+        uint h = 2166136261u;
+        unchecked { h = (h ^ (uint)seed) * 16777619u; h = (h ^ (h >> 13)) * 16777619u; }
+        float t = (h % 1000u) / 1000f * 2f - 1f; // [-1, 1]
+        Color.RGBToHSV(color, out float hue, out float sat, out float val);
+        return Color.HSVToRGB(hue, sat, Mathf.Clamp01(val + t * amount));
+    }
+
+    public static GameObject CreateBox(string name, Transform? parent, Vector3 center, Vector3 size, SurfaceRole role, int seed = 0)
+    {
+        GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        go.name = name;
+        if (parent != null) go.transform.SetParent(parent, false);
+        go.transform.position = center;
+        go.transform.localScale = size;
+        go.GetComponent<Renderer>().sharedMaterial = GetMaterial(role, seed);
+        return go;
+    }
+
+    public static void CreateRamp(Transform parent, string name, float zStart, float yStart, float length, float deltaY, float width, SurfaceRole role)
+    {
+        // Same top-face-aligned placement as the Color overload; only the material source differs.
+        const float thickness = 0.5f;
+        float rampLength3D = Mathf.Sqrt(length * length + deltaY * deltaY);
+
+        Vector3 topStart = new(0f, yStart, zStart);
+        Vector3 topEnd = new(0f, yStart + deltaY, zStart + length);
+        Vector3 topMid = (topStart + topEnd) * 0.5f;
+
+        Quaternion rotation = Quaternion.LookRotation((topEnd - topStart).normalized, Vector3.up);
+        Vector3 localUp = rotation * Vector3.up;
+        Vector3 center = topMid - localUp * (thickness * 0.5f);
+
+        GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        go.name = name;
+        go.transform.SetParent(parent, false);
+        go.transform.position = center;
+        go.transform.rotation = rotation;
+        go.transform.localScale = new Vector3(width, thickness, rampLength3D);
+        go.GetComponent<Renderer>().sharedMaterial = GetMaterial(role, 0);
+    }
+
+    /// <summary>Four thin emissive trim boxes along the top perimeter of an axis-aligned box —
+    /// reads as the sunset rim-light AND outlines every ledge/gap/landing at speed.
+    /// Visual only: NO colliders, so ground detection and movement are untouched.</summary>
+    public static void AddTopRim(GameObject box)
+    {
+        Vector3 scale = box.transform.localScale;
+        Vector3 top = box.transform.position + Vector3.up * (scale.y * 0.5f);
+        VisualThemeConfig t = Theme;
+        float y = top.y + t.rimHeight * 0.5f;
+        float halfX = scale.x * 0.5f, halfZ = scale.z * 0.5f, rt = t.rimThickness;
+
+        (Vector3 center, Vector3 size)[] rims =
+        {
+            (new Vector3(top.x, y, top.z + halfZ - rt * 0.5f), new Vector3(scale.x, t.rimHeight, rt)),
+            (new Vector3(top.x, y, top.z - halfZ + rt * 0.5f), new Vector3(scale.x, t.rimHeight, rt)),
+            (new Vector3(top.x + halfX - rt * 0.5f, y, top.z), new Vector3(rt, t.rimHeight, scale.z - rt * 2f)),
+            (new Vector3(top.x - halfX + rt * 0.5f, y, top.z), new Vector3(rt, t.rimHeight, scale.z - rt * 2f)),
+        };
+        foreach ((Vector3 center, Vector3 size) in rims)
+        {
+            GameObject rim = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            rim.name = box.name + "_Rim";
+            rim.transform.SetParent(box.transform.parent, false);
+            rim.transform.position = center;
+            rim.transform.localScale = size;
+            Object.DestroyImmediate(rim.GetComponent<BoxCollider>());
+            rim.GetComponent<Renderer>().sharedMaterial = GetMaterial(SurfaceRole.Trim);
+        }
+    }
+
     /// <summary>Builds every section up to (but not including) the ladder/swing chasm, rendering the
     /// boxes/ramps at the anchors computed by <see cref="TagArenaLayout"/> — the same anchors the bot
     /// parkour graph uses, so geometry and graph stay in lockstep. Returns the end z cursor.</summary>
-    public static float BuildMainCorridor(MovementConfig movementConfig)
+    public static float BuildMainCorridor(MovementConfig movementConfig) =>
+        BuildMainCorridor(movementConfig, out _);
+
+    /// <summary>Same as <see cref="BuildMainCorridor(MovementConfig)"/>, additionally returning the
+    /// directional light it created so callers (PlaygroundBuilder) can thread it into SceneStyler.</summary>
+    public static float BuildMainCorridor(MovementConfig movementConfig, out Light sun)
     {
-        CreateLight();
+        sun = CreateLight();
         var layout = new TagArenaLayout(movementConfig);
 
         BuildSpawnPlatform();
@@ -53,8 +177,9 @@ public static class TagArenaMapGeometry
 
     public static void BuildSpawnPlatform()
     {
-        CreateBox("SpawnPlatform", null, new Vector3(0f, -0.5f, 0f),
-            new Vector3(TagArenaLayout.SpawnSize, 1f, TagArenaLayout.SpawnSize), GreyColor);
+        GameObject spawnPlatform = CreateBox("SpawnPlatform", null, new Vector3(0f, -0.5f, 0f),
+            new Vector3(TagArenaLayout.SpawnSize, 1f, TagArenaLayout.SpawnSize), SurfaceRole.Floor);
+        AddTopRim(spawnPlatform);
     }
 
     public static void BuildRampValley(TagArenaLayout layout)
@@ -64,14 +189,14 @@ public static class TagArenaMapGeometry
         float rampLength = TagArenaLayout.RampLength;
 
         float downRampZ = layout.RampTopDown.z;
-        CreateRamp(root.transform, "DownRamp", downRampZ, 0f, rampLength, -drop, 6f, BlueGrey);
+        CreateRamp(root.transform, "DownRamp", downRampZ, 0f, rampLength, -drop, 6f, SurfaceRole.Ramp);
         CreateBox("ValleyFloor", root.transform, GroundBoxCenter(layout.ValleyFloor),
-            new Vector3(6f, 1f, TagArenaLayout.ValleyFloorLength), GreyColor);
+            new Vector3(6f, 1f, TagArenaLayout.ValleyFloorLength), SurfaceRole.Floor);
 
         float upRampZ = downRampZ + rampLength + TagArenaLayout.ValleyFloorLength;
-        CreateRamp(root.transform, "UpRamp", upRampZ, -drop, rampLength, drop, 6f, BlueGrey);
+        CreateRamp(root.transform, "UpRamp", upRampZ, -drop, rampLength, drop, 6f, SurfaceRole.Ramp);
         CreateBox("ValleyExit", root.transform, GroundBoxCenter(layout.ValleyExit),
-            new Vector3(6f, 1f, TagArenaLayout.ValleyExitLength), GreyColor);
+            new Vector3(6f, 1f, TagArenaLayout.ValleyExitLength), SurfaceRole.Floor);
     }
 
     public static void BuildGapGauntlet(TagArenaLayout layout, MovementConfig config)
@@ -79,11 +204,15 @@ public static class TagArenaMapGeometry
         var root = new GameObject("GapGauntlet");
         var size = new Vector3(TagArenaLayout.PlatformWidth, 1f, TagArenaLayout.PlatformLength);
         for (int i = 0; i < layout.GapPlatforms.Length; i++)
-            CreateBox($"GapPlatform_{i}_gap{TagArenaLayout.Gaps[i]:0}m", root.transform,
-                GroundBoxCenter(layout.GapPlatforms[i]), size, GreyColor);
+        {
+            GameObject gapPlatform = CreateBox($"GapPlatform_{i}_gap{TagArenaLayout.Gaps[i]:0}m", root.transform,
+                GroundBoxCenter(layout.GapPlatforms[i]), size, SurfaceRole.Floor);
+            AddTopRim(gapPlatform);
+        }
 
-        CreateBox("GauntletExit", root.transform, GroundBoxCenter(layout.GauntletExit),
-            new Vector3(TagArenaLayout.PlatformWidth, 1f, TagArenaLayout.ValleyExitLength), GreyColor);
+        GameObject gauntletExit = CreateBox("GauntletExit", root.transform, GroundBoxCenter(layout.GauntletExit),
+            new Vector3(TagArenaLayout.PlatformWidth, 1f, TagArenaLayout.ValleyExitLength), SurfaceRole.Floor);
+        AddTopRim(gauntletExit);
 
         Debug.Log($"PLAYGROUND_INFO: gap gauntlet distances = [{string.Join(", ", TagArenaLayout.Gaps)}] meters; ground.sprintSpeed={config.ground.sprintSpeed}, jump.jumpSpeed={config.jump.jumpSpeed}");
     }
@@ -95,14 +224,14 @@ public static class TagArenaMapGeometry
         float wallHeight = TagArenaLayout.AlleyWallHeight;
 
         CreateBox("AlleyEntry", root.transform, GroundBoxCenter(layout.AlleyEntry),
-            new Vector3(corridorWidth, 1f, TagArenaLayout.AlleyEntryLength), GreyColor);
+            new Vector3(corridorWidth, 1f, TagArenaLayout.AlleyEntryLength), SurfaceRole.Floor);
         CreateBox("AlleyExit", root.transform, GroundBoxCenter(layout.AlleyExit),
-            new Vector3(corridorWidth, 1f, TagArenaLayout.AlleyExitLength), GreyColor);
+            new Vector3(corridorWidth, 1f, TagArenaLayout.AlleyExitLength), SurfaceRole.Floor);
 
         float totalLength = TagArenaLayout.AlleyEntryLength + TagArenaLayout.AlleyChasmLength + TagArenaLayout.AlleyExitLength;
         float wallCenterZ = layout.AlleyStartZ + totalLength * 0.5f;
-        CreateBox("WallLeft", root.transform, new Vector3(-corridorWidth * 0.5f - 0.25f, wallHeight * 0.5f, wallCenterZ), new Vector3(0.5f, wallHeight, totalLength), BrownColor);
-        CreateBox("WallRight", root.transform, new Vector3(corridorWidth * 0.5f + 0.25f, wallHeight * 0.5f, wallCenterZ), new Vector3(0.5f, wallHeight, totalLength), BrownColor);
+        CreateBox("WallLeft", root.transform, new Vector3(-corridorWidth * 0.5f - 0.25f, wallHeight * 0.5f, wallCenterZ), new Vector3(0.5f, wallHeight, totalLength), SurfaceRole.WallBody);
+        CreateBox("WallRight", root.transform, new Vector3(corridorWidth * 0.5f + 0.25f, wallHeight * 0.5f, wallCenterZ), new Vector3(0.5f, wallHeight, totalLength), SurfaceRole.WallBody);
     }
 
     public static void BuildLedgeRow(TagArenaLayout layout)
@@ -111,14 +240,15 @@ public static class TagArenaMapGeometry
         foreach (TagArenaLayout.Ledge ledge in layout.Ledges)
         {
             CreateBox($"Runway_{ledge.Label}", root.transform, GroundBoxCenter(ledge.Runway),
-                new Vector3(5f, 1f, TagArenaLayout.LedgeRunway), GreyColor);
+                new Vector3(5f, 1f, TagArenaLayout.LedgeRunway), SurfaceRole.Floor);
 
             float wallZ = ledge.Runway.z + TagArenaLayout.LedgeRunway * 0.5f + TagArenaLayout.LedgeWallThickness * 0.5f;
             CreateBox(ledge.Label, root.transform, new Vector3(0f, ledge.Height * 0.5f, wallZ),
-                new Vector3(5f, ledge.Height, TagArenaLayout.LedgeWallThickness), OrangeColor);
+                new Vector3(5f, ledge.Height, TagArenaLayout.LedgeWallThickness), SurfaceRole.Interactable);
 
-            CreateBox($"LandingTop_{ledge.Label}", root.transform, new Vector3(0f, ledge.Height + 0.5f, ledge.Landing.z),
-                new Vector3(5f, 1f, TagArenaLayout.LedgeLandingLength), GreyColor);
+            GameObject landingTop = CreateBox($"LandingTop_{ledge.Label}", root.transform, new Vector3(0f, ledge.Height + 0.5f, ledge.Landing.z),
+                new Vector3(5f, 1f, TagArenaLayout.LedgeLandingLength), SurfaceRole.Floor);
+            AddTopRim(landingTop);
         }
 
         TagArenaLayout.Ledge[] l = layout.Ledges;
@@ -127,7 +257,7 @@ public static class TagArenaMapGeometry
 
     public static void BuildFallCatchPlane()
     {
-        CreateBox("FallCatchPlane", null, new Vector3(0f, -30f, 100f), new Vector3(300f, 2f, 300f), new Color(0.15f, 0.1f, 0.1f));
+        CreateBox("FallCatchPlane", null, new Vector3(0f, -30f, 100f), new Vector3(300f, 2f, 300f), SurfaceRole.Silhouette);
     }
 
     public static Vector3[] BuildSpawnGrid(int count, Vector3 center, float spacing)
@@ -182,6 +312,7 @@ public static class TagArenaMapGeometry
         var camGo = new GameObject("Main Camera");
         camGo.tag = "MainCamera";
         Camera cam = camGo.AddComponent<Camera>();
+        cam.GetUniversalAdditionalCameraData().renderPostProcessing = true;
         camGo.AddComponent<AudioListener>();
 
         return (rigGo, cam, yawGo.transform);
@@ -230,13 +361,19 @@ public static class TagArenaMapGeometry
         ApplyMaterial(go, color);
     }
 
-    public static void CreateLight()
+    /// <summary>Creates the scene's directional light and returns it so callers can thread the
+    /// reference into SceneStyler instead of relying on GameObject.Find by name. The intensity/
+    /// rotation set here are pre-styler defaults only — SceneStyler.ApplyEnvironment (Editor-only,
+    /// called from PlaygroundBuilder) overwrites both when it styles the scene, so a build that
+    /// never runs the styler (e.g. self-play) still gets sane neutral lighting.</summary>
+    public static Light CreateLight()
     {
         var lightGo = new GameObject("Directional Light");
         Light light = lightGo.AddComponent<Light>();
         light.type = LightType.Directional;
         light.intensity = 1.1f;
         lightGo.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
+        return light;
     }
 
     public static void ApplyMaterial(GameObject go, Color color)

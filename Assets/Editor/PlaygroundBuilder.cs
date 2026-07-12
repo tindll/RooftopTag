@@ -55,27 +55,28 @@ public static class PlaygroundBuilder
         int groundMask = ~(1 << playerLayer);
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-        BuildMapGeometry(movementConfig);
+        Light sun = BuildMapGeometry(movementConfig);
 
         GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, new Vector3(0f, 1.1f, 2f), new Color(0.2f, 0.6f, 1f));
         (GameObject cameraRig, Camera cam, Transform yawPivot) = TagArenaMapGeometry.BuildCamera(player);
 
         BuildBootstrap(player, cameraRig, cam, yawPivot, groundMask, groundMask);
 
-        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>());
+        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>(), sun);
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, ScenePath);
         Debug.Log($"PLAYGROUND_BUILD_OK: saved to {ScenePath}");
     }
 
-    /// <summary>Builds the shared greybox map geometry (ramps, gaps, wall-run alley, ledges, ladder, swing). Reused by both the M1 movement playground and the M2 tag arena.</summary>
-    private static void BuildMapGeometry(MovementConfig movementConfig)
+    /// <summary>Builds the shared greybox map geometry (ramps, gaps, wall-run alley, ledges, ladder, swing). Reused by both the M1 movement playground and the M2 tag arena. Returns the directional light so the caller can thread it into SceneStyler.</summary>
+    private static Light BuildMapGeometry(MovementConfig movementConfig)
     {
-        float z = TagArenaMapGeometry.BuildMainCorridor(movementConfig);
+        float z = TagArenaMapGeometry.BuildMainCorridor(movementConfig, out Light sun);
         z = BuildLadder(z);
         BuildSwingChasm(z, movementConfig);
         TagArenaMapGeometry.BuildFallCatchPlane();
+        return sun;
     }
 
     private const string TagArenaScenePath = "Assets/Scenes/TagArena.unity";
@@ -94,7 +95,7 @@ public static class PlaygroundBuilder
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
-        var ladder = RooftopArena.BuildAndGetLadder(movementConfig);
+        var ladder = RooftopArena.BuildAndGetLadder(movementConfig, out Light sun);
         if (ladder.HasValue) BuildRoofLadder(ladder.Value.bottom, ladder.Value.top, ladder.Value.outward);
         TagArenaMapGeometry.BuildFallCatchPlane();
 
@@ -110,7 +111,7 @@ public static class PlaygroundBuilder
         // real 12-agent ruleset (unlike the 3-agent "chase me" scenes, which keep the default true).
         BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, forcePlayerAsRunner: false);
 
-        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>());
+        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>(), sun);
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, TagArenaScenePath);
@@ -129,7 +130,7 @@ public static class PlaygroundBuilder
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
-        var ladder = RooftopArena.BuildAndGetLadder(movementConfig);
+        var ladder = RooftopArena.BuildAndGetLadder(movementConfig, out Light sun);
         if (ladder.HasValue) BuildRoofLadder(ladder.Value.bottom, ladder.Value.top, ladder.Value.outward);
 
         Vector3[] spawns = RooftopArena.SpawnPoints(RooftopAgentCount);
@@ -142,7 +143,7 @@ public static class PlaygroundBuilder
 
         BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask);
 
-        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>());
+        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>(), sun);
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, RooftopScenePath);
@@ -160,7 +161,7 @@ public static class PlaygroundBuilder
         // Visual wall sits just inside the ladder line (on the +outward side is open air; the wall is
         // the building face, so offset it slightly toward the building, i.e. -outward).
         Vector3 wallCenter = midXZ - outward * 0.4f;
-        TagArenaMapGeometry.CreateBox("RoofLadderWall", root.transform, wallCenter, new Vector3(2f, height, 0.5f), TagArenaMapGeometry.BrownColor);
+        TagArenaMapGeometry.CreateBox("RoofLadderWall", root.transform, wallCenter, new Vector3(2f, height, 0.5f), TagArenaMapGeometry.SurfaceRole.Interactable);
 
         var bottomGo = new GameObject("RoofLadderBottom");
         bottomGo.transform.SetParent(root.transform);
@@ -218,10 +219,10 @@ public static class PlaygroundBuilder
         const float ladderHeight = 8f;
         const float runway = 6f;
 
-        TagArenaMapGeometry.CreateBox("LadderRunway", root.transform, new Vector3(0f, -0.5f, z + runway * 0.5f), new Vector3(5f, 1f, runway), TagArenaMapGeometry.GreyColor);
+        TagArenaMapGeometry.CreateBox("LadderRunway", root.transform, new Vector3(0f, -0.5f, z + runway * 0.5f), new Vector3(5f, 1f, runway), TagArenaMapGeometry.SurfaceRole.Floor);
         z += runway;
 
-        TagArenaMapGeometry.CreateBox("LadderWall", root.transform, new Vector3(0f, ladderHeight * 0.5f, z + 0.5f), new Vector3(5f, ladderHeight, 1f), TagArenaMapGeometry.BrownColor);
+        TagArenaMapGeometry.CreateBox("LadderWall", root.transform, new Vector3(0f, ladderHeight * 0.5f, z + 0.5f), new Vector3(5f, ladderHeight, 1f), TagArenaMapGeometry.SurfaceRole.Interactable);
 
         // The wall's near face sits at z. The climb line needs enough clearance that the
         // capsule (radius 0.4) doesn't overlap it — at the old 0.3m offset it penetrated the
@@ -253,7 +254,7 @@ public static class PlaygroundBuilder
         // runway (-Z), away from the wall. The default (+Z) pushed straight into it.
         marker.outwardDirection = Vector3.back;
 
-        TagArenaMapGeometry.CreateBox("LadderTopLanding", root.transform, new Vector3(0f, ladderHeight + 0.5f, z + 2.5f), new Vector3(5f, 1f, 5f), TagArenaMapGeometry.GreyColor);
+        TagArenaMapGeometry.CreateBox("LadderTopLanding", root.transform, new Vector3(0f, ladderHeight + 0.5f, z + 2.5f), new Vector3(5f, 1f, 5f), TagArenaMapGeometry.SurfaceRole.Floor);
 
         return z + 5f;
     }
@@ -263,9 +264,9 @@ public static class PlaygroundBuilder
         var root = new GameObject("SwingChasm");
         const float chasmLength = 12f;
 
-        TagArenaMapGeometry.CreateBox("SwingEntry", root.transform, new Vector3(0f, -0.5f, z + 2f), new Vector3(6f, 1f, 4f), TagArenaMapGeometry.GreyColor);
+        TagArenaMapGeometry.CreateBox("SwingEntry", root.transform, new Vector3(0f, -0.5f, z + 2f), new Vector3(6f, 1f, 4f), TagArenaMapGeometry.SurfaceRole.Floor);
         float chasmStart = z + 4f;
-        TagArenaMapGeometry.CreateBox("SwingExit", root.transform, new Vector3(0f, -0.5f, chasmStart + chasmLength + 2f), new Vector3(6f, 1f, 4f), TagArenaMapGeometry.GreyColor);
+        TagArenaMapGeometry.CreateBox("SwingExit", root.transform, new Vector3(0f, -0.5f, chasmStart + chasmLength + 2f), new Vector3(6f, 1f, 4f), TagArenaMapGeometry.SurfaceRole.Floor);
 
         var beamGo = new GameObject("OverheadBeam");
         beamGo.transform.SetParent(root.transform);
@@ -274,7 +275,7 @@ public static class PlaygroundBuilder
         var beamRenderer = GameObject.CreatePrimitive(PrimitiveType.Cube);
         beamRenderer.transform.SetParent(beamGo.transform, false);
         Object.DestroyImmediate(beamRenderer.GetComponent<BoxCollider>());
-        TagArenaMapGeometry.ApplyMaterial(beamRenderer, TagArenaMapGeometry.BrownColor);
+        beamRenderer.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.WallBody);
 
         var pivotGo = new GameObject("ChainPivot");
         pivotGo.transform.SetParent(root.transform);
