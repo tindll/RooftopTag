@@ -80,11 +80,12 @@ public static class PlaygroundBuilder
     }
 
     private const string TagArenaScenePath = "Assets/Scenes/TagArena.unity";
-    // The real 12-agent ruleset (2 Tagger / 10 Runner) per CLAUDE.md, not the "chase me" 3-agent
-    // mode — see RooftopAgentCount below for that. Built on the same branching RooftopArena
-    // topology as BuildRooftopArena (the old linear corridor had no branching, so a Runner could
-    // only go forward or get caught — self-play measured 0% Runner survival on it).
-    private const int TagArenaAgentCount = 12;
+    // "Chase me" debug mode: 3 agents (player + 2 bot Taggers). The player is always a Runner
+    // (see the default forcePlayerAsRunner=true on BuildTagArenaBootstrap below) so a human can
+    // quickly playtest being chased without waiting on role RNG. Built on the same branching
+    // RooftopArena topology as BuildRooftopArena — see RooftopAgentCount there for the real
+    // 12-agent ruleset, which is now the main game scene.
+    private const int TagArenaAgentCount = 3;
 
     [MenuItem("RooftopTag/Build Tag Arena")]
     public static void BuildTagArena()
@@ -108,9 +109,10 @@ public static class PlaygroundBuilder
         for (int i = 0; i < botRoots.Length; i++)
             botRoots[i] = TagArenaMapGeometry.BuildAgentCapsule($"Bot_{i}", playerLayer, spawnPoints[i + 1], new Color(0.6f, 0.6f, 0.6f));
 
-        // Player is assigned a role like any other agent — no "always-Runner human," matching the
-        // real 12-agent ruleset (unlike the 3-agent "chase me" scenes, which keep the default true).
-        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, forcePlayerAsRunner: false);
+        // Chase-me debug mode: the player is always a Runner (default forcePlayerAsRunner=true)
+        // being chased by 2 bot Taggers — unlike the main RooftopArena scene, which assigns
+        // roles to the player like any other agent.
+        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask);
 
         SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>(), sun);
 
@@ -120,7 +122,11 @@ public static class PlaygroundBuilder
     }
 
     private const string RooftopScenePath = "Assets/Scenes/RooftopArena.unity";
-    private const int RooftopAgentCount = 3; // player + 2 bot taggers (chase mode)
+    // The real 12-agent ruleset (2 Tagger / 10 Runner) per CLAUDE.md, not the "chase me" 3-agent
+    // mode — see TagArenaAgentCount above for that. This is the main game scene. Built on the
+    // branching RooftopArena topology (the old linear corridor had no branching, so a Runner
+    // could only go forward or get caught — self-play measured 0% Runner survival on it).
+    private const int RooftopAgentCount = 12;
 
     [MenuItem("RooftopTag/Build Rooftop Arena")]
     public static void BuildRooftopArena()
@@ -135,6 +141,16 @@ public static class PlaygroundBuilder
         foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward);
         foreach (var s in interactables.Swings) BuildRoofSwing(s.pivot, s.length, s.exitDir);
 
+        // Extra hand-placed swings — they're fun to use, so seed a few more across real roof gaps.
+        // These are player-only: unlike the interactables from RooftopArena.Build (which carry graph
+        // links), these have no parkour-graph edge, so bots won't route through them — a deliberate
+        // scoping choice (the graph/link data model is owned elsewhere and off-limits here). Each
+        // pivot sits above an actual gap between two roofs (verified against RooftopArena.Roofs), with
+        // the grab point (pivot - length) landing near roof height so a running player can reach it,
+        // and exitDir pointing along the gap-crossing direction.
+        foreach (var (pivot, len, exit) in ExtraRooftopSwings)
+            BuildRoofSwing(pivot, len, exit);
+
         Vector3[] spawns = RooftopArena.SpawnPoints(RooftopAgentCount);
         GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, spawns[0], new Color(0.2f, 0.6f, 1f));
         (GameObject cameraRig, Camera cam, Transform yawPivot) = TagArenaMapGeometry.BuildCamera(player);
@@ -143,7 +159,10 @@ public static class PlaygroundBuilder
         for (int i = 0; i < botRoots.Length; i++)
             botRoots[i] = TagArenaMapGeometry.BuildAgentCapsule($"Bot_{i}", playerLayer, spawns[i + 1], new Color(0.6f, 0.6f, 0.6f));
 
-        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask);
+        // Player is assigned a role like any other agent — no "always-Runner human," matching the
+        // real 12-agent ruleset (unlike TagArena's 3-agent "chase me" debug scene, which keeps
+        // the default true).
+        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, forcePlayerAsRunner: false);
 
         SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>(), sun);
 
@@ -191,6 +210,21 @@ public static class PlaygroundBuilder
     // InteractableMarker (namespace-free, so built here not in Game.MapGeometry). Mirrors
     // BuildSwingChasm's marker wiring; exitDir (the From→To crossing direction) rides in the marker's
     // outwardDirection field, which the bootstraps thread into ChainSwingInteractable's 3-arg Initialize.
+    // Hand-picked player-only swings for BuildRooftopArena, each spanning a real gap between two roofs
+    // in RooftopArena.Roofs (indices in comments). Pivot y = grab-height + length; grab point sits ~1m
+    // above the higher roof lip so a sprinting player catches the trigger sphere (radius 1.5).
+    private static readonly (Vector3 pivot, float length, Vector3 exitDir)[] ExtraRooftopSwings =
+    {
+        // Roof_E2 (26,0,h3) ⇄ Roof_N1EE (26,13,h6): N-S gap at x26, z∈(4,9).
+        (new Vector3(26f, 10f, 6.5f), 5f, new Vector3(0f, 0f, 1f)),
+        // Roof_N1EE (26,13,h6) ⇄ Roof_N2EE (26,26,h7): N-S gap at x26, z∈(17,22).
+        (new Vector3(26f, 11.5f, 19.5f), 5f, new Vector3(0f, 0f, 1f)),
+        // Roof_S2 (0,-26,h3) ⇄ Roof_S2E (13,-26,h4): E-W gap at z-26, x∈(4.5,9).
+        (new Vector3(6.5f, 9f, -26f), 5f, new Vector3(1f, 0f, 0f)),
+        // Con_Gate (-13,-13,h4) ⇄ Con_Ramps (-13,-26,h2.5): N-S gap at x-13, z∈(-22,-17).
+        (new Vector3(-13f, 9f, -19.5f), 5f, new Vector3(0f, 0f, -1f)),
+    };
+
     private static void BuildRoofSwing(Vector3 pivot, float length, Vector3 exitDir)
     {
         var root = new GameObject("RoofSwingSection");

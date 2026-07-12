@@ -245,7 +245,49 @@ public sealed class TagRulesTests
     }
 
     [UnityTest]
-    public IEnumerator TagArenaScene_SpawnsWithCorrectRoleDistribution()
+    public IEnumerator RooftopArenaScene_SpawnsWithCorrectRoleDistribution()
+    {
+        Scene rooftopArenaScene = EditorSceneManager.LoadSceneInPlayMode(
+            "Assets/Scenes/RooftopArena.unity",
+            new LoadSceneParameters(LoadSceneMode.Single));
+        yield return null;
+        yield return null;
+        yield return null;
+
+        RoundController? controller = Object.FindAnyObjectByType<RoundController>();
+        Assert.IsNotNull(controller, "RoundController should exist in the Rooftop Arena scene.");
+
+        int taggers = 0;
+        int runners = 0;
+        foreach (TagAgent agent in controller!.Agents)
+        {
+            if (agent.Role == Role.Tagger) taggers++;
+            else runners++;
+        }
+
+        Debug.Log($"METRIC rooftop_arena_agent_count={controller.Agents.Count} taggers={taggers} runners={runners}");
+        // The real 12-agent ruleset (2 Tagger / 10 Runner) per CLAUDE.md — RooftopArena is now the
+        // main game scene, building on the branching RooftopArena topology with
+        // forcePlayerAsRunner=false, not the 3-agent "chase me" debug scene (that mode now lives
+        // separately as TagArena.unity — see TagArenaScene_IsChaseMeDebugMode below).
+        Assert.AreEqual(12, controller.Agents.Count, "Rooftop Arena should spawn exactly 12 agents.");
+        Assert.AreEqual(2, taggers, "Should start with exactly 2 taggers.");
+        Assert.AreEqual(10, runners, "Should start with exactly 10 runners.");
+
+        // Single-mode scene loads leak forward: Unity's physics simulation and Update loop run
+        // across ALL loaded scenes regardless of which is "active", so the 12 live agents and
+        // real map geometry this test just loaded would otherwise keep ticking and colliding
+        // with every later test's ad-hoc GameObjects (this is exactly what broke
+        // ParkourBotInput_AvoidsRunningOffCliff — its isolated 10x10 test platform ended up
+        // sharing a physics world with a full leftover Tag Arena). Swap to a blank scene and
+        // unload this one so later tests get a clean physics world.
+        Scene blank = SceneManager.CreateScene("TestIsolationBlank");
+        SceneManager.SetActiveScene(blank);
+        yield return SceneManager.UnloadSceneAsync(rooftopArenaScene);
+    }
+
+    [UnityTest]
+    public IEnumerator TagArenaScene_IsChaseMeDebugMode()
     {
         Scene tagArenaScene = EditorSceneManager.LoadSceneInPlayMode(
             "Assets/Scenes/TagArena.unity",
@@ -266,17 +308,17 @@ public sealed class TagRulesTests
         }
 
         Debug.Log($"METRIC tag_arena_agent_count={controller.Agents.Count} taggers={taggers} runners={runners}");
-        // The real 12-agent ruleset (2 Tagger / 10 Runner) per CLAUDE.md — Tag Arena now builds on
-        // the branching RooftopArena topology with forcePlayerAsRunner=false, not the old 3-agent
-        // "chase me" scene (that mode still exists separately as RooftopArena.unity).
-        Assert.AreEqual(12, controller.Agents.Count, "Tag Arena should spawn exactly 12 agents.");
+        // "Chase me" debug mode: 3 agents (player + 2 bot Taggers), player forced as Runner —
+        // not the real 12-agent ruleset (see RooftopArenaScene_SpawnsWithCorrectRoleDistribution
+        // above for that, which is now the main game scene).
+        Assert.AreEqual(3, controller.Agents.Count, "Tag Arena should spawn exactly 3 agents.");
         Assert.AreEqual(2, taggers, "Should start with exactly 2 taggers.");
-        Assert.AreEqual(10, runners, "Should start with exactly 10 runners.");
+        Assert.AreEqual(1, runners, "Should start with exactly 1 runner.");
 
         // Single-mode scene loads leak forward: Unity's physics simulation and Update loop run
-        // across ALL loaded scenes regardless of which is "active", so the 12 live agents and
-        // real map geometry this test just loaded would otherwise keep ticking and colliding
-        // with every later test's ad-hoc GameObjects (this is exactly what broke
+        // across ALL loaded scenes regardless of which is "active", so the live agents and real
+        // map geometry this test just loaded would otherwise keep ticking and colliding with
+        // every later test's ad-hoc GameObjects (this is exactly what broke
         // ParkourBotInput_AvoidsRunningOffCliff — its isolated 10x10 test platform ended up
         // sharing a physics world with a full leftover Tag Arena). Swap to a blank scene and
         // unload this one so later tests get a clean physics world.

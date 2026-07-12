@@ -21,9 +21,12 @@ public static class ScreenshotTool
         ("Assets/Scenes/RooftopArena.unity", new Vector3(-20f, 14f, -20f), new Vector3(8f, 4f, 12f)),
         ("Assets/Scenes/RooftopArena.unity", new Vector3(0f, 5.5f, -4f), new Vector3(0f, 4.5f, 13f)),
         ("Assets/Scenes/RooftopArena.unity", new Vector3(30f, 20f, 45f), new Vector3(0f, 4f, 8f)),
-        ("Assets/Scenes/TagArena.unity", new Vector3(-22f, 12f, -18f), new Vector3(8f, 4f, 13f)),
-        ("Assets/Scenes/TagArena.unity", new Vector3(-50f, 16f, -40f), new Vector3(-26f, 3f, -15f)),
-        ("Assets/Scenes/TagArena.unity", new Vector3(-44f, 5.5f, 6f), new Vector3(-37f, 3f, -20f)),
+        // Construction-zone vantages: RooftopArena is now the main game scene, so these
+        // (originally captured against TagArena.unity) point there. The third original TagArena
+        // vantage (-22,12,-18 -> 8,4,13) was dropped as a near-duplicate of the overview shot
+        // immediately above (-20,14,-20 -> 8,4,12).
+        ("Assets/Scenes/RooftopArena.unity", new Vector3(-50f, 16f, -40f), new Vector3(-26f, 3f, -15f)),
+        ("Assets/Scenes/RooftopArena.unity", new Vector3(-44f, 5.5f, 6f), new Vector3(-37f, 3f, -20f)),
         ("Assets/Scenes/MovementPlayground.unity", new Vector3(-14f, 8f, -8f), new Vector3(0f, 1f, 25f)),
     };
 
