@@ -34,6 +34,10 @@ public sealed class TagAgent : MonoBehaviour
     private const float ArmLungeDeg = -35f; // both arms driven up-and-forward — the committed "dive" reach
     private const float ArmMantleRaisedDeg = -70f;
     private const float ArmMantlePushedDeg = 110f;
+    // Sustained hang pose for swinging/climbing a ladder — arms reaching overhead to the rope/rungs,
+    // a touch past the mantle-raise angle. Unlike the one-shot gestures, this is HELD for the whole
+    // state (see EaseArmsTo below) rather than swept out and immediately back.
+    private const float ArmHangDeg = -75f;
 
     // Lunge body-dive: pitch the whole model forward over the lunge, peaking mid-dive then easing
     // back. Applied in LateUpdate so it's purely visual — CharacterMotor rewrites the transform's
@@ -225,6 +229,13 @@ public sealed class TagAgent : MonoBehaviour
                 // Bot-only auto-climb over a low wall: the same "catch a surface" reach, but it is a
                 // brief per-edge scramble like a mantle, so use the short mantle timing.
                 PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.35f);
+            else if (state is MotorState.OnSwing or MotorState.OnLadder)
+                // Entering a sustained hang (rope or ladder): ease up to the hang pose and HOLD it —
+                // not a one-shot sweep, since the state can last many seconds.
+                PlayArmHold(ArmHangDeg, easeDuration: 0.15f);
+            else if (_previousMotorState is MotorState.OnSwing or MotorState.OnLadder)
+                // Leaving the hang: ease back down to rest.
+                PlayArmAnimation(ArmHangDeg, ArmHangDeg, outDuration: 0f, backDuration: 0.3f);
         }
         _previousMotorState = state;
 
@@ -251,8 +262,12 @@ public sealed class TagAgent : MonoBehaviour
         _lungeCooldownRemaining = _config.lungeCooldown;
 
         // Dive gesture: both arms thrust fully forward and hold out through the lunge before easing
-        // back — reads as a committed dive rather than the quick jab of a ranged tag reach.
-        PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.08f, backDuration: 0.45f);
+        // back — reads as a committed dive rather than the quick jab of a ranged tag reach. Skipped
+        // while hanging from a swing/ladder (Update() still runs and TryLunge can still fire there)
+        // so the sweep-back-to-rest doesn't cut through the held hang pose; the lunge impulse itself
+        // still applies either way.
+        if (_motor.CurrentState is not (MotorState.OnSwing or MotorState.OnLadder))
+            PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.08f, backDuration: 0.45f);
         _diveElapsed = 0f; // start the body-pitch dive (see LateUpdate)
 
         _lungeTagWindowRemaining = LungeTagWindow; // arm contact-tag for the dive
@@ -333,8 +348,10 @@ public sealed class TagAgent : MonoBehaviour
         if (Role != Role.Tagger || IsInGrace) return;
 
         // The reach animation plays on every attempt, not just a successful one — it's feedback
-        // that the tag input registered, same as swinging at empty air still swings.
-        PlayArmAnimation(ArmRestDeg, ArmTagReachDeg, outDuration: 0.08f, backDuration: 0.22f);
+        // that the tag input registered, same as swinging at empty air still swings. Skipped while
+        // hanging (see TryLunge) so it doesn't sweep the held hang pose back to rest mid-swing.
+        if (_motor.CurrentState is not (MotorState.OnSwing or MotorState.OnLadder))
+            PlayArmAnimation(ArmRestDeg, ArmTagReachDeg, outDuration: 0.08f, backDuration: 0.22f);
 
         if (_roundController == null || !_roundController.IsPastStartGrace) return;
 
@@ -416,6 +433,40 @@ public sealed class TagAgent : MonoBehaviour
     {
         if (_armCoroutine != null) StopCoroutine(_armCoroutine);
         _armCoroutine = StartCoroutine(AnimateArmSweep(fromDeg, toDeg, outDuration, backDuration));
+    }
+
+    /// <summary>
+    /// Eases the arms to <paramref name="holdDeg"/> and then HOLDS there indefinitely (unlike
+    /// <see cref="PlayArmAnimation"/>, which always sweeps back to rest) — used for the sustained
+    /// swing/ladder hang pose, which lasts as long as the motor stays in that state rather than
+    /// being a brief one-shot gesture.
+    /// </summary>
+    private void PlayArmHold(float holdDeg, float easeDuration)
+    {
+        if (_armCoroutine != null) StopCoroutine(_armCoroutine);
+        _armCoroutine = StartCoroutine(EaseArmHold(holdDeg, easeDuration));
+    }
+
+    private IEnumerator EaseArmHold(float holdDeg, float easeDuration)
+    {
+        float fromDeg = _leftArmPivot != null ? _leftArmPivot.localRotation.eulerAngles.x : ArmRestDeg;
+        // eulerAngles wraps to [0, 360), but our pose angles are small/negative — unwrap back to the
+        // signed range the rest of this class works in so the Lerp doesn't take the long way around.
+        if (fromDeg > 180f) fromDeg -= 360f;
+
+        float t = 0f;
+        while (t < easeDuration)
+        {
+            t += Time.deltaTime;
+            SetArmPitch(Mathf.Lerp(fromDeg, holdDeg, t / easeDuration));
+            yield return null;
+        }
+
+        SetArmPitch(holdDeg);
+        // Deliberately no _armCoroutine = null and no further yielding: the pose just stays put at
+        // holdDeg with nothing left to do, so the coroutine can end here. The reference is cleared
+        // implicitly-safe to leave stale since the next PlayArmAnimation/PlayArmHold call always
+        // stops it via the null check before reassigning.
     }
 
     private IEnumerator AnimateArmSweep(float fromDeg, float toDeg, float outDuration, float backDuration)
