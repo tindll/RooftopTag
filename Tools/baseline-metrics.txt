@@ -1,0 +1,1 @@
+METRIC selfplay_batch matches=10 runner_win_rate=0.00 runner_avg_survival=0.00 speed_p50=1.80 speed_p90=8.00 total_stuck=107 total_fallen=0 total_edge_usage=[] total_edge_attempts=[] max_distance_from_spawn=25.4 jump_takeoff_speed_avg=0.00 jump_landing_err_avg=0.00 jump_land_within_1.75m=0.00 short_jump_signed_avg=0.00(n=0) long_jump_signed_avg=0.00(n=0)
