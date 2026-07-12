@@ -116,12 +116,30 @@ public sealed class MovementConfig : ScriptableObject
     [Serializable]
     public struct SwingSettings
     {
-        public float pumpAngularAcceleration;
-        public float pumpPhaseWindowDegrees;
+        // Tangential force (m/s^2) a full WASD input applies to the swing, camera-relative for the
+        // player. This replaces the old bottom-window angular "pump": now holding a direction just
+        // tilts the effective gravity, so building momentum is easy and works in any direction.
+        public float inputAcceleration;
+
+        // Exponential velocity decay expressed PER SECOND (applied as Mathf.Exp(-dampingPerSecond*dt)),
+        // deliberately NOT per-tick. The old model used a per-tick factor (~2%/tick), which at the 50Hz
+        // fixed step compounds to ~64%/s of velocity lost — the root cause the swing could never build
+        // speed. A per-second rate is framerate-independent and honest about the actual decay.
+        public float dampingPerSecond;
+
+        // Hard cap on tangential (swing) speed. Also bounds release speed and keeps the bob below the
+        // ~12.5 m/s that going over the top would need at L=4, so rope slack never has to be modelled.
+        public float maxTangentialSpeed;
+
+        // Launch velocity on release = swing velocity * this (momentum-true — a fast swing launches fast).
         public float releaseSpeedMultiplier;
-        public float maxAngularSpeed;
-        public float damping;
-        public float grabRange;
+
+        // Extra upward velocity added on a JUMP release only (E releases flat). Rewards a timed jump-out
+        // with a higher arc without inflating the horizontal momentum the swing earned.
+        public float jumpReleaseBonus;
+
+        // Window after attach during which release input is ignored, so the grab press can't instantly bail.
+        public float attachReleaseGraceSeconds;
     }
 
     public GroundSettings ground = new()
@@ -232,14 +250,18 @@ public sealed class MovementConfig : ScriptableObject
 
     public SwingSettings swing = new()
     {
-        // Tuned up toward the design goal ("a well-timed release should be one of the fastest moves
-        // in the game"): a stronger pump builds speed faster and the release multiplier gives an
-        // extra kick, so a sprint-entry swing clears the chasm and launches you out ahead of sprint.
-        pumpAngularAcceleration = 4f,
-        pumpPhaseWindowDegrees = 30f,
-        releaseSpeedMultiplier = 1.3f,
-        maxAngularSpeed = 5.5f,
-        damping = 0.02f,
-        grabRange = 1.5f,
+        // Defaults derived from pendulum math, not guesses (playground swing L=4):
+        //   Holding one direction adds inputAcceleration (20 m/s^2) tangentially, which tilts the
+        //   effective gravity by atan(20/9.81) ~= 64 degrees. Peak speed at the new equilibrium is
+        //   sqrt(2 * g_eff * L * (1 - cos 64deg)) ~= 10 m/s, reached in a half-period ~= 1.3 s.
+        //   Release at 10 * 1.15 = 11.5 m/s — under the 13 m/s global cap, at "one of the fastest
+        //   moves in the game" level. A sprint entry (~8 m/s) seeds ~8 m/s before any pumping.
+        //   dampingPerSecond=0.15 is ~14%/s decay, vs the old model's ~64%/s that killed all momentum.
+        inputAcceleration = 20f,
+        dampingPerSecond = 0.15f,
+        maxTangentialSpeed = 12f,
+        releaseSpeedMultiplier = 1.15f,
+        jumpReleaseBonus = 1.5f,
+        attachReleaseGraceSeconds = 0.15f,
     };
 }

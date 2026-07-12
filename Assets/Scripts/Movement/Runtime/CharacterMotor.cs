@@ -72,10 +72,16 @@ public sealed class CharacterMotor : MonoBehaviour
     private float _ladderT;
     private float _ladderCarryover;
 
+    // Approach direction captured when a climb-to-ledge starts, handed to StartMantle at the top.
+    // (Formerly overloaded onto the now-removed _swingPlaneAxis field; the swing no longer needs it.)
+    private Vector3 _climbApproachDir;
+
     private ChainSwingInteractable? _currentSwing;
-    private float _swingTheta;
-    private float _swingOmega;
-    private Vector3 _swingPlaneAxis;
+    // World-space velocity of the bob on the swing (the full simulation state — see TickSwing). The
+    // old planar angle-state (_swingTheta/_swingOmega/_swingPlaneAxis) only swung in one frozen plane.
+    private Vector3 _swingVelocity;
+    // Counts down after attach: during it, release input is ignored so the grab press can't instantly bail.
+    private float _swingGrace;
 
     private float _airborneStartTime = float.NegativeInfinity;
     private float _lastSlideEndTime = float.NegativeInfinity;
@@ -153,6 +159,8 @@ public sealed class CharacterMotor : MonoBehaviour
     {
         _currentLadder = null;
         _currentSwing = null;
+        _swingVelocity = Vector3.zero;
+        _swingGrace = 0f;
         _lastWallCollider = null;
 
         _capsule.height = _defaultCapsuleHeight;
@@ -861,7 +869,7 @@ public sealed class CharacterMotor : MonoBehaviour
     {
         _state = MotorState.Climbing;
         _transitionEnd = ledgePoint;
-        _swingPlaneAxis = approachDir.normalized;
+        _climbApproachDir = approachDir.normalized;
     }
 
     private void TickClimbing(float dt)
@@ -877,7 +885,7 @@ public sealed class CharacterMotor : MonoBehaviour
         float remaining = _transitionEnd.y - pos.y;
         if (remaining <= config.climb.mantleHandoffDistance)
         {
-            StartMantle(_transitionEnd, _swingPlaneAxis);
+            StartMantle(_transitionEnd, _climbApproachDir);
         }
         else if (pos.y - transform.position.y > config.climb.climbMaxHeight)
         {
@@ -939,6 +947,12 @@ public sealed class CharacterMotor : MonoBehaviour
 
     // ---------------------------------------------------------------- Swing
 
+    // Velocity-state spherical pendulum. The full simulation state is a world-space velocity
+    // (_swingVelocity); gravity plus a camera-relative WASD tangential force integrate it, a taut-rope
+    // constraint projects it onto the rope's tangent plane, and the bob is snapped back onto the sphere
+    // of radius L around the pivot each tick. Because the state IS a velocity, a momentum-true release
+    // falls out for free (launch velocity == swing velocity times a multiplier) and the swing is
+    // omnidirectional — any WASD direction pumps it, unlike the old frozen-plane angle model.
     private void TickSwing(float dt)
     {
         if (_currentSwing is null)
@@ -947,37 +961,54 @@ public sealed class CharacterMotor : MonoBehaviour
             return;
         }
 
+        _swingGrace = Mathf.Max(0f, _swingGrace - dt);
+
+        Vector3 pivot = _currentSwing.PivotPosition;
         float length = _currentSwing.Length;
-        float g = Physics.gravity.magnitude;
-        float angularAccel = -(g / length) * Mathf.Sin(_swingTheta);
+        // Radial unit vector from pivot to bob. Tangential motion is anything orthogonal to this.
+        Vector3 ropeDir = (transform.position - pivot).normalized;
 
-        float pumpInput = _input.Move.y;
-        bool nearBottomPhase = Mathf.Abs(_swingTheta) * Mathf.Rad2Deg <= config.swing.pumpPhaseWindowDegrees;
-        if (nearBottomPhase && Mathf.Abs(pumpInput) > 0.1f && Mathf.Sign(pumpInput) == Mathf.Sign(_swingOmega == 0f ? pumpInput : _swingOmega))
+        // Accel = gravity + the tangent-projected wish force. ComputeWishDirection is already
+        // camera-relative for the player and world-space for bots, so both drive the swing naturally.
+        Vector3 wish = Vector3.ProjectOnPlane(ComputeWishDirection(), ropeDir);
+        Vector3 accel = Physics.gravity + wish * config.swing.inputAcceleration;
+
+        // Update order: accelerate -> re-project onto the (possibly rotated) tangent plane so the taut
+        // rope carries no radial velocity -> exponential damping -> clamp tangential speed.
+        _swingVelocity += accel * dt;
+        _swingVelocity = Vector3.ProjectOnPlane(_swingVelocity, ropeDir);
+        _swingVelocity *= Mathf.Exp(-config.swing.dampingPerSecond * dt);
+        if (_swingVelocity.magnitude > config.swing.maxTangentialSpeed)
+            _swingVelocity = _swingVelocity.normalized * config.swing.maxTangentialSpeed;
+
+        // Integration (CRITICAL — avoids double-integration): the solver integrates linearVelocity to
+        // advance the bob tangentially, so linearVelocity IS the driver. MovePosition is used ONLY to
+        // correct the small radial drift (chord vs arc) back onto the sphere — it must NOT also advance
+        // the position by vel*dt, or the body would move at ~2x speed.
+        _rb.linearVelocity = _swingVelocity;
+        Vector3 onSphere = pivot + (transform.position - pivot).normalized * length;
+        _rb.MovePosition(onSphere);
+
+        // Rope-slack limitation: slack (the bob going over the top / the rope going taut-to-slack) is
+        // not modeled — with maxTangentialSpeed=12 the bob can't reach the ~12.5 m/s needed to go over
+        // the top at L=4, so it stays a well-behaved taut pendulum in practice.
+
+        if (_swingGrace > 0f) return;
+
+        // Release: launch velocity is the swing velocity times releaseSpeedMultiplier (momentum-true).
+        // E (Interact) = a flat momentum-true bail; Jump adds an upward boost for a higher arc — a
+        // deliberate timing-reward distinction. Raw edge on both; the attach press can't double-fire
+        // (attach happens in a Grounded/Airborne tick and the one-frame edge clears before the first
+        // OnSwing tick, and the grace above is belt-and-suspenders anyway). A bot can't time an apex
+        // release, so it auto-releases the moment the swing would fling it toward the exit direction
+        // and upward — an up-and-across launch that carries it over the chasm to the far platform.
+        Vector3 releaseVel = _swingVelocity * config.swing.releaseSpeedMultiplier;
+        bool jumpRelease = _input.JumpPressed;
+        bool botAutoRelease = cameraYaw == null && Vector3.Dot(releaseVel, _currentSwing.ExitDirection) > 5f && releaseVel.y > 1f;
+        if (jumpRelease || _input.InteractPressed || botAutoRelease)
         {
-            angularAccel += Mathf.Sign(_swingOmega == 0f ? pumpInput : _swingOmega) * config.swing.pumpAngularAcceleration;
-        }
-
-        _swingOmega += angularAccel * dt;
-        _swingOmega *= 1f - config.swing.damping;
-        _swingOmega = Mathf.Clamp(_swingOmega, -config.swing.maxAngularSpeed, config.swing.maxAngularSpeed);
-        _swingTheta += _swingOmega * dt;
-
-        Vector3 offset = (Mathf.Sin(_swingTheta) * _swingPlaneAxis - Mathf.Cos(_swingTheta) * Vector3.up) * length;
-        Vector3 pos = _currentSwing.PivotPosition + offset;
-        _rb.MovePosition(pos);
-
-        Vector3 tangent = (Mathf.Cos(_swingTheta) * _swingPlaneAxis + Mathf.Sin(_swingTheta) * Vector3.up).normalized;
-        Vector3 releaseVelocity = tangent * (_swingOmega * length * config.swing.releaseSpeedMultiplier);
-
-        // Player releases on jump. A bot can't time an apex release, so it auto-releases the moment
-        // the swing would fling it toward the swing's exit direction (the From→To crossing axis,
-        // +Z for the playground corridor swing) and upward — an up-and-across launch that carries it
-        // over the chasm to the far platform.
-        bool botAutoRelease = cameraYaw == null && Vector3.Dot(releaseVelocity, _currentSwing.ExitDirection) > 5f && releaseVelocity.y > 1f;
-        if (_input.JumpPressed || botAutoRelease)
-        {
-            _rb.linearVelocity = releaseVelocity;
+            if (jumpRelease) releaseVel += Vector3.up * config.swing.jumpReleaseBonus;
+            _rb.linearVelocity = releaseVel;
             _currentSwing = null;
             _state = MotorState.Airborne;
             SwingReleased?.Invoke();
@@ -1021,16 +1052,12 @@ public sealed class CharacterMotor : MonoBehaviour
     private void AttachToSwing(ChainSwingInteractable swing)
     {
         _currentSwing = swing;
-        Vector3 toPlayer = transform.position - swing.PivotPosition;
-        Vector3 horizontal = Vector3.ProjectOnPlane(toPlayer, Vector3.up);
-        _swingPlaneAxis = horizontal.sqrMagnitude > 0.0001f ? horizontal.normalized : transform.forward;
 
-        Vector3 flatOffset = new(Vector3.Dot(toPlayer, _swingPlaneAxis), toPlayer.y, 0f);
-        _swingTheta = Mathf.Atan2(flatOffset.x, -flatOffset.y);
-
-        Vector3 tangent = (Mathf.Cos(_swingTheta) * _swingPlaneAxis + Mathf.Sin(_swingTheta) * Vector3.up).normalized;
-        float tangentialSpeed = Vector3.Dot(_rb.linearVelocity, tangent);
-        _swingOmega = tangentialSpeed / swing.Length;
+        // Seed the swing velocity from the entry momentum, projected onto the rope's tangent plane so
+        // any-direction speed carries into the swing (the radial component is dropped by the taut rope).
+        Vector3 ropeDir = (transform.position - swing.PivotPosition).normalized;
+        _swingVelocity = Vector3.ProjectOnPlane(_rb.linearVelocity, ropeDir);
+        _swingGrace = config.swing.attachReleaseGraceSeconds;
 
         _state = MotorState.OnSwing;
     }
