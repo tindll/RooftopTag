@@ -78,3 +78,4 @@ _*.xml
 # Tooling artifacts
 Tools/selfplay.log
 Tools/selfplay-results.xml
+.superpowers/
