@@ -127,8 +127,12 @@ public sealed class MovementConfig : ScriptableObject
         // speed. A per-second rate is framerate-independent and honest about the actual decay.
         public float dampingPerSecond;
 
-        // Hard cap on tangential (swing) speed. Also bounds release speed and keeps the bob below the
-        // ~12.5 m/s that going over the top would need at L=4, so rope slack never has to be modelled.
+        // Speed budget AT THE LOWEST POINT of the arc — i.e. a total energy-per-mass budget of
+        // 0.5 * maxTangentialSpeed^2. The swing's speed cap is applied HEIGHT-DEPENDENTLY from this
+        // (see CharacterMotor.TickSwing): as the bob rises, its allowed speed shrinks by energy
+        // conservation, so it decelerates to a soft apex instead of hitting a fixed angle wall. Kept
+        // under the ~12.5 m/s that going over the pivot needs at L=4, so the taut-rope model never has
+        // to handle slack. Also bounds release speed.
         public float maxTangentialSpeed;
 
         // Launch velocity on release = swing velocity * this (momentum-true — a fast swing launches fast).
@@ -140,10 +144,6 @@ public sealed class MovementConfig : ScriptableObject
 
         // Window after attach during which release input is ignored, so the grab press can't instantly bail.
         public float attachReleaseGraceSeconds;
-
-        // Max polar angle (degrees) the bob may reach, measured from straight-down. 90 = horizontal;
-        // slightly above allows an aggressive rim without letting the bob pump up over the pivot.
-        public float maxSwingAngleDegrees;
     }
 
     public GroundSettings ground = new()
@@ -254,19 +254,28 @@ public sealed class MovementConfig : ScriptableObject
 
     public SwingSettings swing = new()
     {
-        // Defaults derived from pendulum math, not guesses (playground swing L=4):
-        //   Holding one direction adds inputAcceleration (20 m/s^2) tangentially, which tilts the
-        //   effective gravity by atan(20/9.81) ~= 64 degrees. Peak speed at the new equilibrium is
-        //   sqrt(2 * g_eff * L * (1 - cos 64deg)) ~= 10 m/s, reached in a half-period ~= 1.3 s.
-        //   Release at 10 * 1.15 = 11.5 m/s — under the 13 m/s global cap, at "one of the fastest
-        //   moves in the game" level. A sprint entry (~8 m/s) seeds ~8 m/s before any pumping.
+        // Defaults derived from pendulum math, not guesses (playground swing L=4). A modest ~15-20%
+        // momentum trim from the previous 20 / 12 tuning, per playtest feedback that the rope moved too
+        // much:
+        //   Holding one direction adds inputAcceleration (16 m/s^2) tangentially, which tilts the
+        //   effective gravity by atan(16/9.81) ~= 58.5 degrees, g_eff = sqrt(9.81^2 + 16^2) ~= 18.8 m/s^2.
+        //   Peak speed at the new equilibrium is sqrt(2 * g_eff * L * (1 - cos 58.5deg)) ~= 8.5 m/s,
+        //   reached in a half-period ~= pi*sqrt(L/g_eff) ~= 1.45 s. Release at 8.5 * 1.15 ~= 9.7 m/s —
+        //   under the 13 m/s global cap, above sprint (8), still "one of the fastest moves in the game".
+        //   A sprint entry (~8 m/s) seeds ~8 m/s before any pumping. releaseSpeedMultiplier/jumpReleaseBonus
+        //   kept as-is: the trimmed base speed still releases comfortably above sprint.
+        //   maxTangentialSpeed=10 is now an ENERGY BUDGET, not a flat wall: the swing's speed cap is
+        //   applied height-dependently (see TickSwing), so instead of a hard invisible-ceiling angle
+        //   clamp the bob simply runs out of speed budget as it climbs and coasts to a soft apex at
+        //   maxTangentialSpeed^2/(2g) = 100/19.62 ~= 5.1 m above the arc's lowest point (~106 deg polar at
+        //   L=4). That is well under the 2L=8 m (~12.5 m/s) needed to swing over the pivot, so the taut
+        //   rope never goes slack — pump harder within the budget to reach higher, no felt wall.
         //   dampingPerSecond=0.15 is ~14%/s decay, vs the old model's ~64%/s that killed all momentum.
-        inputAcceleration = 20f,
+        inputAcceleration = 16f,
         dampingPerSecond = 0.15f,
-        maxTangentialSpeed = 12f,
+        maxTangentialSpeed = 10f,
         releaseSpeedMultiplier = 1.15f,
         jumpReleaseBonus = 1.5f,
         attachReleaseGraceSeconds = 0.15f,
-        maxSwingAngleDegrees = 95f,
     };
 }

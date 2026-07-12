@@ -293,7 +293,7 @@ public sealed class MovementMetricsTests
         Debug.Log($"METRIC swing_release_speed_mps={releaseSpeed:0.00} (peak_during_swing={maxSpeedSoFar:0.00})");
         Assert.AreEqual(MotorState.Airborne, motor.CurrentState, "Jump should release the character from the swing into airborne state.");
         Assert.Greater(releaseSpeed, 6f, "Swing release should impart a meaningful launch velocity, at or above sprint speed — the design goal is 'one of the fastest moves in the game'.");
-        Assert.Less(releaseSpeed, 15f, "Release speed should stay under maxTangentialSpeed(12) * releaseMultiplier(1.15) + jump bonus(1.5) rounded up; a higher value indicates a double-integration bug in the velocity-state pendulum.");
+        Assert.Less(releaseSpeed, 15f, "Release speed should stay under maxTangentialSpeed(10) * releaseMultiplier(1.15) + jump bonus(1.5) with headroom (~13); a higher value indicates a double-integration bug in the velocity-state pendulum.");
         AssertNoPhysicsExplosion(motor);
     }
 
@@ -457,7 +457,7 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
-    public IEnumerator Swing_CannotExceedMaxAngle()
+    public IEnumerator Swing_EnergyCapBoundsSwingHeight()
     {
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -20f, 0f), new Vector3(300f, 1f, 300f));
@@ -474,8 +474,9 @@ public sealed class MovementMetricsTests
         yield return new WaitForFixedUpdate();
         Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should attach to the swing when in range and interacting.");
 
-        // Aggressive alternating pump (old square-wave style) is good at pouring energy into the
-        // pendulum — without the polar-angle cap, sustained pumping climbs past the pivot.
+        // Aggressive alternating pump (square-wave style) pours as much energy into the pendulum as this
+        // model allows. The height-dependent energy cap (no hard angle wall) should let the bob climb but
+        // converge to a BOUNDED apex set by the energy budget, never running away over the pivot.
         float maxAngle = 0f;
         float maxHeight = go.transform.position.y;
         float elapsed = 0f;
@@ -492,11 +493,28 @@ public sealed class MovementMetricsTests
             AssertNoPhysicsExplosion(motor);
         }
 
-        Debug.Log($"METRIC swing_max_polar_angle_deg={maxAngle:0.00} swing_max_height_m={maxHeight:0.00} pivot_y={pivot.y:0.00}");
-        Assert.LessOrEqual(maxAngle, _config.swing.maxSwingAngleDegrees + 5f,
-            "Swing should never exceed maxSwingAngleDegrees from straight-down by more than a small numerical-integration tolerance.");
-        Assert.LessOrEqual(maxHeight, pivot.y + 0.5f,
-            "Even with sustained aggressive pumping, the swing should never carry the player above the pivot.");
+        // Energy conservation: from a speed budget of maxTangentialSpeed at the arc's lowest point
+        // (pivot.y - length), the bob can rise at most maxTangentialSpeed^2/(2g) before its speed budget
+        // hits zero. This is the analytic ceiling the height-dependent cap enforces — no invisible wall.
+        float g = Physics.gravity.magnitude;
+        float lowestPointY = pivot.y - length;
+        float energyCeilingY = lowestPointY + (_config.swing.maxTangentialSpeed * _config.swing.maxTangentialSpeed) / (2f * g);
+        float overTheTopY = pivot.y + length;
+
+        Debug.Log($"METRIC swing_max_polar_angle_deg={maxAngle:0.00} swing_max_height_m={maxHeight:0.00} energy_ceiling_m={energyCeilingY:0.00} pivot_y={pivot.y:0.00} over_top_y={overTheTopY:0.00}");
+
+        // 1) Bounded: sustained pumping never exceeds the energy-budget ceiling (small tolerance for
+        //    fixed-step numerical integration). This is the core proof that Part 2's cap self-limits.
+        Assert.LessOrEqual(maxHeight, energyCeilingY + 0.6f,
+            "The energy cap should bound the swing's apex to ~maxTangentialSpeed^2/(2g) above the lowest point, regardless of how hard the player pumps.");
+        // 2) Comfortably clear of going over the pivot — proves the soft apex sits far below the top and
+        //    the bob stays a taut pendulum (no slack, no flip).
+        Assert.Less(maxHeight, overTheTopY - 1f,
+            "Even with sustained aggressive pumping, the swing must never carry the player near the top of the arc / over the pivot.");
+        // 3) Sanity: the pump does actually build meaningful height (the cap isn't just pinning the bob
+        //    at the bottom), so the test genuinely exercises the height-dependent regime.
+        Assert.Greater(maxHeight, lowestPointY + 1.5f,
+            "Pumping should build a substantial swing amplitude, exercising the height-dependent cap rather than sitting at the bottom.");
         AssertNoPhysicsExplosion(motor);
     }
 

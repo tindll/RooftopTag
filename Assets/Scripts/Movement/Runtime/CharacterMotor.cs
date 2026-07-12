@@ -982,8 +982,21 @@ public sealed class CharacterMotor : MonoBehaviour
         _swingVelocity += accel * dt;
         _swingVelocity = Vector3.ProjectOnPlane(_swingVelocity, ropeDir);
         _swingVelocity *= Mathf.Exp(-config.swing.dampingPerSecond * dt);
-        if (_swingVelocity.magnitude > config.swing.maxTangentialSpeed)
-            _swingVelocity = _swingVelocity.normalized * config.swing.maxTangentialSpeed;
+
+        // Energy-conserving speed cap (replaces both the old flat maxTangentialSpeed clamp AND the hard
+        // angle wall). Treat maxTangentialSpeed as the speed budget AT THE LOWEST POINT of the arc — a
+        // total energy-per-mass budget of 0.5 * maxTangentialSpeed^2. As the bob rises by `height` above
+        // that lowest point, energy conservation caps its speed at sqrt(maxTangentialSpeed^2 - 2*g*h):
+        // being fast up high "costs" more budget, so the swing self-limits to a SOFT apex set purely by
+        // how much momentum the player actually built — a real pendulum losing speed on the way up, not a
+        // body slamming into a ceiling. There is no discrete cap event; the limit acts continuously.
+        float g = Physics.gravity.magnitude;
+        float cosPolar = Vector3.Dot(Vector3.down, ropeDir); // ropeDir is unit -> = cos(polar angle from straight-down)
+        float height = length * (1f - cosPolar);             // height of the bob above the arc's lowest point
+        float speedBudget = config.swing.maxTangentialSpeed * config.swing.maxTangentialSpeed - 2f * g * height;
+        float maxSpeedAtHeight = speedBudget > 0f ? Mathf.Sqrt(speedBudget) : 0f;
+        if (_swingVelocity.magnitude > maxSpeedAtHeight)
+            _swingVelocity = _swingVelocity.normalized * maxSpeedAtHeight;
 
         // Integration (CRITICAL — avoids double-integration): the solver integrates linearVelocity to
         // advance the bob tangentially, so linearVelocity IS the driver. MovePosition is used ONLY to
@@ -993,38 +1006,29 @@ public sealed class CharacterMotor : MonoBehaviour
         Vector3 onSphere = pivot + (transform.position - pivot).normalized * length;
         _rb.MovePosition(onSphere);
 
-        // Height cap: the bob may not pump past maxSwingAngleDegrees of polar angle from straight-down
-        // (90 = horizontal; a bit above lets an aggressive rim ride without flipping over the top).
-        Vector3 cappedDir = (onSphere - pivot).normalized;
-        float polarAngle = Vector3.Angle(Vector3.down, cappedDir);
-        if (polarAngle > config.swing.maxSwingAngleDegrees)
+        // Last-resort NUMERICAL safety net only — NOT a felt gameplay limit. The energy cap above bounds
+        // the apex to maxTangentialSpeed^2/(2g) ~= 5.1 m above the lowest point (~106 deg polar at L=4)
+        // with the tuned values, so 170 deg is unreachable by a huge margin in normal play. This guard
+        // exists solely so a pathological frame (NaN / huge dt) can't flip the bob over the pivot and
+        // explode the taut-rope constraint; if it ever trips, clamp onto the 170 deg cone and strip the
+        // over-climbing velocity. It should essentially never fire.
+        if (cosPolar < -0.985f) // cos(170 deg) ~= -0.985
         {
-            // Azimuth = the horizontal (compass) direction of the rope. Degenerate straight-up case
-            // (bob directly over the pivot): the horizontal projection vanishes, so pick any axis.
-            Vector3 azimuth = Vector3.ProjectOnPlane(cappedDir, Vector3.up);
+            Vector3 azimuth = Vector3.ProjectOnPlane(ropeDir, Vector3.up);
             azimuth = azimuth.sqrMagnitude > 1e-6f ? azimuth.normalized : Vector3.forward;
-
-            // Rotate the rope back to exactly the cap angle, staying in the vertical plane that
-            // contains this azimuth, and re-snap the bob onto that clamped cone.
-            float capRad = config.swing.maxSwingAngleDegrees * Mathf.Deg2Rad;
-            Vector3 clampedDir = Vector3.down * Mathf.Cos(capRad) + azimuth * Mathf.Sin(capRad);
-            Vector3 clampedPos = pivot + clampedDir * length;
-            _rb.MovePosition(clampedPos);
-
-            // Tangent pointing toward INCREASING polar angle at the cap: d(ropeDir)/dθ = up*sinθ +
-            // azimuth*cosθ. Built from the cap angle directly (not ProjectOnPlane(azimuth, ropeDir),
-            // whose normalization flips sign past 90° — which our ~95° cap exceeds). Removing the
-            // velocity component along it stops further climbing while keeping the orbital
-            // (perpendicular) component, so you can still swing AROUND the rim.
-            Vector3 climbDir = (Vector3.up * Mathf.Sin(capRad) + azimuth * Mathf.Cos(capRad)).normalized;
+            const float safeCapRad = 170f * Mathf.Deg2Rad;
+            Vector3 clampedDir = Vector3.down * Mathf.Cos(safeCapRad) + azimuth * Mathf.Sin(safeCapRad);
+            _rb.MovePosition(pivot + clampedDir * length);
+            Vector3 climbDir = (Vector3.up * Mathf.Sin(safeCapRad) + azimuth * Mathf.Cos(safeCapRad)).normalized;
             if (Vector3.Dot(_swingVelocity, climbDir) > 0f)
                 _swingVelocity -= Vector3.Project(_swingVelocity, climbDir);
             _rb.linearVelocity = _swingVelocity;
         }
 
-        // Rope-slack limitation: slack (the bob going over the top / the rope going taut-to-slack) is
-        // not modeled — with maxTangentialSpeed=12 the bob can't reach the ~12.5 m/s needed to go over
-        // the top at L=4, so it stays a well-behaved taut pendulum in practice.
+        // Rope-slack limitation: slack (the bob going over the top / the rope going taut-to-slack) is not
+        // modeled, and never needs to be here — the energy cap above bounds the apex to ~5.1 m above the
+        // lowest point at maxTangentialSpeed=10, far under the 2L=8 m (needs ~12.5 m/s) required to reach
+        // the top at L=4, so the bob always stays a well-behaved taut pendulum.
 
         if (_swingGrace > 0f) return;
 
