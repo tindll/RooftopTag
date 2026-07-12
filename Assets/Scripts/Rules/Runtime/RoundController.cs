@@ -281,12 +281,14 @@ public sealed class RoundController : MonoBehaviour
     // ---------------------------------------------------------------- Minimap
     //
     // Circular top-down minimap, top-right: a second orthographic camera looking straight down,
-    // rendered into a small RenderTexture and drawn via GUI.DrawTexture (this project's whole HUD
-    // is OnGUI/IMGUI, no Canvas/UGUI anywhere — staying consistent rather than introducing a new
-    // UI system). IMGUI has no native circular clip, so a procedurally-generated circular "corner
-    // mask" texture (opaque outside the inscribed circle, transparent inside) is drawn on top of
-    // the square render to crop it into a circle. North-up (fixed world rotation) in this pass —
-    // doesn't rotate to match player facing; a reasonable future refinement, not required here.
+    // rendered into a small RenderTexture (this project's whole HUD is OnGUI/IMGUI, no Canvas/UGUI
+    // anywhere — staying consistent rather than introducing a new UI system). IMGUI has no native
+    // circular clip, so a procedurally-generated circular mask is combined with the square render
+    // via Graphics.Blit + MinimapCircleMask.shader into a genuinely alpha-transparent-cornered
+    // composite texture before GUI.DrawTexture draws it — the corners blend into the 3D scene
+    // behind the HUD instead of showing a flat-colored square backdrop. North-up (fixed world
+    // rotation) in this pass — doesn't rotate to match player facing; a reasonable future
+    // refinement, not required here.
     //
     // Built lazily here in RegisterAgent's isLocalPlayer branch rather than unconditionally in
     // Awake/Start: the self-play harness (SelfPlayTests.cs) runs full headless matches with only
@@ -294,7 +296,7 @@ public sealed class RoundController : MonoBehaviour
     // view centered on nothing would be a pure leak with no teardown between matches — this hook
     // means self-play skips minimap setup entirely for free.
 
-    private const int MinimapSize = 180;
+    private const int MinimapSize = 210;
     private const int MinimapMargin = 12;
     private const int MinimapTextureSize = 256;
     private const float MinimapOrthographicSize = 25f;
@@ -303,6 +305,8 @@ public sealed class RoundController : MonoBehaviour
 
     private Camera? _minimapCamera;
     private RenderTexture? _minimapRenderTexture;
+    private RenderTexture? _minimapCompositeTexture;
+    private Material? _minimapMaskMaterial;
     private Texture2D? _minimapMaskTexture;
     private Texture2D? _minimapRingTexture;
     private Texture2D? _minimapTriangleTexture;
@@ -321,6 +325,7 @@ public sealed class RoundController : MonoBehaviour
         if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return;
 
         _minimapRenderTexture = new RenderTexture(MinimapTextureSize, MinimapTextureSize, 24);
+        _minimapCompositeTexture = new RenderTexture(MinimapTextureSize, MinimapTextureSize, 0, RenderTextureFormat.ARGB32);
 
         var camGo = new GameObject("MinimapCamera");
         _minimapCamera = camGo.AddComponent<Camera>();
@@ -333,7 +338,18 @@ public sealed class RoundController : MonoBehaviour
 
         // Cached once — OnGUI runs at least twice per frame (Layout + Repaint), so regenerating
         // these via SetPixels/Apply on every call would be a real, avoidable cost.
-        _minimapMaskTexture = BuildCircularMaskTexture(MinimapTextureSize, new Color(0.05f, 0.05f, 0.05f));
+        //
+        // The square render above can't just be drawn straight into the HUD: its corners (outside
+        // the inscribed circle) show raw top-down world content, which read as a solid "black
+        // square" backdrop around the minimap. BuildCircularMaskTexture now builds an INCLUSION
+        // mask (alpha=1 inside the circle, 0 outside); MinimapCircleMask.shader multiplies the
+        // render's alpha by it via Graphics.Blit each frame, producing a texture with genuinely
+        // transparent corners that GUI.DrawTexture alpha-blends against the 3D scene behind the
+        // HUD, instead of an opaque square with a flat-colored cutout drawn on top of it.
+        _minimapMaskTexture = BuildCircularMaskTexture(MinimapTextureSize);
+        Shader? maskShader = Shader.Find("RooftopTag/MinimapCircleMask");
+        if (maskShader != null) _minimapMaskMaterial = new Material(maskShader);
+        else Debug.LogWarning("MINIMAP_WARN: RooftopTag/MinimapCircleMask shader not found; minimap will show a square backdrop.");
         _minimapRingTexture = BuildRingTexture(MinimapTextureSize);
         _minimapTriangleTexture = BuildTriangleTexture(32, inset: 3);
         _minimapTriangleOutlineTexture = BuildTriangleTexture(32, inset: 0);
@@ -348,8 +364,18 @@ public sealed class RoundController : MonoBehaviour
         Rect mapRect = new(Screen.width - MinimapSize - MinimapMargin, MinimapMargin, MinimapSize, MinimapSize);
 
         GUI.color = Color.white;
-        GUI.DrawTexture(mapRect, _minimapRenderTexture);
-        GUI.DrawTexture(mapRect, _minimapMaskTexture!);
+        if (_minimapMaskMaterial != null && _minimapCompositeTexture != null)
+        {
+            _minimapMaskMaterial.SetTexture("_MaskTex", _minimapMaskTexture);
+            Graphics.Blit(_minimapRenderTexture, _minimapCompositeTexture, _minimapMaskMaterial);
+            GUI.DrawTexture(mapRect, _minimapCompositeTexture);
+        }
+        else
+        {
+            // Shader missing (shouldn't happen outside a broken import) — falls back to the old
+            // opaque square render so the minimap still functions, just with square corners.
+            GUI.DrawTexture(mapRect, _minimapRenderTexture);
+        }
 
         Vector3 playerPos = _localPlayerAgent.transform.position;
         float worldToMinimapScale = (MinimapSize * 0.5f) / MinimapOrthographicSize;
@@ -397,7 +423,10 @@ public sealed class RoundController : MonoBehaviour
         GUI.matrix = savedMatrix;
     }
 
-    private static Texture2D BuildCircularMaskTexture(int size, Color backgroundColor)
+    /// <summary>Inclusion mask: alpha=1 inside the circle, 0 outside, with a soft ~3px antialiased
+    /// edge — fed into MinimapCircleMask.shader as the alpha multiplier for the composited
+    /// minimap texture. Color channels are unused (the shader only reads alpha).</summary>
+    private static Texture2D BuildCircularMaskTexture(int size)
     {
         var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         float radius = size * 0.5f;
@@ -408,11 +437,8 @@ public sealed class RoundController : MonoBehaviour
             for (int x = 0; x < size; x++)
             {
                 float dist = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center);
-                // Opaque outside the circle, fully transparent inside it, with a soft ~3px
-                // antialiased edge (was ~1px — visibly harder-edged once scaled up on screen) so
-                // the crop reads as a clean circle rather than a jagged cutout.
-                float alpha = Mathf.Clamp01((dist - radius + 3f) / 3f);
-                pixels[y * size + x] = new Color(backgroundColor.r, backgroundColor.g, backgroundColor.b, alpha);
+                float alpha = 1f - Mathf.Clamp01((dist - radius + 3f) / 3f);
+                pixels[y * size + x] = new Color(1f, 1f, 1f, alpha);
             }
         }
         tex.SetPixels(pixels);
