@@ -25,6 +25,17 @@ public static class SceneStyler
         CreatePostVolume(theme);
         CreateSilhouettes(theme);
         CreateClouds(theme);
+
+        // Roof-cluster-only dressing: cosmetic building masses under each playable roof and drifting
+        // street cars far below. Gated on the RooftopArena root that RooftopArena.Build creates (only
+        // the Tag Arena / Rooftop Arena scenes) — the linear MovementPlayground has no such cluster,
+        // so these would float over unrelated geometry there. Reading the presence of that root keeps
+        // this decision entirely inside the styler, out of PlaygroundBuilder.
+        if (GameObject.Find("RooftopArena") != null)
+        {
+            CreateBuildingExtensions(theme);
+            CreateCars(theme);
+        }
     }
 
     /// <summary>Large, long, semi-transparent cloud slabs drifting slowly above the map — boxy
@@ -72,26 +83,141 @@ public static class SceneStyler
         }
     }
 
-    /// <summary>Far-city dressing outside the playable bounds (play area spans roughly
-    /// x/z -17..30): a ring of skyline blocks at radius 70+ and two crane silhouettes.
-    /// No colliders anywhere — pure backdrop.</summary>
+    /// <summary>Far-city dressing outside the playable bounds (play area spans roughly x/z -48..30):
+    /// several concentric bands of skyline blocks from <c>skylineInnerRadius</c> out to
+    /// <c>skylineOuterRadius</c>, plus two crane silhouettes. Building density rises and per-ring
+    /// color leans toward the fog for atmospheric depth as distance grows, so the city recedes into
+    /// haze rather than ending at a hard ring. No colliders anywhere — pure backdrop.</summary>
     public static void CreateSilhouettes(VisualThemeConfig theme)
     {
         var root = new GameObject("SilhouetteDressing");
         var rng = new System.Random(1234); // fixed seed: identical on every rebuild
+        var center2D = new Vector2(6f, 13f);  // matches the play area's rough center offset
 
-        for (int i = 0; i < 14; i++)
+        int rings = Mathf.Max(1, theme.skylineRingCount);
+        float ringGap = rings > 1 ? (theme.skylineOuterRadius - theme.skylineInnerRadius) / (rings - 1) : 0f;
+
+        for (int ring = 0; ring < rings; ring++)
         {
-            float angle = i / 14f * Mathf.PI * 2f;
-            float radius = 70f + (float)rng.NextDouble() * 25f;
-            float height = 8f + (float)rng.NextDouble() * 22f;
-            float width = 6f + (float)rng.NextDouble() * 8f;
-            var center = new Vector3(Mathf.Cos(angle) * radius + 6f, height * 0.5f - 3f, Mathf.Sin(angle) * radius + 13f);
-            SilhouetteBox(root.transform, $"Skyline_{i}", center, new Vector3(width, height, width), theme);
+            float t = rings > 1 ? ring / (float)(rings - 1) : 0f;         // 0 nearest .. 1 farthest
+            float ringRadius = Mathf.Lerp(theme.skylineInnerRadius, theme.skylineOuterRadius, t);
+            // Closer rings are sparser and more detailed; farther rings pile up into a denser wall.
+            int count = Mathf.RoundToInt(theme.skylineRingBaseCount * (1f + t * 2f));
+            // One shared material per ring, pushed toward the fog with distance (atmospheric perspective).
+            Color ringColor = Color.Lerp(theme.silhouetteColor, theme.fogColor, theme.skylineHazeBlend * t);
+            Material ringMat = FlatMaterial(ringColor);
+
+            for (int i = 0; i < count; i++)
+            {
+                float angle = (i + (float)rng.NextDouble() * 0.6f) / count * Mathf.PI * 2f;
+                // Jitter each block's radius across ~40% of the ring gap so bands blur into a
+                // continuous field instead of reading as discrete circles. Floored at the inner
+                // radius so an inward-jittered nearest-ring block can't intrude on the play area
+                // (which reaches ~58 units from center; inner radius sits safely beyond it).
+                float radius = Mathf.Max(theme.skylineInnerRadius,
+                    ringRadius + (float)(rng.NextDouble() - 0.5) * ringGap * 0.8f);
+                float height = Mathf.Lerp(theme.skylineHeightMin, theme.skylineHeightMax, (float)rng.NextDouble());
+                float width = Mathf.Lerp(theme.skylineWidthMin, theme.skylineWidthMax, (float)rng.NextDouble());
+                var pos = new Vector3(Mathf.Cos(angle) * radius + center2D.x, height * 0.5f - 3f, Mathf.Sin(angle) * radius + center2D.y);
+                SilhouetteBoxMat(root.transform, $"Skyline_{ring}_{i}", pos, new Vector3(width, height, width), ringMat);
+            }
         }
 
         CreateCrane(root.transform, new Vector3(45f, 0f, 40f), 28f, theme);
         CreateCrane(root.transform, new Vector3(-40f, 0f, 55f), 24f, theme);
+    }
+
+    /// <summary>Cosmetic building masses: one box per playable roof, continuing its exact footprint
+    /// straight down from where RooftopArena's roof bodies stop (<c>buildingBodyBottomY</c>, -3) to
+    /// street level (<c>buildingBaseY</c>), so each rooftop reads as the TOP of a real building
+    /// instead of a floating slab. Uses the same seeded WallBody material as the roof body above
+    /// (seed = roof index + 1, matching RooftopArena.Build) so the mass is a seamless continuation of
+    /// the same building. Sits entirely below all playable geometry (lowest roof surface y1.5, every
+    /// roof body bottoms at -3), so it never clips a walkable surface, and it has no collider.</summary>
+    public static void CreateBuildingExtensions(VisualThemeConfig theme)
+    {
+        var root = new GameObject("BuildingMasses");
+        float top = theme.buildingBodyBottomY;
+        float bottom = theme.buildingBaseY;
+        if (bottom >= top) return; // misconfigured: base above the body bottom -> nothing to extend
+
+        float height = top - bottom;
+        float centerY = (top + bottom) * 0.5f;
+
+        for (int i = 0; i < RooftopArena.Roofs.Length; i++)
+        {
+            RooftopArena.Roof r = RooftopArena.Roofs[i];
+            GameObject mass = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            mass.name = $"{r.Name}_Mass";
+            Object.DestroyImmediate(mass.GetComponent<BoxCollider>());
+            mass.transform.SetParent(root.transform, false);
+            mass.transform.position = new Vector3(r.Center.x, centerY, r.Center.z);
+            mass.transform.localScale = new Vector3(r.SizeX, height, r.SizeZ);
+            // seed i+1 mirrors RooftopArena.Build's per-roof WallBody seed exactly.
+            mass.GetComponent<Renderer>().sharedMaterial =
+                TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.WallBody, seed: i + 1);
+        }
+    }
+
+    /// <summary>A handful of simple box "cars" ping-ponging along hand-picked clear street segments at
+    /// street level (the base of the building masses), plus a few looping the open perimeter. Slow,
+    /// continuous, seen as small moving shapes from the rooftops far above. The segments are curated
+    /// against the roof grid so a car never drives through a building mass. No colliders; motion is a
+    /// CarDrifter (presentation-only runtime component), the same pattern as the clouds.</summary>
+    public static void CreateCars(VisualThemeConfig theme)
+    {
+        if (theme.carCount <= 0 || theme.carColors == null || theme.carColors.Length == 0) return;
+
+        var root = new GameObject("StreetCars");
+        var rng = new System.Random(9137); // fixed seed: identical layout on every rebuild
+        Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+
+        float y = theme.buildingBaseY + theme.carSize.y * 0.5f; // sit on the street at the mass base
+
+        // Clear street segments (xz endpoints); y filled below. First six run the urban grid's gaps
+        // (verified between roof footprints on the 13m grid); last four loop the open perimeter.
+        (Vector2 a, Vector2 b)[] segments =
+        {
+            (new Vector2(7.5f, -28f),  new Vector2(7.5f, 28f)),
+            (new Vector2(-7.5f, -18f), new Vector2(-7.5f, 18f)),
+            (new Vector2(19.5f, -28f), new Vector2(19.5f, 28f)),
+            (new Vector2(-10f, 7.5f),  new Vector2(29f, 7.5f)),
+            (new Vector2(-10f, -7.5f), new Vector2(29f, -7.5f)),
+            (new Vector2(-10f, 19.5f), new Vector2(29f, 19.5f)),
+            (new Vector2(-55f, 45f),   new Vector2(40f, 45f)),   // perimeter N
+            (new Vector2(45f, -50f),   new Vector2(45f, 38f)),   // perimeter E
+            (new Vector2(-52f, -46f),  new Vector2(35f, -46f)),  // perimeter S
+            (new Vector2(-60f, -42f),  new Vector2(-60f, 35f)),  // perimeter W
+        };
+
+        var cache = new System.Collections.Generic.Dictionary<Color, Material>();
+        Material MatFor(Color c)
+        {
+            if (cache.TryGetValue(c, out Material m)) return m;
+            m = new Material(shader) { color = c };
+            cache[c] = m;
+            return m;
+        }
+
+        int carCount = Mathf.Min(theme.carCount, segments.Length);
+        for (int i = 0; i < carCount; i++)
+        {
+            (Vector2 a2, Vector2 b2) = segments[i];
+            var a = new Vector3(a2.x, y, a2.y);
+            var b = new Vector3(b2.x, y, b2.y);
+
+            GameObject car = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            car.name = $"Car_{i}";
+            Object.DestroyImmediate(car.GetComponent<BoxCollider>());
+            car.transform.SetParent(root.transform, false);
+
+            float jitter = 1f + ((float)rng.NextDouble() * 2f - 1f) * theme.carSizeJitter;
+            car.transform.localScale = new Vector3(theme.carSize.x, theme.carSize.y, theme.carSize.z * jitter);
+            car.GetComponent<Renderer>().sharedMaterial = MatFor(theme.carColors[i % theme.carColors.Length]);
+
+            float speed = Mathf.Lerp(theme.carSpeedMin, theme.carSpeedMax, (float)rng.NextDouble());
+            car.AddComponent<CarDrifter>().Configure(a, b, speed, (float)rng.NextDouble());
+        }
     }
 
     private static void CreateCrane(Transform parent, Vector3 basePos, float height, VisualThemeConfig theme)
@@ -116,6 +242,25 @@ public static class SceneStyler
         go.transform.position = center;
         go.transform.localScale = size;
         go.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Silhouette);
+    }
+
+    /// <summary>Silhouette box with a caller-supplied (shared, per-ring) material, so distant skyline
+    /// bands can fade toward the fog without minting a material per building.</summary>
+    private static void SilhouetteBoxMat(Transform parent, string name, Vector3 center, Vector3 size, Material material)
+    {
+        GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        go.name = name;
+        Object.DestroyImmediate(go.GetComponent<BoxCollider>());
+        go.transform.SetParent(parent, false);
+        go.transform.position = center;
+        go.transform.localScale = size;
+        go.GetComponent<Renderer>().sharedMaterial = material;
+    }
+
+    private static Material FlatMaterial(Color color)
+    {
+        Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
+        return new Material(shader) { color = color };
     }
 
     /// <summary>Global URP volume: bloom (picks up tagger red / interactable orange / rim trims),

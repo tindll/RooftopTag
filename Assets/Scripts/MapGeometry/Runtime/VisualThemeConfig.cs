@@ -67,6 +67,45 @@ public sealed class VisualThemeConfig : ScriptableObject
 
     [Header("Silhouettes (cranes, far skyline)")]
     public Color silhouetteColor = new Color32(0x4A, 0x38, 0x44, 0xFF);
+    /// <summary>Concentric bands of backdrop buildings, from <see cref="skylineInnerRadius"/> out to
+    /// <see cref="skylineOuterRadius"/>. Building count scales up with each ring's distance so the
+    /// far skyline reads as a denser, hazier wall; per-ring color is pushed toward
+    /// <see cref="fogColor"/> by <see cref="skylineHazeBlend"/> for atmospheric perspective.</summary>
+    public int skylineRingCount = 4;
+    public float skylineInnerRadius = 72f;
+    public float skylineOuterRadius = 340f;
+    public int skylineRingBaseCount = 16;
+    public float skylineHeightMin = 7f;
+    public float skylineHeightMax = 40f;
+    public float skylineWidthMin = 6f;
+    public float skylineWidthMax = 18f;
+    [Range(0f, 1f)] public float skylineHazeBlend = 0.75f;
+
+    [Header("Building masses (cosmetic downward extension of each playable roof)")]
+    /// <summary>Y where RooftopArena's roof bodies stop (BuildingSkirt = 3 -> every body bottoms out
+    /// at -3, regardless of roof height). The cosmetic mass continues each building's exact footprint
+    /// straight down from here to <see cref="buildingBaseY"/> so rooftops read as the TOP of a real
+    /// building rather than a floating slab. Coupled to RooftopArena.BuildingSkirt: if that changes,
+    /// update this so the seam stays flush.</summary>
+    public float buildingBodyBottomY = -3f;
+    public float buildingBaseY = -12f;
+
+    [Header("Street cars (cosmetic drifting props at street level)")]
+    public int carCount = 10;
+    public float carSpeedMin = 3f;
+    public float carSpeedMax = 7f;
+    public Vector3 carSize = new(2.1f, 1.4f, 4.4f);
+    [Range(0f, 0.6f)] public float carSizeJitter = 0.25f;
+    /// <summary>Muted small-vehicle colors, cycled deterministically so the cars aren't clones.</summary>
+    public Color[] carColors =
+    {
+        new Color32(0x8A, 0x3B, 0x32, 0xFF), // dark red
+        new Color32(0x3F, 0x55, 0x66, 0xFF), // steel blue
+        new Color32(0xA8, 0x94, 0x6F, 0xFF), // tan
+        new Color32(0xC8, 0xC4, 0xBC, 0xFF), // off-white
+        new Color32(0x40, 0x44, 0x4A, 0xFF), // dark grey
+        new Color32(0x6B, 0x6A, 0x3F, 0xFF), // olive
+    };
 
     [Header("Clouds")]
     public Color cloudColor = new Color32(0xFF, 0xE4, 0xC0, 0xFF);
