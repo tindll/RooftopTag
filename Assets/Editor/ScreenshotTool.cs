@@ -22,6 +22,8 @@ public static class ScreenshotTool
         ("Assets/Scenes/RooftopArena.unity", new Vector3(0f, 5.5f, -4f), new Vector3(0f, 4.5f, 13f)),
         ("Assets/Scenes/RooftopArena.unity", new Vector3(30f, 20f, 45f), new Vector3(0f, 4f, 8f)),
         ("Assets/Scenes/TagArena.unity", new Vector3(-22f, 12f, -18f), new Vector3(8f, 4f, 13f)),
+        ("Assets/Scenes/TagArena.unity", new Vector3(-50f, 16f, -40f), new Vector3(-26f, 3f, -15f)),
+        ("Assets/Scenes/TagArena.unity", new Vector3(-44f, 5.5f, 6f), new Vector3(-37f, 3f, -20f)),
         ("Assets/Scenes/MovementPlayground.unity", new Vector3(-14f, 8f, -8f), new Vector3(0f, 1f, 25f)),
     };
 

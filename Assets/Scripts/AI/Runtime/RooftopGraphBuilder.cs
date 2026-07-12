@@ -81,6 +81,7 @@ public static class RooftopGraphBuilder
                     // hugs the panel. (Axis-aligned E-W crossing — matches RooftopArena.BuildWallRun.)
                     RooftopArena.Roof wrFrom = RooftopArena.Roofs[link.From];
                     RooftopArena.Roof wrTo = RooftopArena.Roofs[link.To];
+                    WarnIfRedundant(link.Kind, wrFrom, wrTo);
                     float axisDir = Mathf.Sign(wrTo.Center.x - wrFrom.Center.x);
                     var approach = new Vector3(wrFrom.Center.x + axisDir * wrFrom.SizeX * 0.5f, wrFrom.Walk.y, wrFrom.Center.z);
                     var exit = new Vector3(wrTo.Center.x - axisDir * wrTo.SizeX * 0.5f, wrTo.Walk.y, wrTo.Center.z);
@@ -107,6 +108,7 @@ public static class RooftopGraphBuilder
                     // WallRun exit to 15, so the reverse direction has a route and isn't a dead end.
                     RooftopArena.Roof swFrom = RooftopArena.Roofs[link.From];
                     RooftopArena.Roof swTo = RooftopArena.Roofs[link.To];
+                    WarnIfRedundant(link.Kind, swFrom, swTo);
                     Vector3 toward = new Vector3(swTo.Center.x - swFrom.Center.x, 0f, swTo.Center.z - swFrom.Center.z).normalized;
                     var swEntry = new Vector3(
                         swFrom.Center.x + toward.x * swFrom.SizeX * 0.5f, swFrom.Walk.y,
@@ -146,6 +148,18 @@ public static class RooftopGraphBuilder
         }
 
         return graph;
+    }
+
+    /// <summary>Design-intent check for the special-traversal link kinds (WallRun/Swing): if a plain
+    /// sprint jump could already clear the gap both ways, the special traversal isn't gating
+    /// anything — it's a content bug (gap too narrow / height too forgiving), not a graph problem,
+    /// so this only warns; the edges are still emitted.</summary>
+    private static void WarnIfRedundant(RooftopArena.LinkKind kind, RooftopArena.Roof from, RooftopArena.Roof to)
+    {
+        if (JumpMakeable(from.Walk, to.Walk) && JumpMakeable(to.Walk, from.Walk))
+        {
+            Debug.LogWarning($"ROOFTOP_LINK_REDUNDANT: {kind} {from.Name}→{to.Name} is flat-jumpable — the special traversal is pointless; widen the gap or drop the link.");
+        }
     }
 
     /// <summary>Can a sprint jump get from <paramref name="from"/> to <paramref name="to"/>? Rough

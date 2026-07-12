@@ -3,6 +3,43 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Map expansion — construction-site zone + WallRun/Swing/ClimbWall/VaultWall links (2026-07-12)
+
+**What was built** (plan: `.claude/plans/woolly-soaring-teapot.md`, executed as 7 executor-routed
+subagent tasks, each gated on rebuild×3 + suites + self-play): the rooftop map doubled from 13
+roofs/~39×39m to **26 roofs/~72×62m**, adding urban growth south/west and a distinct low, dense
+construction-site zone (SW: yard, deck, ramps, crane, 20m scaffold alley). Four new `LinkKind`s
+wired end-to-end (data → geometry → parkour graph → bot execution → headless self-play):
+- **WallRun** — 10m un-jumpable crossing along a 6m wall panel; `ParkourEdge` gained `LateralDir`
+  so bots hug the KNOWN wall side (legacy Tag Arena world-X fallback preserved).
+- **Swing** — 10m chasm on a 5.5m chain; `ChainSwingInteractable` gained a per-swing
+  `ExitDirection` (motor bot-release is now frame-relative, not hardcoded +Z). Swing graph edge is
+  deliberately one-directional (reverse release would oppose the exit dir); no dead end — Con_West
+  keeps its WallRun exit.
+- **ClimbWall** — Crane climbable from Deck via its own 2.8m building face (climb band 2.2-3.0).
+- **VaultWall** — 1m flow-through wall on the Yard/Alley seam (mantle from the low side, vault from
+  the high side; bots execute both identically).
+Also: `RooftopInteractableBuilder` (runtime construction of ladder/swing interactables) closes the
+long-standing gap where Editor-only marker construction left Ladder edges untraversable in headless
+self-play. Spawns spread across 7 roofs. A `ROOFTOP_LINK_REDUNDANT` validator warns if a
+WallRun/Swing link is flat-jumpable (design-intent check). ScafHi's deliberately-overlapping
+footprint emits Vault-type bot edges for its two Jump links so bots mantle instead of stalling.
+
+**Metrics** (final batch, now the new `Tools/baseline-metrics.txt`): 31/31 tests (3 new graph tests
+verify WallRun routing + one-directional Swing), no `ROOFTOP_LINK_SKIPPED`/`REDUNDANT`. Self-play:
+`total_stuck` 100 vs old-map 107 (batch variance 27-107 all day), `total_fallen` 0,
+`max_distance_from_spawn` 25.4 → 35.7 (agents genuinely roam the new territory).
+
+**Honest caveat:** `total_edge_usage` is still `[]` — the new content is traversable and the graph
+routes through it (proven by the new tests), but bots rarely PLAN multi-edge paths because of the
+separately-flagged one-node-per-roof graph-density problem (paths collapse to empty when nearest
+nodes coincide). Edge-usage numbers will stay hollow until that's fixed — it remains the single
+highest-leverage bot-nav fix and was explicitly out of scope for this pass.
+
+**Visual review:** construction zone reads clearly distinct (low dense floors, swing chain over the
+chasm, wall-run panel, orange vault seam) at both aerial and player level; screenshots in
+`Tools/screenshots/` (shot_4/shot_5_TagArena are the new vantages). Human feel-test pending.
+
 ## Visual pass — golden hour over the construction site (2026-07-12)
 
 **What was added** (plan: `docs/superpowers/plans/2026-07-12-visual-pass.md`, executed task-by-task
