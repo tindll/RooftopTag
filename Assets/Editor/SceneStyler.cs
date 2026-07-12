@@ -24,6 +24,50 @@ public static class SceneStyler
         CreateHazePlanes(theme);
         CreatePostVolume(theme);
         CreateSilhouettes(theme);
+        CreateClouds(theme);
+    }
+
+    /// <summary>Large, long, semi-transparent cloud slabs drifting slowly above the map — boxy
+    /// primitives to match this project's greybox visual language (same as the crane/skyline
+    /// silhouettes), warm-tinted to match the golden-hour palette. No colliders; CloudDrifter (a
+    /// runtime component, presentation-only) handles the per-frame drift once the scene is
+    /// playing — never attached in headless self-play since this method is editor-only.</summary>
+    public static void CreateClouds(VisualThemeConfig theme)
+    {
+        var root = new GameObject("Clouds");
+        var rng = new System.Random(4242); // fixed seed: identical layout on every rebuild
+        Shader shader = Shader.Find("Sprites/Default"); // alpha-blended, same as haze planes
+        var center = new Vector3(6f, 0f, 13f); // roughly the play area's center (matches silhouette dressing's offset)
+
+        for (int i = 0; i < theme.cloudCount; i++)
+        {
+            float length = Mathf.Lerp(theme.cloudLengthMin, theme.cloudLengthMax, (float)rng.NextDouble());
+            float height = Mathf.Lerp(theme.cloudHeightMin, theme.cloudHeightMax, (float)rng.NextDouble());
+            float placeAngle = (float)rng.NextDouble() * Mathf.PI * 2f;
+            float placeDist = (float)rng.NextDouble() * theme.cloudDriftRadius;
+            var position = center + new Vector3(Mathf.Cos(placeAngle) * placeDist, height, Mathf.Sin(placeAngle) * placeDist);
+
+            GameObject cloud = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            cloud.name = $"Cloud_{i}";
+            Object.DestroyImmediate(cloud.GetComponent<BoxCollider>());
+            cloud.transform.SetParent(root.transform, false);
+            cloud.transform.position = position;
+            cloud.transform.rotation = Quaternion.Euler(0f, (float)rng.NextDouble() * 360f, 0f);
+            cloud.transform.localScale = new Vector3(length, 0.6f, theme.cloudWidth);
+
+            var renderer = cloud.GetComponent<Renderer>();
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            var m = new Material(shader);
+            Color c = theme.cloudColor;
+            c.a = theme.cloudAlpha;
+            m.color = c;
+            renderer.sharedMaterial = m;
+
+            float driftAngle = (float)rng.NextDouble() * Mathf.PI * 2f;
+            var direction = new Vector3(Mathf.Cos(driftAngle), 0f, Mathf.Sin(driftAngle));
+            float speed = Mathf.Lerp(theme.cloudDriftSpeedMin, theme.cloudDriftSpeedMax, (float)rng.NextDouble());
+            cloud.AddComponent<CloudDrifter>().Configure(direction, speed, center, theme.cloudDriftRadius);
+        }
     }
 
     /// <summary>Far-city dressing outside the playable bounds (play area spans roughly

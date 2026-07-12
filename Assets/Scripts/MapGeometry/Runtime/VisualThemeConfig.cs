@@ -38,8 +38,12 @@ public sealed class VisualThemeConfig : ScriptableObject
     public Color fogColor = new Color32(0xD9, 0x90, 0x6A, 0xFF);
     public float fogDensity = 0.010f;
     public int hazePlaneCount = 3;
-    /// <summary>Y of the highest haze plane — just below the lowest roof surfaces (roofs start at y=3).</summary>
-    public float hazeTopY = 1.5f;
+    /// <summary>Y of the highest haze plane — must sit strictly BELOW the lowest walkable roof
+    /// surface. The construction zone's lowest floor (Con_Yard) is y=1.5; a haze plane at exactly
+    /// 1.5 was perfectly coplanar with that roof's top face, z-fighting as visible shadow-like
+    /// flicker whenever the camera moved (the map expansion invalidated the original "roofs start
+    /// at y=3" assumption this value was picked under).</summary>
+    public float hazeTopY = 1.0f;
     public float hazeSpacing = 2.0f;
     public float hazeBaseAlpha = 0.16f;
     public float hazePlaneSize = 400f;
@@ -63,6 +67,21 @@ public sealed class VisualThemeConfig : ScriptableObject
 
     [Header("Silhouettes (cranes, far skyline)")]
     public Color silhouetteColor = new Color32(0x4A, 0x38, 0x44, 0xFF);
+
+    [Header("Clouds")]
+    public Color cloudColor = new Color32(0xFF, 0xE4, 0xC0, 0xFF);
+    [Range(0f, 1f)] public float cloudAlpha = 0.22f;
+    public int cloudCount = 8;
+    public float cloudHeightMin = 35f;
+    public float cloudHeightMax = 55f;
+    public float cloudLengthMin = 40f;
+    public float cloudLengthMax = 90f;
+    public float cloudWidth = 14f;
+    public float cloudDriftSpeedMin = 0.4f;
+    public float cloudDriftSpeedMax = 1.2f;
+    /// <summary>Radius of the drift area centered on the map — a cloud that drifts past this wraps
+    /// back around to the opposite edge instead of drifting away forever.</summary>
+    public float cloudDriftRadius = 120f;
 
     [Header("Post-processing")]
     public float bloomIntensity = 0.65f;
