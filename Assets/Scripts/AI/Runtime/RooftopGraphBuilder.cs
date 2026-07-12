@@ -27,15 +27,33 @@ public static class RooftopGraphBuilder
             switch (link.Kind)
             {
                 case RooftopArena.LinkKind.Jump:
+                {
                     // Only add the Jump edge if the character can actually make it, so pathfinding
                     // never routes a bot through a jump it can't clear (they'd sail into the void).
                     Vector3 a = RooftopArena.Roofs[link.From].Walk;
                     Vector3 b = RooftopArena.Roofs[link.To].Walk;
                     if (JumpMakeable(a, b) && JumpMakeable(b, a))
-                        graph.AddEdge(roofNodes[link.From], roofNodes[link.To], ParkourEdgeType.Jump, sprint, bidirectional: true);
+                    {
+                        // Con_ScafHi (idx24, x=-30 sizeX=10 -> x[-35,-25]) overlaps both Con_Deck
+                        // (idx19, x[-30,-22]) and Con_Alley (idx23, x[-41,-33]) in plan view, so the
+                        // straight center-to-center jump line for 19<->24 and 23<->24 runs bots into
+                        // ScafHi's ~2m wall face — a plain Jump edge gives no interact-hold to mantle
+                        // it. Special-case just these two links to emit Vault instead: the 2m face is
+                        // in the mantle band, and Vault edges give bots interact-hold + HopIfStalled,
+                        // which handles mantling too. The Links[] table itself stays Jump (players can
+                        // clear these from the right angles) — only this bot-graph emission changes.
+                        bool isScafHiOverlap = (link.From == 19 && link.To == 24) || (link.From == 24 && link.To == 19)
+                            || (link.From == 23 && link.To == 24) || (link.From == 24 && link.To == 23);
+                        ParkourEdgeType jumpEdgeType = isScafHiOverlap ? ParkourEdgeType.Vault : ParkourEdgeType.Jump;
+                        float jumpEntrySpeed = isScafHiOverlap ? config.mantleVault.vaultMinApproachSpeed : sprint;
+                        graph.AddEdge(roofNodes[link.From], roofNodes[link.To], jumpEdgeType, jumpEntrySpeed, bidirectional: true);
+                    }
                     else
+                    {
                         Debug.LogWarning($"ROOFTOP_LINK_SKIPPED: jump {RooftopArena.Roofs[link.From].Name}→{RooftopArena.Roofs[link.To].Name} not makeable (gap/height); make it a Ramp or Ladder.");
+                    }
                     break;
+                }
 
                 case RooftopArena.LinkKind.Ramp:
                     graph.AddEdge(roofNodes[link.From], roofNodes[link.To], ParkourEdgeType.Run, 0f, bidirectional: true);
@@ -104,6 +122,26 @@ public static class RooftopGraphBuilder
                     graph.AddEdge(swExitNode, roofNodes[link.To], ParkourEdgeType.Run, 0f, bidirectional: true);
                     break;
                 }
+
+                case RooftopArena.LinkKind.ClimbWall:
+                    // Single bidirectional edge straight between the two roof nodes — no intermediate
+                    // approach/exit nodes needed since the climb face is the shared building corner
+                    // (see RooftopArena's ClimbWall build case). Mirrors how TagArenaParkourGraphBuilder
+                    // models its Climb ledge (runwayClimbMid -> landingClimbMid, also bidirectional,
+                    // entry speed 0f): the downward direction (21->19) is just a drop-off/walk-off, and
+                    // bidirectional is how the existing Climb edge type is modeled elsewhere in this
+                    // codebase — bots holding interact near either endpoint is harmless downhill.
+                    graph.AddEdge(roofNodes[link.From], roofNodes[link.To], ParkourEdgeType.Climb, 0f, bidirectional: true);
+                    break;
+
+                case RooftopArena.LinkKind.VaultWall:
+                    // Single bidirectional edge straight between the two roof nodes. From the Yard
+                    // side (h1.5) the 1m wall on the Alley's h2 surface presents 1.5m -> resolves as
+                    // Mantle in the motor; from the Alley side it's a clean 1m -> Vault. Bots execute
+                    // both identically (interact held + HopIfStalled), so a single Vault-typed edge
+                    // with the vault entry-speed gate covers both directions.
+                    graph.AddEdge(roofNodes[link.From], roofNodes[link.To], ParkourEdgeType.Vault, config.mantleVault.vaultMinApproachSpeed, bidirectional: true);
+                    break;
             }
         }
 

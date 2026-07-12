@@ -152,6 +152,17 @@ public static class RooftopArena
         // From→To (22→23) direction fires — the edge is emitted UNIDIRECTIONAL. Reverse (23→22)
         // traversal isn't lost: 22 also exits via the WallRun to 15, so no dead end.
         new(22, 23, LinkKind.Swing, param: 5.5f),
+
+        // ClimbWall: Con_Crane's SW corner overlaps Con_Deck's NE corner (3x3m). No new geometry
+        // needed — the climb face IS Con_Crane's own building box (south plane), Deck surface h2 up
+        // to Crane top h4.8 = 2.8m, inside the 2.2-3.0 climb band. See the ClimbWall build case.
+        new(19, 21, LinkKind.ClimbWall),
+
+        // VaultWall: shared x-seam (x=-33) between Con_Yard (x[-33,-21]) and Con_Alley (x[-41,-33]),
+        // z-overlap [-18,-14]. From the Yard side (h1.5) the 1m wall on the Alley's h2 surface
+        // presents 1.5m -> resolves as Mantle in the motor; from the Alley side it's a clean 1m ->
+        // Vault. See the VaultWall build case for the wall box and RooftopGraphBuilder for the edge.
+        new(18, 23, LinkKind.VaultWall),
     };
 
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
@@ -199,10 +210,12 @@ public static class RooftopArena
                     swings.Add(BuildSwing(root.transform, Roofs[link.From], Roofs[link.To], link.Param));
                     break;
                 case LinkKind.ClimbWall:
-                    // built in a later task
+                    // No geometry to build for 19<->21: the climb face is Con_Crane's own building
+                    // wall (already a WallBody box on the wall/ground mask from the roof-box loop
+                    // above), so the climb surface exists the moment Con_Crane's roof box is built.
                     break;
                 case LinkKind.VaultWall:
-                    // built in a later task
+                    BuildVaultWall(root.transform, Roofs[link.From], Roofs[link.To]);
                     break;
                 // Jump links need no geometry — the gap between roofs IS the jump.
             }
@@ -286,6 +299,44 @@ public static class RooftopArena
         chainCube.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.WallBody);
 
         return (pivot, length, exitDir);
+    }
+
+    /// <summary>
+    /// Wall panel a runner vaults/mantles over where two roofs share a walkable seam (unlike
+    /// BuildWallRun's un-jumpable gap, these roofs' facing edges touch). Computed from the two roofs'
+    /// facing x-edges and their z-overlap band rather than hardcoded. AXIS-ALIGNMENT ASSUMPTION:
+    /// mirrors BuildWallRun — this pass only supports an E-W seam (18<->23's Con_Yard/Con_Alley pair).
+    /// </summary>
+    private static void BuildVaultWall(Transform parent, Roof from, Roof to)
+    {
+        Roof west = from.Center.x <= to.Center.x ? from : to;
+        Roof east = from.Center.x <= to.Center.x ? to : from;
+        // The seam is where the roofs' facing edges meet: east roof's -x edge and west roof's +x
+        // edge. For 18<->23 that's both at x=-33 (Con_Yard west edge == Con_Alley east edge).
+        float eastFacing = east.Center.x - east.SizeX * 0.5f;
+        float westFacing = west.Center.x + west.SizeX * 0.5f;
+        float centerX = (eastFacing + westFacing) * 0.5f;
+
+        // Z placement: midpoint of the roofs' z-overlap band (where the seam is actually walkable on
+        // both sides), not the roof centres. For 18<->23: Yard z[-18,-8] ∩ Alley z[-34,-14] = [-18,-14]
+        // -> centre z=-16.
+        float westZMin = west.Center.z - west.SizeZ * 0.5f, westZMax = west.Center.z + west.SizeZ * 0.5f;
+        float eastZMin = east.Center.z - east.SizeZ * 0.5f, eastZMax = east.Center.z + east.SizeZ * 0.5f;
+        float overlapMin = Mathf.Max(westZMin, eastZMin);
+        float overlapMax = Mathf.Min(westZMax, eastZMax);
+        float centerZ = (overlapMin + overlapMax) * 0.5f;
+
+        // Sits ON the higher of the two roof surfaces (Con_Alley h2) so it presents a clean 1m
+        // obstacle from that side; from the lower side (Con_Yard h1.5) the same panel reads as 1.5m,
+        // which resolves as Mantle rather than Vault in CharacterMotor (both handled by bots the same
+        // way — see RooftopGraphBuilder's VaultWall case).
+        const float wallSizeY = 1.0f;
+        float centerY = Mathf.Max(from.Center.y, to.Center.y) + wallSizeY * 0.5f;
+
+        TagArenaMapGeometry.CreateBox("VaultWall_Panel", parent,
+            new Vector3(centerX, centerY, centerZ),
+            new Vector3(0.3f, wallSizeY, 4f),
+            TagArenaMapGeometry.SurfaceRole.Interactable);
     }
 
     private static void BuildRamp(Transform parent, Roof from, Roof to)
