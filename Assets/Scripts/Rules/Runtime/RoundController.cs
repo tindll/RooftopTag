@@ -301,8 +301,11 @@ public sealed class RoundController : MonoBehaviour
     private Camera? _minimapCamera;
     private RenderTexture? _minimapRenderTexture;
     private Texture2D? _minimapMaskTexture;
+    private Texture2D? _minimapRingTexture;
     private Texture2D? _minimapTriangleTexture;
+    private Texture2D? _minimapTriangleOutlineTexture;
     private Texture2D? _minimapDotTexture;
+    private Texture2D? _minimapDotOutlineTexture;
 
     private void SetupMinimap()
     {
@@ -328,8 +331,11 @@ public sealed class RoundController : MonoBehaviour
         // Cached once — OnGUI runs at least twice per frame (Layout + Repaint), so regenerating
         // these via SetPixels/Apply on every call would be a real, avoidable cost.
         _minimapMaskTexture = BuildCircularMaskTexture(MinimapTextureSize, new Color(0.05f, 0.05f, 0.05f));
-        _minimapTriangleTexture = BuildTriangleTexture(32);
-        _minimapDotTexture = BuildDotTexture(32);
+        _minimapRingTexture = BuildRingTexture(MinimapTextureSize);
+        _minimapTriangleTexture = BuildTriangleTexture(32, inset: 3);
+        _minimapTriangleOutlineTexture = BuildTriangleTexture(32, inset: 0);
+        _minimapDotTexture = BuildDotTexture(32, inset: 3);
+        _minimapDotOutlineTexture = BuildDotTexture(32, inset: 0);
     }
 
     private void DrawMinimap()
@@ -347,7 +353,7 @@ public sealed class RoundController : MonoBehaviour
         Vector2 mapCenter = new(mapRect.x + mapRect.width * 0.5f, mapRect.y + mapRect.height * 0.5f);
 
         // Local player marker — white triangle, oriented to facing, always at the map's center.
-        DrawMinimapIcon(_minimapTriangleTexture!, mapCenter, _localPlayerAgent.transform.eulerAngles.y, Color.white);
+        DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, mapCenter, _localPlayerAgent.transform.eulerAngles.y, Color.white);
 
         foreach (TagAgent agent in _agents)
         {
@@ -361,21 +367,30 @@ public sealed class RoundController : MonoBehaviour
             bool isFriendly = agent.Role == _localPlayerAgent.Role;
 
             if (isFriendly)
-                DrawMinimapIcon(_minimapTriangleTexture!, iconPos, agent.transform.eulerAngles.y, new Color(0.25f, 0.55f, 1f));
+                DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, iconPos, agent.transform.eulerAngles.y, new Color(0.3f, 0.6f, 1f));
             else
-                DrawMinimapIcon(_minimapDotTexture!, iconPos, 0f, new Color(1f, 0.2f, 0.2f));
+                DrawMinimapIcon(_minimapDotTexture!, _minimapDotOutlineTexture!, iconPos, 0f, new Color(1f, 0.25f, 0.2f));
         }
 
+        // Border ring drawn last, on top of everything — gives the map a clean frame instead of
+        // just stopping at a bare circular cutout.
+        GUI.color = Color.white;
+        GUI.DrawTexture(mapRect, _minimapRingTexture!);
         GUI.color = Color.white;
     }
 
-    private static void DrawMinimapIcon(Texture2D texture, Vector2 center, float yawDegrees, Color color)
+    /// <summary>Draws a small dark outline copy underneath the colored icon so it stays legible against any background color the top-down render happens to show there.</summary>
+    private static void DrawMinimapIcon(Texture2D fillTexture, Texture2D outlineTexture, Vector2 center, float yawDegrees, Color color)
     {
         Rect rect = new(center.x - MinimapIconSize * 0.5f, center.y - MinimapIconSize * 0.5f, MinimapIconSize, MinimapIconSize);
         Matrix4x4 savedMatrix = GUI.matrix;
-        GUI.color = color;
         GUIUtility.RotateAroundPivot(yawDegrees, center);
-        GUI.DrawTexture(rect, texture);
+
+        GUI.color = new Color(0f, 0f, 0f, 0.85f);
+        GUI.DrawTexture(rect, outlineTexture);
+        GUI.color = color;
+        GUI.DrawTexture(rect, fillTexture);
+
         GUI.matrix = savedMatrix;
     }
 
@@ -390,9 +405,10 @@ public sealed class RoundController : MonoBehaviour
             for (int x = 0; x < size; x++)
             {
                 float dist = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center);
-                // Opaque outside the circle, fully transparent inside it, with a ~1px antialiased
-                // edge so the crop doesn't look jagged.
-                float alpha = Mathf.Clamp01(dist - radius + 1f);
+                // Opaque outside the circle, fully transparent inside it, with a soft ~3px
+                // antialiased edge (was ~1px — visibly harder-edged once scaled up on screen) so
+                // the crop reads as a clean circle rather than a jagged cutout.
+                float alpha = Mathf.Clamp01((dist - radius + 3f) / 3f);
                 pixels[y * size + x] = new Color(backgroundColor.r, backgroundColor.g, backgroundColor.b, alpha);
             }
         }
@@ -401,11 +417,36 @@ public sealed class RoundController : MonoBehaviour
         return tex;
     }
 
-    private static Texture2D BuildDotTexture(int size)
+    /// <summary>Thin light ring right at the circular crop's edge, drawn last — gives the minimap a clean frame instead of just stopping at a bare cutout.</summary>
+    private static Texture2D BuildRingTexture(int size)
     {
         var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         float radius = size * 0.5f;
+        const float ringThickness = 4f;
         Vector2 center = new(radius, radius);
+        var pixels = new Color[size * size];
+        var ringColor = new Color(0.9f, 0.9f, 0.9f, 0.85f);
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float dist = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center);
+                float bandDist = radius - dist; // 0 right at the edge, growing inward
+                float alpha = Mathf.Clamp01(Mathf.Min(bandDist, ringThickness - bandDist) / 1.5f);
+                pixels[y * size + x] = new Color(ringColor.r, ringColor.g, ringColor.b, alpha * ringColor.a);
+            }
+        }
+        tex.SetPixels(pixels);
+        tex.Apply();
+        return tex;
+    }
+
+    /// <summary><paramref name="inset"/> shrinks the dot inward by that many pixels — used to draw a smaller filled dot on top of a full-size one for a cheap dark-outline effect.</summary>
+    private static Texture2D BuildDotTexture(int size, float inset)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        float radius = size * 0.5f - inset;
+        Vector2 center = new(size * 0.5f, size * 0.5f);
         var pixels = new Color[size * size];
         for (int y = 0; y < size; y++)
         {
@@ -421,18 +462,22 @@ public sealed class RoundController : MonoBehaviour
         return tex;
     }
 
-    private static Texture2D BuildTriangleTexture(int size)
+    /// <summary><paramref name="inset"/> shrinks the triangle inward by that many pixels — used to draw a smaller filled triangle on top of a full-size one for a cheap dark-outline effect.</summary>
+    private static Texture2D BuildTriangleTexture(int size, float inset)
     {
         var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         var pixels = new Color[size * size];
         float center = size * 0.5f;
+        float usableHeight = size - inset * 2f;
         for (int y = 0; y < size; y++)
         {
-            float t = y / (float)(size - 1); // 0 at bottom row, 1 at top row
-            float halfWidth = (1f - t) * center;
+            float py = y + 0.5f - inset;
+            float t = Mathf.Clamp01(py / usableHeight); // 0 at the base row, 1 at the tip
+            float halfWidth = (1f - t) * (center - inset);
+            bool insideY = py >= 0f && py <= usableHeight;
             for (int x = 0; x < size; x++)
             {
-                bool inside = Mathf.Abs(x + 0.5f - center) <= halfWidth;
+                bool inside = insideY && Mathf.Abs(x + 0.5f - center) <= halfWidth;
                 pixels[y * size + x] = new Color(1f, 1f, 1f, inside ? 1f : 0f);
             }
         }

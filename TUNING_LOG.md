@@ -3,6 +3,18 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Minimap visual polish
+
+**Change:** cleaned up the circular minimap's readability, purely visual — no gameplay/simulation
+changes: widened the circular crop mask's edge antialiasing from ~1px to ~3px (the hard 1px cutout
+edge looked jagged), added a thin light ring texture (`BuildRingTexture`) drawn last as a border
+frame around the circle, and gave the triangle/dot icons a dark outline pass (draw a full-size dark
+copy underneath, then a smaller inset copy in the real color on top — `BuildTriangleTexture`/
+`BuildDotTexture` gained an `inset` parameter for this) so icons stay legible against any background
+color under them. Not unit-testable (OnGUI rendering); verified via compile-check, all 3 scenes
+rebuilt clean, and the full PlayMode suite (23/23 passing, unaffected — self-play still never builds
+the minimap since it never registers a local player).
+
 ## M3 self-play loop — 2 — late-game-phase confound fixed; win_rate is now a wall, stopping per LOOP.md
 
 **Diagnosis:** with spawn clustering fixed (loop 1), tags were now landing across a wide spread —
