@@ -3,6 +3,33 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Movement audio feedback — wind + landing thump/squash
+
+**Change:** the movement spec calls for "wind audio scaling with velocity" and "landing effects" as
+part of making high speed *feel* fast — a survey of the codebase confirmed these were the two
+genuinely missing items from that list (FOV widening and landing camera shake already existed).
+Added to `TagAgent.cs`, all procedurally generated (`AudioClip.Create`, same technique already used
+for the tag "boop") — no external audio assets:
+- **Wind**: a looping, crossfaded leaky-integrated-noise clip on the local player only, volume/pitch
+  scaled by `CurrentSpeed` between a `WindMinSpeed` floor and the character's actual
+  `MovementConfig.ground.maxHorizontalSpeed` (so retuning movement speed keeps the wind in sync for
+  free, rather than a second hand-picked "max speed" number going stale).
+- **Landing**: a body squash-and-stretch pulse (LateUpdate, same one-shot sin(0..pi) pattern already
+  used for the lunge dive pitch) plus a short pitch-dropping "thump" `PlayClipAtPoint`, both gated on
+  `CharacterMotor.Landed` — the same `minAirTimeForLandingEffects`-gated event camera shake already
+  uses, so tiny ground-probe seams don't trigger it.
+
+**Headless guard:** both audio paths (wind AudioSource creation, landing thump) are skipped when
+`SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null` (the same check the minimap uses) —
+self-play runs 12 bots landing constantly across 10 matches, and `PlayClipAtPoint` allocates a
+throwaway GameObject per call, real churn with no payoff when there's no audio device to hear it.
+The squash visual itself stays unconditional since it's a cheap Vector3 write with no allocation.
+
+**Verified:** compile-check clean, all 3 scenes rebuilt without error, full PlayMode suite 23/23
+passing (none of these paths are hit by self-play's all-bots matches, so no test coverage gap
+introduced — same as the minimap). Not unit-testable beyond that; needs a manual feel-check like the
+minimap did.
+
 ## Minimap visual polish
 
 **Change:** cleaned up the circular minimap's readability, purely visual — no gameplay/simulation

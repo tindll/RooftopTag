@@ -78,6 +78,26 @@ public sealed class TagAgent : MonoBehaviour
     private LineRenderer? _reachRing;
     private static AudioClip? _boopClip;
 
+    // Wind audio: local-player-only presentation feedback for speed, per the movement spec's
+    // "player should feel fast" requirement. Fades in above a walking-speed floor so it doesn't
+    // hiss at a standstill, and reaches full volume/pitch at the character's actual movement cap
+    // rather than a hand-picked number, so retuning MovementConfig keeps this in sync for free.
+    private const float WindMinSpeed = 4f;
+    private const float WindMaxVolume = 0.32f;
+    private const float WindMinPitch = 0.85f;
+    private const float WindMaxPitch = 1.2f;
+    private AudioSource? _windAudioSource;
+    private static AudioClip? _windClip;
+
+    // Landing feedback: a brief squash-and-stretch pulse on the body plus a soft thump, gated by
+    // CharacterMotor's own minAirTimeForLandingEffects (the same gate camera shake uses) so tiny
+    // ground-probe seams don't trigger it — only real falls do.
+    private const float LandingSquashDuration = 0.18f;
+    private const float LandingSquashAmount = 0.22f;
+    private Vector3 _bodyBaseScale = Vector3.one;
+    private float _landingSquashElapsed = -1f;
+    private static AudioClip? _landingThumpClip;
+
     public Role Role { get; private set; } = Role.Runner;
     public bool IsInGrace => _graceRemaining > 0f;
     public float LungeCooldownRemaining => Mathf.Max(0f, _lungeCooldownRemaining);
@@ -94,7 +114,13 @@ public sealed class TagAgent : MonoBehaviour
         _isLocalPlayer = isLocalPlayer;
 
         if (_bodyRenderer != null)
+        {
             _materialInstance = _bodyRenderer.material;
+            _bodyBaseScale = _bodyRenderer.transform.localScale;
+        }
+
+        _motor.Landed -= OnLanded; // idempotent in case Configure is ever called more than once
+        _motor.Landed += OnLanded;
 
         if (_isLocalPlayer && _lungeAction == null)
         {
@@ -126,6 +152,19 @@ public sealed class TagAgent : MonoBehaviour
             _reachRing.widthMultiplier = 0.05f;
             _reachRing.material = new Material(Shader.Find("Sprites/Default"));
             _reachRing.enabled = false;
+
+            // Same headless guard RoundController's minimap uses: batch-mode/self-play test runs
+            // report Null here, and creating a looping AudioSource there is a pointless allocation
+            // at best and a console-spam risk at worst.
+            if (SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
+            {
+                _windAudioSource = gameObject.AddComponent<AudioSource>();
+                _windAudioSource.clip = GetWindClip();
+                _windAudioSource.loop = true;
+                _windAudioSource.spatialBlend = 0f;
+                _windAudioSource.volume = 0f;
+                _windAudioSource.Play();
+            }
         }
 
         UpdateColor();
@@ -139,6 +178,19 @@ public sealed class TagAgent : MonoBehaviour
         _lungeAction?.Dispose();
         _tagAction?.Dispose();
         if (_reachRing != null) Destroy(_reachRing.gameObject);
+        if (_windAudioSource != null) Destroy(_windAudioSource);
+        _motor.Landed -= OnLanded;
+    }
+
+    private void OnLanded()
+    {
+        _landingSquashElapsed = 0f;
+
+        // Every agent lands constantly (12 bots × 10 self-play matches = thousands of landings) —
+        // PlayClipAtPoint spawns a throwaway GameObject per call, real churn with no payoff in a
+        // headless run where there's no audio device to hear it. Same guard as the minimap/wind audio.
+        if (SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
+            AudioSource.PlayClipAtPoint(GetLandingThumpClip(), transform.position, 0.5f);
     }
 
     private void Update()
@@ -178,6 +230,14 @@ public sealed class TagAgent : MonoBehaviour
         if (diving && !_wasAirDiving)
             PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.12f, backDuration: 0.3f);
         _wasAirDiving = diving;
+
+        if (_windAudioSource != null)
+        {
+            float windMaxSpeed = _motor.Config.ground.maxHorizontalSpeed;
+            float speedT = Mathf.Clamp01((_motor.CurrentSpeed - WindMinSpeed) / (windMaxSpeed - WindMinSpeed));
+            _windAudioSource.volume = speedT * WindMaxVolume;
+            _windAudioSource.pitch = Mathf.Lerp(WindMinPitch, WindMaxPitch, speedT);
+        }
     }
 
     public void SetRole(Role role, bool startGrace)
@@ -247,7 +307,29 @@ public sealed class TagAgent : MonoBehaviour
         // inherits the root's yaw for free through the transform hierarchy, so only pitch is set
         // here — no need to reconstruct yaw the way the old root-rotation code had to.
         if (_bodyRenderer != null)
+        {
             _bodyRenderer.transform.localRotation = Quaternion.Euler(pitch, 0f, 0f);
+
+            // Landing squash: one-shot sin(0..pi) pulse, same shape as the dive pitch above —
+            // compresses vertically and bulges horizontally at the peak, eases back to the base scale.
+            if (_landingSquashElapsed >= 0f)
+            {
+                _landingSquashElapsed += Time.deltaTime;
+                if (_landingSquashElapsed >= LandingSquashDuration)
+                {
+                    _landingSquashElapsed = -1f;
+                    _bodyRenderer.transform.localScale = _bodyBaseScale;
+                }
+                else
+                {
+                    float squashT = Mathf.Sin(_landingSquashElapsed / LandingSquashDuration * Mathf.PI) * LandingSquashAmount;
+                    _bodyRenderer.transform.localScale = new Vector3(
+                        _bodyBaseScale.x * (1f + squashT * 0.5f),
+                        _bodyBaseScale.y * (1f - squashT),
+                        _bodyBaseScale.z * (1f + squashT * 0.5f));
+                }
+            }
+        }
     }
 
     /// <summary>Explicit ranged tag attempt (right click / left trigger), tagging the nearest opposing agent if it's within <see cref="CurrentReachRadius"/> — no physical collision required.</summary>
@@ -405,5 +487,73 @@ public sealed class TagAgent : MonoBehaviour
         _boopClip = AudioClip.Create("TagBoop", sampleCount, 1, sampleRate, false);
         _boopClip.SetData(samples, 0);
         return _boopClip;
+    }
+
+    // ---------------------------------------------------------------- Wind sound
+
+    private static AudioClip GetWindClip()
+    {
+        if (_windClip != null) return _windClip;
+
+        const int sampleRate = 44100;
+        const float loopDuration = 2f;
+        const float crossfadeDuration = 0.15f;
+        const float gain = 0.9f;
+        int loopSamples = Mathf.CeilToInt(sampleRate * loopDuration);
+        int crossfadeSamples = Mathf.CeilToInt(sampleRate * crossfadeDuration);
+
+        // Leaky-integrated white noise reads as a soft rumble/hiss rather than the harsh hash of
+        // raw white noise — good enough for a background wind bed without an external audio asset.
+        var random = new System.Random(1337);
+        var raw = new float[loopSamples + crossfadeSamples];
+        float state = 0f;
+        for (int i = 0; i < raw.Length; i++)
+        {
+            float white = (float)(random.NextDouble() * 2.0 - 1.0);
+            state = state * 0.98f + white * 0.05f;
+            raw[i] = state;
+        }
+
+        // Crossfade the tail into the head so the loop point doesn't click.
+        var samples = new float[loopSamples];
+        Array.Copy(raw, samples, loopSamples);
+        for (int i = 0; i < crossfadeSamples; i++)
+        {
+            float t = i / (float)crossfadeSamples;
+            int tailIndex = loopSamples - crossfadeSamples + i;
+            samples[tailIndex] = Mathf.Lerp(raw[tailIndex], raw[i], t);
+        }
+        for (int i = 0; i < loopSamples; i++) samples[i] *= gain;
+
+        _windClip = AudioClip.Create("Wind", loopSamples, 1, sampleRate, false);
+        _windClip.SetData(samples, 0);
+        return _windClip;
+    }
+
+    // ---------------------------------------------------------------- Landing thump sound
+
+    private static AudioClip GetLandingThumpClip()
+    {
+        if (_landingThumpClip != null) return _landingThumpClip;
+
+        const int sampleRate = 44100;
+        const float duration = 0.15f;
+        const float startFrequency = 150f;
+        const float endFrequency = 55f; // pitch drops through the clip for a soft "thud" rather than a tone
+        int sampleCount = Mathf.CeilToInt(sampleRate * duration);
+        var samples = new float[sampleCount];
+        float phase = 0f;
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float t = i / (float)sampleCount;
+            float frequency = Mathf.Lerp(startFrequency, endFrequency, t);
+            phase += frequency / sampleRate;
+            float envelope = Mathf.Pow(1f - t, 2f); // sharp attack, fast decay
+            samples[i] = Mathf.Sin(2f * Mathf.PI * phase) * envelope * 0.6f;
+        }
+
+        _landingThumpClip = AudioClip.Create("LandingThump", sampleCount, 1, sampleRate, false);
+        _landingThumpClip.SetData(samples, 0);
+        return _landingThumpClip;
     }
 }
