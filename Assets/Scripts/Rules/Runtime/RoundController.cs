@@ -387,6 +387,23 @@ public sealed class RoundController : MonoBehaviour
         _minimapDotOutlineTexture = BuildDotTexture(32, inset: 0);
     }
 
+    // The circular-crop composite MUST NOT run inside OnGUI: Graphics.Blit reassigns
+    // RenderTexture.active to its destination and never restores it, and OnGUI fires several times
+    // per frame (Layout, Repaint, input events) — so blitting there left the active render target
+    // pointing at this little offscreen texture and every subsequent IMGUI draw (timer, role label,
+    // win banner, the minimap itself) rendered into IT instead of the screen. That blanked the
+    // entire HUD with zero exceptions or console errors. Compositing once per frame here, with
+    // active saved/restored, keeps OnGUI a pure draw path.
+    private void LateUpdate()
+    {
+        if (_minimapRenderTexture == null || _minimapCompositeTexture == null || _minimapMaskMaterial == null) return;
+
+        RenderTexture previous = RenderTexture.active;
+        _minimapMaskMaterial.SetTexture("_MaskTex", _minimapMaskTexture);
+        Graphics.Blit(_minimapRenderTexture, _minimapCompositeTexture, _minimapMaskMaterial);
+        RenderTexture.active = previous;
+    }
+
     private void DrawMinimap()
     {
         if (_minimapCamera == null || _minimapRenderTexture == null || _localPlayerAgent == null) return;
@@ -396,8 +413,6 @@ public sealed class RoundController : MonoBehaviour
         GUI.color = Color.white;
         if (_minimapMaskMaterial != null && _minimapCompositeTexture != null)
         {
-            _minimapMaskMaterial.SetTexture("_MaskTex", _minimapMaskTexture);
-            Graphics.Blit(_minimapRenderTexture, _minimapCompositeTexture, _minimapMaskMaterial);
             GUI.DrawTexture(mapRect, _minimapCompositeTexture);
         }
         else
