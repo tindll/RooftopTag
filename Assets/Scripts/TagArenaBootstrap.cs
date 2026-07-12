@@ -43,7 +43,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         RoundController roundController = roundControllerGo.AddComponent<RoundController>();
         roundController.Configure(tagConfig);
 
-        playerRoot.AddComponent<PlayerInputProvider>();
+        PlayerInputProvider inputProvider = playerRoot.AddComponent<PlayerInputProvider>();
         CharacterMotor playerMotor = playerRoot.AddComponent<CharacterMotor>();
         playerMotor.Configure(groundMask, wallMask, cameraYawPivot);
         TagAgent playerAgent = playerRoot.AddComponent<TagAgent>();
@@ -54,6 +54,8 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         ThirdPersonCameraRig rig = cameraRig.AddComponent<ThirdPersonCameraRig>();
         rig.Configure(playerMotor, mainCamera, cameraYawPivot, groundMask);
         roundController.SetCameraRig(rig);
+
+        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig);
 
         var bots = new System.Collections.Generic.List<ParkourBotInput>(botRoots.Length);
         foreach (GameObject botRoot in botRoots)

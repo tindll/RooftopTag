@@ -39,12 +39,14 @@ public sealed class PlaygroundBootstrap : MonoBehaviour
         _spawnPosition = playerRoot.transform.position;
         _spawnRotation = playerRoot.transform.rotation;
 
-        playerRoot.AddComponent<PlayerInputProvider>();
+        PlayerInputProvider inputProvider = playerRoot.AddComponent<PlayerInputProvider>();
         _motor = playerRoot.AddComponent<CharacterMotor>();
         _motor.Configure(groundMask, wallMask, cameraYawPivot);
 
         _cameraRig = cameraRig.AddComponent<ThirdPersonCameraRig>();
         _cameraRig.Configure(_motor, mainCamera, cameraYawPivot, groundMask);
+
+        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, _cameraRig);
 
         foreach (InteractableMarker marker in FindObjectsByType<InteractableMarker>(FindObjectsInactive.Exclude))
         {

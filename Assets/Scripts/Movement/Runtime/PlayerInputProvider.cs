@@ -1,5 +1,6 @@
 #nullable enable
 
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -30,6 +31,48 @@ public sealed class PlayerInputProvider : MonoBehaviour, ICharacterInput
     public bool SprintHeld { get; private set; }
     public bool InteractPressed { get; private set; }
 
+    // Exposed for the settings menu's rebind UI. These are the same concrete InputActions driving
+    // the simulation above — rebinding one of them takes effect immediately for gameplay, no extra
+    // wiring needed. Only the button actions are exposed; Move/Look are composite/analog and not
+    // remapped key-by-key by the settings menu.
+    public InputAction JumpAction => _jump!;
+    public InputAction SlideAction => _slide!;
+    public InputAction SprintAction => _sprint!;
+    public InputAction InteractAction => _interact!;
+
+    // PlayerPrefs persistence for rebound keyboard bindings. Keyed by action name so each action's
+    // overrides round-trip independently; missing/empty entries just mean "use the built-in default".
+    private const string BindingPrefsPrefix = "RooftopTag.Bind.";
+
+    /// <summary>Saves every rebindable action's current binding overrides to PlayerPrefs. Call after a rebind completes.</summary>
+    public void SavePersistedBindingOverrides()
+    {
+        foreach (InputAction action in RebindableActions)
+            PlayerPrefs.SetString(BindingPrefsPrefix + action.name, action.SaveBindingOverridesAsJson());
+        PlayerPrefs.Save();
+    }
+
+    private IEnumerable<InputAction> RebindableActions
+    {
+        get
+        {
+            yield return _jump!;
+            yield return _slide!;
+            yield return _sprint!;
+            yield return _interact!;
+        }
+    }
+
+    private void LoadPersistedBindingOverrides()
+    {
+        foreach (InputAction action in RebindableActions)
+        {
+            string json = PlayerPrefs.GetString(BindingPrefsPrefix + action.name, "");
+            if (!string.IsNullOrEmpty(json))
+                action.LoadBindingOverridesFromJson(json);
+        }
+    }
+
     private void Awake()
     {
         _move = new InputAction("Move", InputActionType.Value);
@@ -58,6 +101,8 @@ public sealed class PlayerInputProvider : MonoBehaviour, ICharacterInput
 
         _jump.performed += _ => _pendingJumpPressed = true;
         _interact.performed += _ => _pendingInteractPressed = true;
+
+        LoadPersistedBindingOverrides();
     }
 
     private void OnEnable()

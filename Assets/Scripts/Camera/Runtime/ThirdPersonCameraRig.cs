@@ -31,6 +31,21 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
 
     public Transform YawPivot => yawPivot!;
 
+    /// <summary>Live mouse-look sensitivity on this rig's own <see cref="CameraConfig"/> instance (each rig owns a fresh
+    /// runtime instance, not a shared asset — see <see cref="Awake"/> — so mutating this is safe and takes effect immediately).</summary>
+    public float MouseSensitivity
+    {
+        get => config.mouseSensitivity;
+        set => config.mouseSensitivity = value;
+    }
+
+    /// <summary>Live keyboard-arrow camera turn speed (deg/sec), same runtime-instance caveat as <see cref="MouseSensitivity"/>.</summary>
+    public float KeyboardTurnSpeed
+    {
+        get => config.keyboardTurnSpeed;
+        set => config.keyboardTurnSpeed = value;
+    }
+
     public void SetTarget(CharacterMotor motor)
     {
         if (target != null) target.Landed -= OnLanded;
