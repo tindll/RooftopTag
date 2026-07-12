@@ -52,6 +52,8 @@ public sealed class TagAgent : MonoBehaviour
 
     private const int RingSegments = 48;
 
+    private static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
+
     private TagRulesConfig _config = null!;
     private CharacterMotor _motor = null!;
     private RoundController? _roundController;
@@ -105,6 +107,7 @@ public sealed class TagAgent : MonoBehaviour
         if (_bodyRenderer != null)
         {
             _materialInstance = _bodyRenderer.material;
+            _materialInstance.EnableKeyword("_EMISSION");
             _bodyBaseScale = _bodyRenderer.transform.localScale;
         }
 
@@ -174,6 +177,13 @@ public sealed class TagAgent : MonoBehaviour
         {
             _graceRemaining -= Time.deltaTime;
             if (_graceRemaining <= 0f) UpdateColor();
+        }
+
+        if (IsInGrace && _materialInstance != null)
+        {
+            float pulse = 0.5f + 0.5f * Mathf.Sin(Time.time * _config.gracePulseHz * 2f * Mathf.PI);
+            _materialInstance.SetColor(EmissionColorId,
+                _config.conversionGraceColor * (_config.graceEmissiveIntensity * (0.4f + 0.6f * pulse)));
         }
 
         if (_lungeCooldownRemaining > 0f)
@@ -346,9 +356,14 @@ public sealed class TagAgent : MonoBehaviour
     private void UpdateColor()
     {
         if (_materialInstance == null) return;
-        _materialInstance.color = IsInGrace
+        Color color = IsInGrace
             ? _config.conversionGraceColor
             : Role == Role.Tagger ? _config.taggerColor : _config.runnerColor;
+        float emissive = IsInGrace
+            ? _config.graceEmissiveIntensity
+            : Role == Role.Tagger ? _config.taggerEmissiveIntensity : _config.runnerEmissiveIntensity;
+        _materialInstance.color = color;
+        _materialInstance.SetColor(EmissionColorId, color * emissive);
     }
 
     // ---------------------------------------------------------------- Arms (tag reach + mantle push)

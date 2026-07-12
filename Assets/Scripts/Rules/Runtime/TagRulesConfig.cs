@@ -47,7 +47,13 @@ public sealed class TagRulesConfig : ScriptableObject
     public float lateGameMaxSpeedMultiplier = 1.10f;
 
     [Header("Role telegraphing")]
-    public Color taggerColor = new(0.85f, 0.15f, 0.1f);
-    public Color runnerColor = new(0.2f, 0.6f, 1f);
+    public Color taggerColor = new Color32(0xFF, 0x3D, 0x2E, 0xFF);
+    public Color runnerColor = new Color32(0xFF, 0xE9, 0xC4, 0xFF);
     public Color conversionGraceColor = new(0.9f, 0.7f, 0.1f);
+    /// <summary>Emission multipliers per role — taggers must read as a red glow in silhouette
+    /// at range (spec: gameplay color language). Runners stay non-emissive.</summary>
+    public float taggerEmissiveIntensity = 1.8f;
+    public float runnerEmissiveIntensity = 0f;
+    public float graceEmissiveIntensity = 1.2f;
+    public float gracePulseHz = 2.5f;
 }
