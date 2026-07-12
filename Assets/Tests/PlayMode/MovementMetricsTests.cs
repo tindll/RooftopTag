@@ -268,13 +268,16 @@ public sealed class MovementMetricsTests
 
         // Release near a genuine speed peak rather than at a fixed time, so the test isn't
         // flaky against whatever phase of the pendulum's period an arbitrary deadline lands on.
+        // The reworked swing is a velocity-state pendulum driven by a constant WASD hold
+        // projected onto the rope's tangent plane (not the old square-wave pump signal, which
+        // was tuned for a different, weaker force model).
         float maxSpeedSoFar = 0f;
         float elapsed = 0f;
         const float minPumpTime = 1f;
-        const float maxPumpTime = 8f;
+        const float maxPumpTime = 4f;
         while (elapsed < maxPumpTime)
         {
-            input.Move = new Vector2(0f, Mathf.Sign(Mathf.Sin(elapsed * 2f)));
+            input.Move = new Vector2(0f, 1f);
             yield return new WaitForFixedUpdate();
             elapsed += Time.fixedDeltaTime;
 
@@ -289,7 +292,84 @@ public sealed class MovementMetricsTests
         float releaseSpeed = motor.Velocity.magnitude;
         Debug.Log($"METRIC swing_release_speed_mps={releaseSpeed:0.00} (peak_during_swing={maxSpeedSoFar:0.00})");
         Assert.AreEqual(MotorState.Airborne, motor.CurrentState, "Jump should release the character from the swing into airborne state.");
-        Assert.Greater(releaseSpeed, 1f, "Swing release should impart a meaningful launch velocity.");
+        Assert.Greater(releaseSpeed, 6f, "Swing release should impart a meaningful launch velocity, at or above sprint speed — the design goal is 'one of the fastest moves in the game'.");
+        Assert.Less(releaseSpeed, 15f, "Release speed should stay under maxTangentialSpeed(12) * releaseMultiplier(1.15) + jump bonus(1.5) rounded up; a higher value indicates a double-integration bug in the velocity-state pendulum.");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
+    public IEnumerator Swing_EReleasesWithoutJump()
+    {
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -20f, 0f), new Vector3(300f, 1f, 300f));
+
+        const float length = 4f;
+        Vector3 pivot = new(0f, 8f, 0f);
+        ChainSwingInteractable swing = CreateSwing(_sceneRoot.transform, pivot, length);
+
+        float startAngleRad = 30f * Mathf.Deg2Rad;
+        Vector3 startPos = pivot + new Vector3(Mathf.Sin(startAngleRad), -Mathf.Cos(startAngleRad), 0f) * length;
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(startPos);
+
+        input.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should attach to the swing when in range and interacting.");
+
+        // Wait past the 0.15s post-attach grace (E/Jump must not immediately re-trigger a release
+        // right after the grab) while holding a pump input, then release with a single Interact
+        // press alone — no Jump involved.
+        input.Move = new Vector2(0f, 1f);
+        yield return RunForSeconds(0.3f);
+
+        input.PressInteract();
+        yield return RunForSeconds(0.1f);
+
+        Debug.Log($"METRIC swing_e_release_speed_mps={motor.Velocity.magnitude:0.00}");
+        Assert.AreEqual(MotorState.Airborne, motor.CurrentState, "Pressing Interact after the attach grace should release the character from the swing without needing Jump.");
+        Assert.Greater(motor.Velocity.magnitude, 1f, "E-release should still carry the swing's velocity state into the airborne launch.");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
+    public IEnumerator Swing_OmnidirectionalLateralPush()
+    {
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -20f, 0f), new Vector3(300f, 1f, 300f));
+
+        const float length = 4f;
+        Vector3 pivot = new(0f, 8f, 0f);
+        ChainSwingInteractable swing = CreateSwing(_sceneRoot.transform, pivot, length);
+
+        // Spawn hanging with the 30 deg offset in the Y-Z plane instead of the Y-X plane the other
+        // swing tests use, so the initial swing plane contains no X component. The test-harness
+        // player never gets a cameraYaw wired in (CreatePlayer never calls motor.Configure), and
+        // CharacterMotor.ComputeWishDirection treats cameraYaw == null as the AI-input convention:
+        // forward = Vector3.forward, right = Vector3.right, i.e. Move maps straight to world axes
+        // with no rotation. So driving pure Move.x below pushes straight along world +X, which is
+        // orthogonal to this Y-Z swing plane. The old fixed-plane pendulum could not respond to an
+        // out-of-plane push at all (~0m of X displacement); this is the regression test for the
+        // reworked pendulum's omnidirectionality.
+        float startAngleRad = 30f * Mathf.Deg2Rad;
+        Vector3 startPos = pivot + new Vector3(0f, -Mathf.Cos(startAngleRad), Mathf.Sin(startAngleRad)) * length;
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(startPos);
+
+        input.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should attach to the swing when in range and interacting.");
+
+        // Let it settle toward the bottom of the swing with no input before measuring displacement.
+        input.Move = Vector2.zero;
+        yield return RunForSeconds(0.5f);
+        Vector3 settledPosition = go.transform.position;
+
+        // Pure sideways push, orthogonal to the initial (Y-Z) swing plane.
+        input.Move = new Vector2(1f, 0f);
+        yield return RunForSeconds(1.5f);
+
+        float lateralDisplacement = Mathf.Abs(go.transform.position.x - settledPosition.x);
+        Debug.Log($"METRIC swing_lateral_push_displacement_m={lateralDisplacement:0.00}");
+        Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should remain attached to the swing throughout the push (no accidental release).");
+        Assert.Greater(lateralDisplacement, 1f, "A sideways push orthogonal to the initial swing plane should visibly deflect the pendulum out of that plane; a fixed-plane pendulum scores ~0 here.");
         AssertNoPhysicsExplosion(motor);
     }
 

@@ -3,6 +3,42 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Swing-rope rework — omnidirectional, E-release, momentum-true launches (2026-07-12)
+
+**Feel-test report:** E should release (was a no-op — Jump only); the rope only swung in one
+plane (frozen at grab time); pumping was far too hard; release should carry built momentum.
+
+**Root causes found before touching anything:** the pendulum was a strictly-planar 1D angle ODE
+with the plane locked at grab; the pump only applied within ±30° of the arc bottom, in one axis,
+only reinforcing the existing swing sign; and damping was 2%/tick at 50Hz = **64% velocity loss per
+second** — the single biggest reason momentum wouldn't build (historical measured release:
+2.13 m/s vs the "one of the fastest moves in the game" design goal).
+
+**Rework (plan `.claude/plans/woolly-soaring-teapot.md`, 3 executor-routed tasks — opus on the
+motor physics, sonnet on the bot gate + tests):** velocity-state spherical pendulum. Gravity + a
+camera-relative WASD tangential force (inputAcceleration=20 m/s²) integrate a world-space swing
+velocity; taut-rope constraint by projecting velocity onto the rope's tangent plane and snapping
+position onto the sphere; exponential damping 0.15/s (~14%/s loss); clamp 12 m/s. Velocity-driven
+rigidbody (linearVelocity = swing velocity; MovePosition only corrects radial drift — avoids the
+double-integration 2× bug, which the new test's <15 upper bound guards). E and Jump both release
+after a 0.15s post-attach grace: release = swingVelocity × 1.15, Jump adds +1.5 up (E = flat
+momentum bail, Jump = higher arc). Entry momentum seeds the swing (sprint-entry ≈ 8 m/s
+immediately). Bots stop holding Interact once attached (they'd instantly E-bail otherwise); their
+steer-toward-exit input now naturally pumps the spherical swing; ExitDirection auto-release
+unchanged. Config surface rebuilt (dead grabRange + 3 obsolete pump fields deleted). Defaults were
+derived from pendulum math (tilted-gravity equilibrium), not guessed — predicted ~10 m/s peak /
+11.5 release.
+
+**Measured outcome (first green run):** `swing_release_speed_mps=11.93` (was 2.13 — **5.6×**),
+`swing_e_release_speed_mps=8.00`, `swing_lateral_push_displacement_m=3.49` (old planar model ≈ 0 —
+the omnidirectionality regression test). 34/34 tests; self-play: stuck 100 (≤107 baseline),
+fallen 0, max distance 41.4. Discovery bonus: the old shared `_swingPlaneAxis` field was secretly
+reused by the climb path — split into a dedicated `_climbApproachDir` during the rework.
+
+**Decision:** kept all derived defaults untouched — measurements landed on prediction. Human
+feel-test pending (circle-swing with WASD, pump-up time, E vs Jump release feel). Follow-ups noted,
+not built: rope/chain visual while swinging, a hang/grab arm pose (TagAgent has no OnSwing branch).
+
 ## Map expansion — construction-site zone + WallRun/Swing/ClimbWall/VaultWall links (2026-07-12)
 
 **What was built** (plan: `.claude/plans/woolly-soaring-teapot.md`, executed as 7 executor-routed

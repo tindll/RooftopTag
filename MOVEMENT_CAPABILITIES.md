@@ -19,7 +19,7 @@ sized against.
 | **Slide-hop chained distance** | **9.57 m** | Sprint → slide (0.25s hold) → buffered jump keeping full horizontal speed, measured on flat ground. Matches plain sprint-jump almost exactly — the slide's entry boost is downhill-gated (see `TUNING_LOG.md`, feel-test round 1), so a flat-ground slide-hop no longer adds free speed. Expect a real boost only when sliding downhill. |
 | **Wall-run sustained duration** | 0.30 s (this run) | Bounded by `MovementConfig.wallRun.maxDuration` (3s) or by falling below `wallRun.minEntrySpeed`; the playground's wall-run alley (16m corridor) gives more room to sustain a full run than the synthetic test wall. |
 | **Ladder climb-up duration** | 1.78 s | For a 6m ladder at `MovementConfig.ladder.climbSpeed` (3.5 m/s) plus mantle hand-off at the top. |
-| **Swing release speed (apex-timed)** | 2.13 m/s | See tuning note — currently well below sprint speed, not yet delivering the "fastest move in the game" design goal. |
+| **Swing release speed (apex-timed)** | **11.93 m/s** (Jump-release; E-release measured 8.00 m/s; lateral push covers 3.49m in 1.5s) | Reworked 2026-07-12: omnidirectional velocity-state pendulum — WASD force projected on the rope's tangent plane, E/Jump both release after a 0.15s post-attach grace, release velocity = swing velocity × 1.15, Jump adds +1.5 up. Old fixed-plane value (2.13 m/s) superseded — 5.6× faster; measured by `Swing_MeasuresApexReleaseSpeed`. |
 | **Climb (wall-scramble) threshold height** | 2.60 m | Reaches ledge and mantles off in 1.98s with no stutter. Threshold range is `mantleVault.mantleMaxHeight` (2.2m) to `climb.climbMaxHeight` (3.0m). |
 | Mantle height range | 0.5 m – 2.2 m | `MovementConfig.mantleVault.mantleMinHeight` / `mantleMaxHeight` |
 | Vault height range | 0 m – 1.1 m (requires ≥3 m/s approach) | `MovementConfig.mantleVault.vaultMaxHeight` / `vaultMinApproachSpeed` |
@@ -39,12 +39,16 @@ should remain a real obstacle).
 
 ## Known tuning gaps for the M4 improvement loop
 
-1. **Swing feels weak.** 2.13 m/s release speed is far below the 8 m/s sprint speed; the design
-   intent ("a well-timed release at the apex should be one of the fastest moves in the game")
-   isn't met yet. Likely fix: raise `swing.pumpAngularAcceleration` and/or `releaseSpeedMultiplier`,
-   or increase chain length so more potential energy converts to speed. Needs a manual feel-test
-   pass with real pumping timing (the automated test uses a synthetic alternating pump signal,
-   not human-timed). Not yet addressed as of feel-test round 1.
+1. **Swing weakness — superseded by the 2026-07-12 rework.** The old fixed-plane pendulum
+   measured 2.13 m/s release, far below the 8 m/s sprint speed and the "fastest move in the game"
+   design intent. Replaced with an omnidirectional velocity-state pendulum (WASD force projected
+   on the rope's tangent plane; E/Jump both release after a 0.15s grace; release = swing velocity
+   × 1.15, Jump adds +1.5 up), covered by `Swing_MeasuresApexReleaseSpeed` (constant-hold pump,
+   asserts release in (6, 15) m/s), `Swing_EReleasesWithoutJump`, and
+   `Swing_OmnidirectionalLateralPush` in `MovementMetricsTests.cs`. Re-measured: **11.93 m/s**
+   Jump-release / 8.00 m/s E-release / 3.49m lateral push (first green run, 2026-07-12). Remaining:
+   a manual feel-test pass (grab, circle-swing with WASD, pump, release with E vs Jump) before
+   closing this item out.
 2. **Wall-run test duration (0.30s) is a lower bound from a short synthetic wall**, not a measured
    maximum — the playground's actual wall-run alley (16m) should be feel-tested separately for
    the real sustained-duration ceiling.
