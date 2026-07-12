@@ -514,6 +514,53 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
+    public IEnumerator WallHook_BufferedInteractGrabsWhileFalling()
+    {
+        // Regression (reported): falling fast beside a wall, it was unclear when you could still grab
+        // it — a slightly-early E press whiffed because the hook demanded the raw InteractPressed edge
+        // on the exact in-range frame, probed with one thin forward ray. It now consumes the 0.25s
+        // interact buffer (like mantle/vault) and probes with a fatter SphereCast, so a single press
+        // while falling reliably grabs.
+        _sceneRoot = new GameObject("TestScene");
+
+        // A tall wall whose near face sits at z=1.1 — just BEYOND the mantle/vault thin forward ray
+        // (1.0m from the capsule centre at z=0) so that path can't intercept, but within the hook's
+        // SphereCast reach (1.0m travel + 0.25m radius). This is exactly the generosity Fix 3 adds:
+        // a thin ray misses here, the fat cast catches. Very tall => no reachable ledge, so mantle
+        // and wall-hang stay out of the way and the grab must come through TryStartWallHook.
+        CreateWall(_sceneRoot.transform, new Vector3(0f, 10f, 1.6f), new Vector3(6f, 20f, 1f));
+
+        // cameraYaw must be non-null (bots are gated out of the hook) and it also aims the body —
+        // point it straight at the wall (+Z) so the forward SphereCast hits the face.
+        var yaw = new GameObject("CameraYaw");
+        yaw.transform.SetParent(_sceneRoot.transform, false);
+        yaw.transform.rotation = Quaternion.LookRotation(Vector3.forward, Vector3.up);
+
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(0f, 8f, 0f));
+        motor.Configure(~0, ~0, yaw.transform);
+
+        // Fall a few ticks so we're unambiguously airborne and moving downward past the wall face.
+        yield return RunForSeconds(0.1f);
+        Assert.AreEqual(MotorState.Airborne, motor.CurrentState, "Precondition: should be falling beside the wall.");
+        Assert.Less(motor.Velocity.y, 0f, "Precondition: should be falling downward.");
+
+        // A single (buffered) press while still falling — not spammed every frame.
+        input.PressInteract();
+
+        float elapsed = 0f;
+        while (motor.CurrentState != MotorState.WallHook && elapsed < 0.25f)
+        {
+            yield return new WaitForFixedUpdate();
+            elapsed += Time.fixedDeltaTime;
+        }
+
+        Debug.Log($"METRIC wallhook_buffered_grab_time_s={elapsed:0.00} state={motor.CurrentState}");
+        Assert.AreEqual(MotorState.WallHook, motor.CurrentState,
+            "A single buffered Interact press while falling beside a wall should grab it within the buffer window.");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
     public IEnumerator RampDescent_DoesNotBounceRepeatedly()
     {
         _sceneRoot = new GameObject("TestScene");

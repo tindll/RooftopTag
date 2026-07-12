@@ -589,12 +589,28 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private bool TryStartWallHook()
     {
-        if (!_input.InteractPressed) return false;
+        // Player-only, matching TryWallHang's gate. Bots have no wall-hook edge type in the parkour
+        // graph — a hook would just strand them clinging to a wall. They also hold Interact for the
+        // whole length of Vault/Mantle/Swing edges, and the forgiving buffer + SphereCast below would
+        // otherwise let that held press snag a wall mid-traversal.
+        if (cameraYaw == null) return false;
+
+        // Buffered, not the raw per-frame edge: while falling fast a slightly-early E press should
+        // still catch the wall (the same 0.25s forgiveness mantle/vault already use via InteractBuffered).
+        if (!InteractBuffered) return false;
         if (Time.time - _lastGroundedTime < config.wallHook.minAirTimeBeforeHook) return false;
 
-        if (!Physics.Raycast(CapsuleCenterWorld(), transform.forward, out RaycastHit hit, config.wallHook.detectionDistance, wallMask, QueryTriggerInteraction.Ignore))
+        // SphereCast rather than a single thin ray: a fat probe forgives imperfect aim when you're
+        // falling past a wall trying to grab it (a hair off-centre no longer whiffs).
+        if (!Physics.SphereCast(CapsuleCenterWorld(), 0.25f, transform.forward, out RaycastHit hit, config.wallHook.detectionDistance, wallMask, QueryTriggerInteraction.Ignore))
             return false;
 
+        // Reject near-horizontal surfaces (floors, roof lips): only a roughly vertical wall face is
+        // grabbable. Without this the more-generous cast would hook the ground you're falling toward.
+        if (Mathf.Abs(hit.normal.y) > 0.3f) return false;
+
+        // Consume the buffered press so it can't also feed a mantle a couple of frames later.
+        ConsumeInteract();
         _wallHookNormal = hit.normal;
         _wallHookElapsed = 0f;
         _state = MotorState.WallHook;

@@ -3,6 +3,37 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Wall-run removed; wall-grab made trustworthy; minimap unblocked (2026-07-12)
+
+**Wall-run removed by user decision** (auto-attach "sometimes just messes you up"; WallHook + jump
+covers wall traversal with explicit intent — memory `project_wallrun_removed` records this as
+superseding CLAUDE.md's wall-run bullet). Full mechanic removal (~460 lines deleted across 23
+files: motor state/config, camera tilt, bot LateralDir steering, graph emission, the dead corridor
+graph builder). Map consequence handled: the deliberately un-jumpable W2↔Con_West wall-run
+crossing became a plain 4m Jump (Con_West x=-44→-38; the swing pivot re-derives from the new roof
+overlap automatically). Playground alley walls stay as hook/climb geometry.
+
+**Wall-grab clarity ("invisible wall you fall through") — root-caused, not guessed:** the cosmetic
+building extensions (visual mass below y=-3) used the SAME seeded material as the real building but
+had their colliders destroyed — the wall silently became intangible mid-fall with zero visual
+boundary. Fixed by keeping the colliders (mental model: if it looks like a wall, it's solid and
+grabbable). Grab entry also made forgiving: buffered E (0.25s window, like mantle/vault) instead of
+a single-frame edge; SphereCast r=0.25 @ 1.0m instead of a thin ray (plus a previously-MISSING
+verticality check so the fatter cast can't hook floors); and a bot gate added to TryStartWallHook
+(bots hold E through vault/swing edges and could accidentally hook — latent hazard confirmed by
+diagnosis, worse with the forgiveness fixes). New test proves the buffered+spherecast grab catches
+a wall the old thin ray provably missed.
+
+**Minimap missing in RooftopArena — root-caused:** the drifting clouds (y35-55) render straight
+through the minimap's downward ortho camera (y≈40, culling everything). Presentation dressing
+(clouds/haze/silhouettes) now sits on a build-time "Dressing" layer the minimap camera excludes;
+the win/lose banner got a dark backdrop (yellow-on-golden-sky contrast). Banner logic itself was
+already correct — likely never seen because rounds weren't reaching their end during feel-tests.
+
+**Verified:** 40/40 across all suites (new WallHook buffered-grab test included), self-play healthy
+and edge usage still alive post-removal (Run=983, Jump=53, Vault=19, Climb=6 — Climb/Vault
+completions still rising batch-over-batch).
+
 ## BREAKTHROUGH: dense parkour graph — bots finally navigate (2026-07-12)
 
 **The one-node-per-roof problem is fixed** (5 nodes per roof — center + 4 inset edge-midpoints,

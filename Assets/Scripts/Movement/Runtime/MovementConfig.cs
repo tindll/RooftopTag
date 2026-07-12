@@ -182,7 +182,7 @@ public sealed class MovementConfig : ScriptableObject
 
     public WallHookSettings wallHook = new()
     {
-        detectionDistance = 0.8f,
+        detectionDistance = 1.0f, // was 0.8; paired with the SphereCast probe so a falling grab reaches the wall
         maxHoldDuration = 1.6f,
         jumpOutSpeed = 6f,
         jumpUpSpeed = 7.5f,

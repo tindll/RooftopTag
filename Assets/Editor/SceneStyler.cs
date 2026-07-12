@@ -143,7 +143,13 @@ public static class SceneStyler
     /// instead of a floating slab. Uses the same seeded WallBody material as the roof body above
     /// (seed = roof index + 1, matching RooftopArena.Build) so the mass is a seamless continuation of
     /// the same building. Sits entirely below all playable geometry (lowest roof surface y1.5, every
-    /// roof body bottoms at -3), so it never clips a walkable surface, and it has no collider.</summary>
+    /// roof body bottoms at -3), so it never clips a walkable surface. The primitive's BoxCollider is
+    /// KEPT (not destroyed): the real roof body's collider bottoms out at exactly -3, so without this
+    /// the visible building face silently turned intangible mid-fall — you'd clip through a wall that
+    /// still looks solid. Keeping it makes the mental model honest: if it looks like a wall, it's a
+    /// wall (grabbable/collidable). Left on the Default layer (CreatePrimitive's default; unlike the
+    /// SilhouetteBox helpers it is deliberately NOT put on "Dressing"), so the minimap camera — which
+    /// culls Dressing — still renders the building footprints with no holes.</summary>
     public static void CreateBuildingExtensions(VisualThemeConfig theme)
     {
         var root = new GameObject("BuildingMasses");
@@ -159,7 +165,8 @@ public static class SceneStyler
             RooftopArena.Roof r = RooftopArena.Roofs[i];
             GameObject mass = GameObject.CreatePrimitive(PrimitiveType.Cube);
             mass.name = $"{r.Name}_Mass";
-            Object.DestroyImmediate(mass.GetComponent<BoxCollider>());
+            // Collider intentionally kept: the visible building face must stay solid so a falling
+            // player never passes through a wall that still looks like a wall (see summary above).
             mass.transform.SetParent(root.transform, false);
             mass.transform.position = new Vector3(r.Center.x, centerY, r.Center.z);
             mass.transform.localScale = new Vector3(r.SizeX, height, r.SizeZ);
