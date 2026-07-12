@@ -124,6 +124,42 @@ public sealed class TagRulesTests
     }
 
     [UnityTest]
+    public IEnumerator RoundController_RunnerFallsOffMap_EliminatedAndTaggersWin()
+    {
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
+
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.taggerCount = 1; // 2 agents → exactly one Runner, so dropping it empties the Runner pool
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform, false);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        controller.Configure(config);
+
+        (_, _, TagAgent a, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f));
+        (_, _, TagAgent b, _) = CreateTagAgent(new Vector3(10f, 1.1f, 0f));
+        controller.RegisterAgent(a, isLocalPlayer: false);
+        controller.RegisterAgent(b, isLocalPlayer: false);
+
+        yield return null; // RoundController.Start() assigns roles
+        yield return new WaitForFixedUpdate();
+
+        // Teleport the sole Runner far below the fall threshold and let RoundController.Update catch it.
+        TagAgent runner = a.Role == Role.Runner ? a : b;
+        runner.Motor.ResetState(new Vector3(0f, -100f, 0f), Quaternion.identity);
+
+        yield return null; // RoundController.Update runs the fall check → Eliminate → round ends this frame
+        yield return null;
+
+        Debug.Log($"METRIC runner_fall_result='{controller.ResultMessage}' eliminated={runner.IsEliminated}");
+        Assert.IsTrue(runner.IsEliminated, "A Runner that falls off the map should be eliminated.");
+        Assert.IsFalse(runner.gameObject.activeSelf, "An eliminated Runner should be deactivated, not respawned.");
+        Assert.IsTrue(controller.IsRoundOver, "Eliminating the last Runner should end the round.");
+        StringAssert.Contains("Taggers win", controller.ResultMessage);
+    }
+
+    [UnityTest]
     public IEnumerator RoundController_TimerExpires_EndsRoundRunnersWin()
     {
         _sceneRoot = new GameObject("TestScene");
