@@ -75,6 +75,28 @@ public static class RooftopArena
         new("Roof_N2EE",  26f,  26f, 7f, 8f,  8f),  // 10
         new("Roof_Tower",-13f,  20f, 9f, 7f,  7f),  // 11 — tall, ladder up; sits against Roof_N1W so its base is reachable
         new("Roof_S1",    0f,  -13f, 4f, 9f,  8f),  // 12
+
+        // --- Urban south extension (13-14) ---
+        new("Roof_E1S",   13f, -13f, 3f,   8f,  8f),  // 13
+        new("Roof_S2",     0f, -26f, 3f,   9f,  8f),  // 14
+
+        // --- Urban west extension (15-16) ---
+        new("Roof_W2",   -26f,   0f, 4f,   8f,  8f),  // 15
+        new("Roof_N1WW", -26f,  13f, 6f,   8f,  8f),  // 16
+
+        // --- Construction zone (17-24): low, dense, grabby — h1.5-2.5 floors, tight gaps, ramp +
+        // climb verticality, one raised crane spike. ---
+        new("Con_Gate",  -13f, -13f, 4f,   8f,  8f),  // 17 — gateway from the urban zone
+        new("Con_Yard",  -27f, -13f, 1.5f, 12f, 10f), // 18
+        new("Con_Deck",  -26f, -26f, 2f,   8f,  8f),  // 19
+        new("Con_Ramps", -13f, -26f, 2.5f, 8f,  8f),  // 20
+        new("Con_Crane", -22f, -22f, 4.8f, 6f,  6f),  // 21 — raised
+        new("Con_West",  -44f,   0f, 3.5f, 8f,  8f),  // 22 — wall-run anchor
+        new("Con_Alley", -37f, -24f, 2f,   8f,  20f), // 23 — long alley
+        new("Con_ScafHi",-30f, -32f, 4f,   10f, 8f),  // 24 — SW corner
+
+        // --- Urban south, cont'd: placed last to keep array order == index order (see plan). ---
+        new("Roof_S2E",   13f, -26f, 4f,   8f,  8f),  // 25
     };
 
     // LinkKind.Jump between roofs ≤2m apart in height; Ramp for the +3m climb to Roof_N1EE; Ladder up
@@ -98,6 +120,27 @@ public static class RooftopArena
         new(8, 9, LinkKind.Jump),
         new(9, 10, LinkKind.Jump),
         new(7, 11, LinkKind.Ladder),
+
+        // Map-expansion Jump/Ramp links (new roofs 13-25). WallRun/Swing/ClimbWall/VaultWall links
+        // land in later tasks alongside their geometry.
+        new(1, 13, LinkKind.Jump),
+        new(12, 13, LinkKind.Jump),
+        new(13, 25, LinkKind.Jump),
+        new(12, 14, LinkKind.Jump),
+        new(14, 25, LinkKind.Jump),
+        new(14, 20, LinkKind.Jump),
+        new(3, 15, LinkKind.Jump),
+        new(15, 16, LinkKind.Jump),
+        new(7, 16, LinkKind.Jump),
+        new(3, 17, LinkKind.Jump),
+        new(17, 20, LinkKind.Jump),
+        new(18, 19, LinkKind.Jump),
+        new(19, 20, LinkKind.Jump),
+        new(19, 23, LinkKind.Jump),
+        new(19, 24, LinkKind.Jump),
+        new(23, 24, LinkKind.Jump),
+        new(17, 18, LinkKind.Ramp),  // Gate h4 -> Yard h1.5
+        new(18, 21, LinkKind.Ramp),  // Yard h1.5 -> Crane h4.8, crane-access
     };
 
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
@@ -209,13 +252,14 @@ public static class RooftopArena
         return (bottom, top, outward);
     }
 
-    // Spawn, E1, W1, N1, S1 — the central roof and its 4 direct jump neighbours. Cycling agents
-    // across all 5 (self-play regression found via a 12-agent measurement: crowding all 12 onto
-    // the single 12x12 spawn roof caused near-instant tag cascades — every match ended within a
-    // few seconds of round-start grace lifting, before any real fleeing/pathing happened, matching
+    // Spawn, E1, W1, N1, N2, S1, E1S — the central roof and 6 neighbours. Cycling agents across
+    // all 7 (self-play regression found via a 12-agent measurement: crowding all 12 onto the
+    // single 12x12 spawn roof caused near-instant tag cascades — every match ended within a few
+    // seconds of round-start grace lifting, before any real fleeing/pathing happened, matching
     // 0.00 speed_p50 and empty edge usage) gives real physical separation using the branching
-    // topology itself, rather than trying to out-tune one small platform.
-    private static readonly int[] SpawnRoofIndices = { 0, 1, 3, 4, 12 };
+    // topology itself, rather than trying to out-tune one small platform. The construction zone is
+    // deliberately spawn-free — it's a destination one hop away via Con_Gate, not a start point.
+    private static readonly int[] SpawnRoofIndices = { 0, 1, 3, 4, 8, 12, 13 };
 
     /// <summary>Spawn points spread across the spawn roof and its immediate neighbours.</summary>
     public static Vector3[] SpawnPoints(int count)
