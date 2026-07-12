@@ -5,7 +5,6 @@ public enum ParkourEdgeType
     Run,
     Jump,
     SlideHop,
-    WallRun,
     Mantle,
     Vault,
     Climb,

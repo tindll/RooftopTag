@@ -5,7 +5,6 @@ public enum MotorState
     Grounded,
     Sliding,
     Airborne,
-    WallRunning,
     Mantling,
     Vaulting,
     Climbing,

@@ -11,8 +11,7 @@ namespace Game.MapGeometry;
 /// (spawn → ramp valley → gap gauntlet → wall-run alley → ledge row) and records every walk-surface
 /// anchor. Both consumers read from here:
 ///   • <see cref="TagArenaMapGeometry.BuildMainCorridor"/> renders the physical boxes/ramps at these
-///     anchors, and
-///   • <c>Game.AI.TagArenaParkourGraphBuilder</c> places its parkour-graph nodes at the same anchors.
+///     anchors.
 /// Previously each kept its own copy of the layout math and the graph's node coordinates were
 /// hand-duplicated from the geometry — they drifted, and the M4 self-play loop spent several
 /// iterations chasing "jumps land 9m off" that was really the graph pointing at stale positions.

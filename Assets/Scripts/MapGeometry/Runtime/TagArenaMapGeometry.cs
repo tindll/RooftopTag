@@ -22,7 +22,7 @@ namespace Game.MapGeometry;
 /// bug this project routes around) — a custom asmdef like this one can't reference that type.
 /// They remain in PlaygroundBuilder, appended after <see cref="BuildMainCorridor"/>. This also
 /// happens to not matter for self-play yet, since the ledge row's control wall currently blocks
-/// any route reaching them anyway (see <c>TagArenaParkourGraphBuilder</c>'s remarks).
+/// any route reaching them anyway.
 /// </summary>
 public static class TagArenaMapGeometry
 {

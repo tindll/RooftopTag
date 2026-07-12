@@ -32,7 +32,7 @@ public static class RooftopArena
         public Vector3 Walk => new(Center.x, Center.y + 0.1f, Center.z);
     }
 
-    public enum LinkKind { Jump, Ramp, Ladder, WallRun, Swing, ClimbWall, VaultWall }
+    public enum LinkKind { Jump, Ramp, Ladder, Swing, ClimbWall, VaultWall }
 
     public readonly struct Link
     {
@@ -91,7 +91,7 @@ public static class RooftopArena
         new("Con_Deck",  -26f, -26f, 2f,   8f,  8f),  // 19
         new("Con_Ramps", -13f, -26f, 2.5f, 8f,  8f),  // 20
         new("Con_Crane", -22f, -22f, 4.8f, 6f,  6f),  // 21 — raised
-        new("Con_West",  -44f,   0f, 3.5f, 8f,  8f),  // 22 — wall-run anchor
+        new("Con_West",  -38f,   0f, 3.5f, 8f,  8f),  // 22 — swing anchor, jump-linked to W2
         new("Con_Alley", -37f, -24f, 2f,   8f,  20f), // 23 — long alley
         new("Con_ScafHi",-30f, -32f, 4f,   10f, 8f),  // 24 — SW corner
 
@@ -121,7 +121,7 @@ public static class RooftopArena
         new(9, 10, LinkKind.Jump),
         new(7, 11, LinkKind.Ladder),
 
-        // Map-expansion Jump/Ramp links (new roofs 13-25). WallRun/Swing/ClimbWall/VaultWall links
+        // Map-expansion Jump/Ramp links (new roofs 13-25). Swing/ClimbWall/VaultWall links
         // land in later tasks alongside their geometry.
         new(1, 13, LinkKind.Jump),
         new(12, 13, LinkKind.Jump),
@@ -142,15 +142,17 @@ public static class RooftopArena
         new(17, 18, LinkKind.Ramp),  // Gate h4 -> Yard h1.5
         new(18, 21, LinkKind.Ramp),  // Yard h1.5 -> Crane h4.8, crane-access
 
-        // WallRun across the un-jumpable ~10m E-W gap between W2 (x-30 edge) and Con_West (x-40 edge)
-        // at z0: the wall panel (built below) is the surface the runner hugs across the void.
-        new(15, 22, LinkKind.WallRun),
+        // Jump across the ~4m E-W gap between W2 (x[-30,-22]) and Con_West (x[-42,-34]) at z0. Con_West
+        // was pulled east (x-44 -> x-38) so this crossing is a plain sprint jump (rise -0.5, edge gap 4m)
+        // now that wall-run is gone; roof 22's outbound Swing to 23 is one-way, so this Jump is 22's
+        // two-way link back into the rest of the map.
+        new(15, 22, LinkKind.Jump),
 
         // Swing across the ~10m N-S chasm between Con_West (south edge z-4) and Con_Alley (north edge
         // z-14). Param = chain length (5.5m); grab point ~y3.5 mid-chasm. LIMITATION: the graph edge
         // and the bot auto-release both use Dot(releaseVelocity, exitDir) > threshold, so only the
         // From→To (22→23) direction fires — the edge is emitted UNIDIRECTIONAL. Reverse (23→22)
-        // traversal isn't lost: 22 also exits via the WallRun to 15, so no dead end.
+        // traversal isn't lost: 22 also exits via the Jump to 15, so no dead end.
         new(22, 23, LinkKind.Swing, param: 5.5f),
 
         // ClimbWall: Con_Crane's SW corner overlaps Con_Deck's NE corner (3x3m). No new geometry
@@ -203,9 +205,6 @@ public static class RooftopArena
                 case LinkKind.Ladder:
                     ladders.Add(LadderAnchors(Roofs[link.From], Roofs[link.To]));
                     break;
-                case LinkKind.WallRun:
-                    BuildWallRun(root.transform, Roofs[link.From], Roofs[link.To]);
-                    break;
                 case LinkKind.Swing:
                     swings.Add(BuildSwing(root.transform, Roofs[link.From], Roofs[link.To], link.Param));
                     break;
@@ -232,52 +231,18 @@ public static class RooftopArena
     }
 
     /// <summary>
-    /// Wall panel a runner hugs while wall-running across an un-jumpable gap between two roofs.
-    /// Computed from the two roofs' facing edges rather than hardcoded. AXIS-ALIGNMENT ASSUMPTION:
-    /// this pass only supports an E-W crossing (both roofs share ~z); an arbitrary-angle wall is not
-    /// required here. The panel face sits +0.85 in z off the corridor line (both roofs at z≈0), so
-    /// the near face (~z0.65) lands inside CharacterMotor's 0.7m side raycast when the bot runs the
-    /// corridor at z≈0.
-    /// </summary>
-    private static void BuildWallRun(Transform parent, Roof from, Roof to)
-    {
-        Debug.Assert(Mathf.Abs(from.Center.z - to.Center.z) < 0.01f,
-            "WallRun link assumes both roofs share z (E-W crossing).");
-
-        Roof west = from.Center.x <= to.Center.x ? from : to;
-        Roof east = from.Center.x <= to.Center.x ? to : from;
-        // The crossing runs along the empty gap between the roofs' facing edges (east roof's -x edge
-        // and west roof's +x edge). For 15↔22 that's x[-40,-30], length 10, centre x=-35.
-        float eastFacing = east.Center.x - east.SizeX * 0.5f;
-        float westFacing = west.Center.x + west.SizeX * 0.5f;
-        float gapLength = eastFacing - westFacing;
-        float centerX = (eastFacing + westFacing) * 0.5f;
-
-        // Base at the higher roof's surface and extend up: y span ~3..9 keeps a solid wall at the
-        // capsule's side height for a character running along at roof height ~4.
-        const float panelHeight = 6f;
-        float centerY = Mathf.Max(from.Center.y, to.Center.y) + 2f; // h4/h3.5 roofs -> y6, covers y3..9
-        float centerZ = from.Center.z + 0.85f;
-
-        TagArenaMapGeometry.CreateBox("WallRun_Panel", parent,
-            new Vector3(centerX, centerY, centerZ),
-            new Vector3(gapLength, panelHeight, 0.4f),
-            TagArenaMapGeometry.SurfaceRole.WallBody);
-    }
-
-    /// <summary>
     /// Overhead beam + hanging chain a runner grabs to swing across an un-jumpable N-S chasm, mirroring
     /// PlaygroundBuilder.BuildSwingChasm's look (CreateBox WallBody beam + a thin chain visual). Returns
     /// the (pivot, chainLength, exitDir) tuple the interactable builders spawn the live trigger from.
     ///
-    /// <para>Pivot is (x=-40.5, y=9, z=-9): x is the midpoint of the two roofs' x-overlap
-    /// (Con_West x[-48,-40] ∩ Con_Alley x[-41,-33] = [-41,-40] → -40.5), y=9 clears the h3.5/h2 roofs
+    /// <para>Pivot is (x=-37.5, y=9, z=-9): x is the midpoint of the two roofs' x-overlap
+    /// (Con_West x[-42,-34] ∩ Con_Alley x[-41,-33] = [-41,-34] → -37.5), y=9 clears the h3.5/h2 roofs
     /// for a tall beam, z=-9 is the midpoint of the crossing (Con_West south edge z-4 → Con_Alley north
     /// edge z-14). exitDir is the horizontal unit vector from the From roof toward the To roof.</para>
     /// </summary>
     private static (Vector3 pivot, float length, Vector3 exitDir) BuildSwing(Transform parent, Roof from, Roof to, float length)
     {
-        var pivot = new Vector3(-40.5f, 9f, -9f);
+        var pivot = new Vector3(-37.5f, 9f, -9f);
         Vector3 exitDir = new Vector3(to.Center.x - from.Center.x, 0f, to.Center.z - from.Center.z).normalized;
 
         // Overhead beam the chain hangs from — visual + a coarse blocker well above the play area.
@@ -293,10 +258,10 @@ public static class RooftopArena
     }
 
     /// <summary>
-    /// Wall panel a runner vaults/mantles over where two roofs share a walkable seam (unlike
-    /// BuildWallRun's un-jumpable gap, these roofs' facing edges touch). Computed from the two roofs'
+    /// Wall panel a runner vaults/mantles over where two roofs share a walkable seam (these roofs'
+    /// facing edges touch). Computed from the two roofs'
     /// facing x-edges and their z-overlap band rather than hardcoded. AXIS-ALIGNMENT ASSUMPTION:
-    /// mirrors BuildWallRun — this pass only supports an E-W seam (18<->23's Con_Yard/Con_Alley pair).
+    /// this pass only supports an E-W seam (18<->23's Con_Yard/Con_Alley pair).
     /// </summary>
     private static void BuildVaultWall(Transform parent, Roof from, Roof to)
     {

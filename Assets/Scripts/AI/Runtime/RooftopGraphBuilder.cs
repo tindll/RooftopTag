@@ -152,32 +152,6 @@ public static class RooftopGraphBuilder
                     graph.AddEdge(topNode, NearestOfRoof(upperRoof, top), ParkourEdgeType.Run, 0f, bidirectional: true);
                     break;
 
-                case RooftopArena.LinkKind.WallRun:
-                {
-                    // Approach node at the entry roof's lip, exit node at the far roof's lip, each on
-                    // the E-W crossing axis facing the other roof, at that roof's walk height. The
-                    // WallRun edge between them carries the wall's world side as lateralDir so the bot
-                    // hugs the panel. (Axis-aligned E-W crossing — matches RooftopArena.BuildWallRun.)
-                    RooftopArena.Roof wrFrom = RooftopArena.Roofs[link.From];
-                    RooftopArena.Roof wrTo = RooftopArena.Roofs[link.To];
-                    WarnIfRedundant(link.Kind, wrFrom, wrTo);
-                    float axisDir = Mathf.Sign(wrTo.Center.x - wrFrom.Center.x);
-                    var approach = new Vector3(wrFrom.Center.x + axisDir * wrFrom.SizeX * 0.5f, wrFrom.Walk.y, wrFrom.Center.z);
-                    var exit = new Vector3(wrTo.Center.x - axisDir * wrTo.SizeX * 0.5f, wrTo.Walk.y, wrTo.Center.z);
-
-                    int approachNode = graph.AddNode(approach);
-                    int exitNode = graph.AddNode(exit);
-
-                    // The wall panel sits at z = corridor + 0.85 (RooftopArena.BuildWallRun) — the +Z
-                    // side of the z≈0 corridor — so the runner hugs +Z (Vector3.forward) to keep the
-                    // wall within CharacterMotor's side raycast. Attach the approach/exit to the
-                    // nearest of each roof's 5 nodes instead of the centre.
-                    graph.AddEdge(NearestOfRoof(link.From, approach), approachNode, ParkourEdgeType.Run, 0f, bidirectional: true);
-                    graph.AddEdge(approachNode, exitNode, ParkourEdgeType.WallRun, config.wallRun.minEntrySpeed, bidirectional: true, lateralDir: Vector3.forward);
-                    graph.AddEdge(exitNode, NearestOfRoof(link.To, exit), ParkourEdgeType.Run, 0f, bidirectional: true);
-                    break;
-                }
-
                 case RooftopArena.LinkKind.Swing:
                 {
                     // Entry node at the From-roof lip, exit node at the To-roof lip, both on the
@@ -185,10 +159,10 @@ public static class RooftopGraphBuilder
                     // Ladder case. The swing edge is UNIDIRECTIONAL (From→To): the motor's bot
                     // auto-release fires on Dot(releaseVelocity, exitDir) > threshold, which only holds
                     // for the From→To direction (see RooftopArena's 22↔23 link comment); 22 keeps its
-                    // WallRun exit to 15, so the reverse direction has a route and isn't a dead end.
+                    // Jump link to 15, so the reverse direction has a route and isn't a dead end.
                     RooftopArena.Roof swFrom = RooftopArena.Roofs[link.From];
                     RooftopArena.Roof swTo = RooftopArena.Roofs[link.To];
-                    WarnIfRedundant(link.Kind, swFrom, swTo);
+                    WarnIfRedundant(swFrom, swTo);
                     Vector3 toward = new Vector3(swTo.Center.x - swFrom.Center.x, 0f, swTo.Center.z - swFrom.Center.z).normalized;
                     var swEntry = new Vector3(
                         swFrom.Center.x + toward.x * swFrom.SizeX * 0.5f, swFrom.Walk.y,
@@ -208,9 +182,8 @@ public static class RooftopGraphBuilder
                 case RooftopArena.LinkKind.ClimbWall:
                     // Single bidirectional edge straight between the two roof nodes — no intermediate
                     // approach/exit nodes needed since the climb face is the shared building corner
-                    // (see RooftopArena's ClimbWall build case). Mirrors how TagArenaParkourGraphBuilder
-                    // models its Climb ledge (runwayClimbMid -> landingClimbMid, also bidirectional,
-                    // entry speed 0f): the downward direction (21->19) is just a drop-off/walk-off, and
+                    // (see RooftopArena's ClimbWall build case). Climb edges are modeled bidirectional
+                    // (entry speed 0f): the downward direction (21->19) is just a drop-off/walk-off, and
                     // bidirectional is how the existing Climb edge type is modeled elsewhere in this
                     // codebase — bots holding interact near either endpoint is harmless downhill.
                     // Wired lip-to-lip (closest node pair) rather than centre-to-centre.
@@ -235,15 +208,15 @@ public static class RooftopGraphBuilder
         return graph;
     }
 
-    /// <summary>Design-intent check for the special-traversal link kinds (WallRun/Swing): if a plain
+    /// <summary>Design-intent check for the Swing link kind: if a plain
     /// sprint jump could already clear the gap both ways, the special traversal isn't gating
     /// anything — it's a content bug (gap too narrow / height too forgiving), not a graph problem,
     /// so this only warns; the edges are still emitted.</summary>
-    private static void WarnIfRedundant(RooftopArena.LinkKind kind, RooftopArena.Roof from, RooftopArena.Roof to)
+    private static void WarnIfRedundant(RooftopArena.Roof from, RooftopArena.Roof to)
     {
         if (JumpMakeable(from.Walk, to.Walk) && JumpMakeable(to.Walk, from.Walk))
         {
-            Debug.LogWarning($"ROOFTOP_LINK_REDUNDANT: {kind} {from.Name}→{to.Name} is flat-jumpable — the special traversal is pointless; widen the gap or drop the link.");
+            Debug.LogWarning($"ROOFTOP_LINK_REDUNDANT: Swing {from.Name}→{to.Name} is flat-jumpable — the special traversal is pointless; widen the gap or drop the link.");
         }
     }
 

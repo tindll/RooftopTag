@@ -212,16 +212,10 @@ public sealed class TagAgent : MonoBehaviour
             else if (state == MotorState.Sliding)
                 // Same arms-forward reach as the lunge — the slide reads as a committed forward dive.
                 PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.12f, backDuration: 0.3f);
-            else if (state == MotorState.WallRunning)
-                // Same raise-then-push gesture as a mantle grab, since it reads as the same "catch a
-                // surface" motion — held longer on the way back down since a wall-run typically lasts
-                // well over a mantle's brief transition, so the arms stay near the reach through most
-                // of the run instead of snapping back to rest almost immediately.
-                PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.9f);
             else if (state == MotorState.WallHook)
                 // Grabbing and hanging on a wall reads as the same "catch a surface" reach as a mantle,
-                // but it is a sustained hold (the player can stay hooked for a while), so mirror the
-                // wall-run timing rather than the brief mantle: a quick reach out, then a long hold on
+                // but it is a sustained hold (the player can stay hooked for a while), so use a longer
+                // hold than the brief mantle: a quick reach out, then a long hold on
                 // the way back so the arms stay near the grab through most of the hang instead of
                 // snapping back to rest almost immediately.
                 PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.9f);

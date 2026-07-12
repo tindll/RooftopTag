@@ -57,7 +57,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         var botConfig = ScriptableObject.CreateInstance<BotConfig>();
         // Both scenes that use this bootstrap (Tag Arena, Rooftop Arena) build on the same branching
-        // RooftopArena topology now — the old linear-corridor graph (TagArenaParkourGraphBuilder) has
+        // RooftopArena topology now — the old linear-corridor graph builder was removed, as it had
         // no caller left through this path.
         ParkourGraph graph = Game.AI.RooftopGraphBuilder.Build(movementConfig);
 

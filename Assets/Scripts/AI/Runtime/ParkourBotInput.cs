@@ -50,18 +50,12 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     [SerializeField] private float maxSafeDrop = 2f;
     [SerializeField] private float upwardClearance = 3f;
 
-    // Wall-run edges need the bot to hug one side of the corridor for CharacterMotor's short-range
-    // side raycast to catch the wall at all. When the edge carries per-edge lateral metadata
-    // (edge.LateralDir), the bot offsets toward that KNOWN wall side; otherwise it falls back to a
-    // random-side world-X offset (the Tag Arena's corridor cross-axis, which has no metadata).
-    [SerializeField] private float wallRunLateralOffset = 1.1f;
     [SerializeField] private float maxSteeringJitterDegrees = 30f;
 
     private TagAgent _agent = null!;
     private RoundController _roundController = null!;
     private ParkourGraph? _graph;
     private BotConfig.DifficultyTuning _tuning;
-    private float _wallRunSide;
 
     private TagAgent? _target;
     private IReadOnlyList<ParkourEdge>? _path;
@@ -98,7 +92,6 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         _roundController = roundController;
         _graph = graph;
         _tuning = botConfig.Get(difficulty);
-        _wallRunSide = Random.value < 0.5f ? -1f : 1f;
     }
 
     /// <summary>Optional — only the self-play harness sets this, to record which edge types actually get traversed during a match.</summary>
@@ -216,7 +209,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
     /// <summary>
     /// Runners flee toward the graph node lying farthest in the away-from-threat direction, so they
-    /// escape INTO the parkour arena (traversing its jump/wall-run/climb edges) instead of steering
+    /// escape INTO the parkour arena (traversing its jump/climb/swing edges) instead of steering
     /// to a raw radial point that lands off the small spawn pad — NearestNode would snap that point
     /// to a platform-edge node and march the runner over the edge. This was the M4-loop root cause
     /// of the spawn-scrum collapse: radial flee dumped runners off the pad (high fall count) before
@@ -259,15 +252,6 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         {
             ParkourEdge edge = _path[_pathIndex];
             Vector3 toNodePos = _graph!.Nodes[edge.ToNode].Position;
-            if (edge.Type == ParkourEdgeType.WallRun)
-            {
-                // Metadata present: hug the KNOWN wall side (dropping _wallRunSide — the wall is on a
-                // definite world side, so a random side would miss it). Zero LateralDir: legacy
-                // random-side world-X offset (Tag Arena corridor, which supplies no metadata).
-                toNodePos += edge.LateralDir.sqrMagnitude > 0.0001f
-                    ? edge.LateralDir * wallRunLateralOffset
-                    : Vector3.right * (_wallRunSide * wallRunLateralOffset);
-            }
 
             if (Vector3.Distance(transform.position, toNodePos) > nodeArrivalRadius)
                 return toNodePos;
@@ -299,7 +283,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private Vector3 ApplySteeringSafety(Vector3 dir)
     {
         bool crossingGapIsExpected = _path != null && _pathIndex < _path.Count && _path[_pathIndex].Type
-            is ParkourEdgeType.Jump or ParkourEdgeType.SlideHop or ParkourEdgeType.WallRun
+            is ParkourEdgeType.Jump or ParkourEdgeType.SlideHop
                or ParkourEdgeType.Vault or ParkourEdgeType.Mantle or ParkourEdgeType.Drop
                or ParkourEdgeType.Swing;
 
@@ -315,7 +299,6 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         {
             case ParkourEdgeType.Jump:
             case ParkourEdgeType.SlideHop:
-            case ParkourEdgeType.WallRun:
                 // Jump exactly when the ground is about to run out underfoot, rather than at a
                 // fixed distance from the landing node — robust regardless of the actual gap size.
                 if (_agent.Motor.CurrentState == MotorState.Grounded && IsAboutToRunOffEdge(steeringDir))

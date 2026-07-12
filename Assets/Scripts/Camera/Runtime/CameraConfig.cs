@@ -21,10 +21,6 @@ public sealed class CameraConfig : ScriptableObject
     public float speedForMaxFov = 14f;
     public float fovLerpSpeed = 4f;
 
-    [Header("Wall-run tilt")]
-    public float maxTiltDegrees = 8f;
-    public float tiltLerpSpeed = 6f;
-
     [Header("Landing shake")]
     public float landingShakeAmplitude = 0.035f;
     public float landingShakeDuration = 0.12f;

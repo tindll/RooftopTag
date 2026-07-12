@@ -55,10 +55,6 @@ public sealed class CharacterMotor : MonoBehaviour
     private float _defaultCapsuleHeight;
     private Vector3 _defaultCapsuleCenter;
 
-    private Collider? _lastWallCollider;
-    private float _wallReattachDeadline;
-    private Vector3 _wallNormal;
-    private float _wallRunElapsed;
     private Vector3 _wallHookNormal;
     private float _wallHookElapsed;
 
@@ -97,8 +93,6 @@ public sealed class CharacterMotor : MonoBehaviour
 
     public event Action? Landed;
     public event Action? Jumped;
-    public event Action<Vector3>? WallRunStarted;
-    public event Action? WallRunEnded;
     public event Action? MantleStarted;
     public event Action? SwingReleased;
 
@@ -106,7 +100,6 @@ public sealed class CharacterMotor : MonoBehaviour
     public Vector3 Velocity => _rb.linearVelocity;
     public Vector3 HorizontalVelocity => Vector3.ProjectOnPlane(_rb.linearVelocity, Vector3.up);
     public float CurrentSpeed => HorizontalVelocity.magnitude;
-    public Vector3 WallNormal => _wallNormal;
     public MovementConfig Config => config;
 
     /// <summary>
@@ -164,7 +157,6 @@ public sealed class CharacterMotor : MonoBehaviour
         _currentSwing = null;
         _swingVelocity = Vector3.zero;
         _swingGrace = 0f;
-        _lastWallCollider = null;
 
         _capsule.height = _defaultCapsuleHeight;
         _capsule.center = _defaultCapsuleCenter;
@@ -174,7 +166,6 @@ public sealed class CharacterMotor : MonoBehaviour
         _lastGroundedTime = float.NegativeInfinity;
         _lastLandingTime = float.NegativeInfinity;
         _jumpBufferDeadline = float.NegativeInfinity;
-        _wallReattachDeadline = float.NegativeInfinity;
         _lastSlideEndTime = float.NegativeInfinity;
         _forcedSlideCooldownDeadline = float.NegativeInfinity;
         _slideElapsed = 0f;
@@ -204,7 +195,6 @@ public sealed class CharacterMotor : MonoBehaviour
             case MotorState.Grounded: TickGrounded(dt); break;
             case MotorState.Sliding: TickSliding(dt); break;
             case MotorState.Airborne: TickAirborne(dt); break;
-            case MotorState.WallRunning: TickWallRunning(dt); break;
             case MotorState.Mantling: TickTransition(dt); break;
             case MotorState.Vaulting: TickTransition(dt); break;
             case MotorState.Climbing: TickClimbing(dt); break;
@@ -213,8 +203,8 @@ public sealed class CharacterMotor : MonoBehaviour
             case MotorState.WallHook: TickWallHook(dt); break;
         }
 
-        bool isAirborneLike = _state is MotorState.Airborne or MotorState.WallRunning;
-        bool wasAirborneLike = _previousState is MotorState.Airborne or MotorState.WallRunning;
+        bool isAirborneLike = _state is MotorState.Airborne;
+        bool wasAirborneLike = _previousState is MotorState.Airborne;
         if (isAirborneLike && !wasAirborneLike)
             _airborneStartTime = Time.time;
         _previousState = _state;
@@ -420,7 +410,7 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void EnterGroundedFromLanding()
     {
-        bool wasAirborne = _state == MotorState.Airborne || _state == MotorState.WallRunning;
+        bool wasAirborne = _state == MotorState.Airborne;
         float airborneDuration = Time.time - _airborneStartTime;
         _state = MotorState.Grounded;
         _lastGroundedTime = Time.time;
@@ -498,7 +488,6 @@ public sealed class CharacterMotor : MonoBehaviour
         if (TryStartLadderOrSwingAttach()) return;
         if (TryMantleOrVaultOrClimb()) return;
         if (TryStartWallHook()) return;
-        if (TryStartWallRun()) return;
 
         if (ConsumeBufferedJump() && (Time.time - _lastGroundedTime) <= config.jump.coyoteTime)
         {
@@ -591,103 +580,9 @@ public sealed class CharacterMotor : MonoBehaviour
         return true;
     }
 
-    // ---------------------------------------------------------------- Wall run
-
-    private bool TryStartWallRun()
-    {
-        if (CurrentSpeed < config.wallRun.minEntrySpeed) return false;
-        if (Time.time - _lastGroundedTime < config.wallRun.minAirTimeBeforeAttach) return false;
-
-        Span<Vector3> sides = stackalloc Vector3[] { transform.right, -transform.right };
-        foreach (Vector3 side in sides)
-        {
-            if (!Physics.Raycast(CapsuleCenterWorld(), side, out RaycastHit hit, config.wallRun.detectionDistance, wallMask, QueryTriggerInteraction.Ignore))
-                continue;
-
-            if (Mathf.Abs(Vector3.Dot(hit.normal, Vector3.up)) > 0.3f) continue;
-            if (hit.collider == _lastWallCollider && Time.time < _wallReattachDeadline) continue;
-
-            _wallNormal = hit.normal;
-            _lastWallCollider = hit.collider;
-            _state = MotorState.WallRunning;
-            _wallRunElapsed = 0f;
-
-            // Catch an existing fast fall instead of carrying it through — wall-run should feel
-            // like grabbing on and gliding, not continuing to plummet at whatever vertical speed
-            // you already had (e.g. from a jump arc). gravityMultiplier only slows the RATE of
-            // further acceleration, not the speed already carried in, so entering while falling at
-            // ~5 m/s meant falling out from under a 4m-tall wall in ~0.1s — nowhere near a
-            // sustained run. Found via a diagnostic trace showing exactly that entry speed.
-            Vector3 vel = _rb.linearVelocity;
-            _rb.linearVelocity = new Vector3(vel.x, Mathf.Max(vel.y, -config.wallRun.maxEntryFallSpeed), vel.z);
-
-            WallRunStarted?.Invoke(_wallNormal);
-            return true;
-        }
-
-        return false;
-    }
-
-    private void TickWallRunning(float dt)
-    {
-        _wallRunElapsed += dt;
-
-        bool stillOnWall = Physics.Raycast(CapsuleCenterWorld(), -_wallNormal, out RaycastHit hit, config.wallRun.detectionDistance + 0.3f, wallMask, QueryTriggerInteraction.Ignore);
-        if (stillOnWall) _wallNormal = hit.normal;
-
-        bool tooSlow = CurrentSpeed < config.wallRun.minEntrySpeed * 0.6f;
-        bool timedOut = _wallRunElapsed >= config.wallRun.maxDuration;
-
-        if (ConsumeBufferedJump())
-        {
-            WallJump();
-            return;
-        }
-
-        if (!stillOnWall || tooSlow || timedOut)
-        {
-            EndWallRun();
-            return;
-        }
-
-        _ground = ProbeGround();
-        if (_ground.grounded)
-        {
-            EndWallRun();
-            EnterGroundedFromLanding();
-            return;
-        }
-
-        Vector3 alongWall = Vector3.ProjectOnPlane(HorizontalVelocity, _wallNormal);
-        if (alongWall.sqrMagnitude > 0.01f)
-        {
-            Vector3 dir = alongWall.normalized * CurrentSpeed;
-            _rb.linearVelocity = new Vector3(dir.x, _rb.linearVelocity.y, dir.z);
-        }
-
-        _rb.linearVelocity += Physics.gravity * config.wallRun.gravityMultiplier * dt;
-    }
-
-    private void WallJump()
-    {
-        _wallReattachDeadline = Time.time + config.wallRun.reattachCooldown;
-        Vector3 horizontal = HorizontalVelocity + _wallNormal * config.wallRun.wallJumpOutSpeed;
-        _rb.linearVelocity = new Vector3(horizontal.x, config.wallRun.wallJumpUpSpeed, horizontal.z);
-        _state = MotorState.Airborne;
-        WallRunEnded?.Invoke();
-        Jumped?.Invoke();
-    }
-
-    private void EndWallRun()
-    {
-        _wallReattachDeadline = Time.time + config.wallRun.reattachCooldown;
-        _state = MotorState.Airborne;
-        WallRunEnded?.Invoke();
-    }
-
     // ---------------------------------------------------------------- Wall hook
     //
-    // A deliberate, parkour-style traversal aid distinct from wall-running: jump at a wall, press
+    // A deliberate, parkour-style traversal aid: jump at a wall, press
     // E to grab a brief, stationary hold on it, then jump again to launch off — effectively a
     // second aerial jump the player has to earn by reaching the wall, rather than an unconditional
     // double-jump.

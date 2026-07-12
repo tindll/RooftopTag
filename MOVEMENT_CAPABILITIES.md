@@ -17,7 +17,6 @@ sized against.
 | Jump vertical speed | 6.5 m/s | `MovementConfig.jump.jumpSpeed` |
 | **Max sprint-jump horizontal distance** | **9.60 m** | Straight sprint + single jump, measured takeoff → landing. |
 | **Slide-hop chained distance** | **9.57 m** | Sprint → slide (0.25s hold) → buffered jump keeping full horizontal speed, measured on flat ground. Matches plain sprint-jump almost exactly — the slide's entry boost is downhill-gated (see `TUNING_LOG.md`, feel-test round 1), so a flat-ground slide-hop no longer adds free speed. Expect a real boost only when sliding downhill. |
-| **Wall-run sustained duration** | 0.30 s (this run) | Bounded by `MovementConfig.wallRun.maxDuration` (3s) or by falling below `wallRun.minEntrySpeed`; the playground's wall-run alley (16m corridor) gives more room to sustain a full run than the synthetic test wall. |
 | **Ladder climb-up duration** | 1.78 s | For a 6m ladder at `MovementConfig.ladder.climbSpeed` (3.5 m/s) plus mantle hand-off at the top. |
 | **Swing release speed (apex-timed)** | **11.93 m/s** (Jump-release; E-release measured 8.00 m/s; lateral push covers 3.49m in 1.5s) | Reworked 2026-07-12: omnidirectional velocity-state pendulum — WASD force projected on the rope's tangent plane, E/Jump both release after a 0.15s post-attach grace, release velocity = swing velocity × 1.15, Jump adds +1.5 up. Old fixed-plane value (2.13 m/s) superseded — 5.6× faster; measured by `Swing_MeasuresApexReleaseSpeed`. |
 | **Climb (wall-scramble) threshold height** | 2.60 m | Reaches ledge and mantles off in 1.98s with no stutter. Threshold range is `mantleVault.mantleMaxHeight` (2.2m) to `climb.climbMaxHeight` (3.0m). |
@@ -28,6 +27,10 @@ sized against.
 | Walk speed (Sprint not held) | 4 m/s | `MovementConfig.ground.walkSpeed` — Shift is the sprint key as of feel-test round 4. |
 | **Running down a 20m/8m-drop ramp** | 6.96 m/s, 0 airborne transitions | No longer bounces (feel-test round 5 fix). |
 | **Sliding down the same ramp** | 13.00 m/s (hits `maxHorizontalSpeed` cap) | Confirms slide-down-a-slope is meaningfully faster than running it. |
+
+**Wall-run — REMOVED 2026-07-12.** The auto-attach wall-run mechanic was cut by design: it
+grabbed players who didn't want it. The wall grab (WallHook, `E`) plus jump combo is the
+intended wall traversal.
 
 ## Playground gap/ledge calibration
 
@@ -49,9 +52,6 @@ should remain a real obstacle).
    Jump-release / 8.00 m/s E-release / 3.49m lateral push (first green run, 2026-07-12). Remaining:
    a manual feel-test pass (grab, circle-swing with WASD, pump, release with E vs Jump) before
    closing this item out.
-2. **Wall-run test duration (0.30s) is a lower bound from a short synthetic wall**, not a measured
-   maximum — the playground's actual wall-run alley (16m) should be feel-tested separately for
-   the real sustained-duration ceiling.
-3. `ground.maxHorizontalSpeed` (13 m/s hard cap, added in feel-test round 1) is a first guess —
+2. `ground.maxHorizontalSpeed` (13 m/s hard cap, added in feel-test round 1) is a first guess —
    watch for it feeling too restrictive on legitimate high-momentum chains (wall-jump into swing
    release, etc.) during further feel-testing.

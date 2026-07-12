@@ -22,9 +22,10 @@ first if a run errors with a lock.
   off zero over time even if it never hits the full band via bots alone.
 - `total_edge_usage` — every edge type the current map actually has, used at least a few times per
   batch. **As of the branching-arena change below, that's Run, Jump, Ladder only** — RooftopArena's
-  `Links` table has no WallRun/Vault/Mantle/Climb/Swing/SlideHop entries at all, so those showing
-  zero is expected, not a bot-tuning gap. Adding them is a map-content change (`RooftopArena.cs`),
-  not something bot tuning can produce.
+  `Links` table has no Vault/Mantle/Climb/Swing/SlideHop entries at all, so those showing zero is
+  expected, not a bot-tuning gap. Adding them is a map-content change (`RooftopArena.cs`), not
+  something bot tuning can produce. WallRun is no longer an expected edge type at all — the
+  mechanic was removed (2026-07-12); the former 15↔22 WallRun link is now a plain Jump.
 - `total_stuck` **0**.
 - `total_fallen` — low single digits per match at most.
 - `speed_p90` ~ sprint speed (8 m/s), not pinned to the 13 m/s cap.

@@ -58,20 +58,6 @@ public sealed class MovementConfig : ScriptableObject
     }
 
     [Serializable]
-    public struct WallRunSettings
-    {
-        public float minEntrySpeed;
-        public float gravityMultiplier;
-        public float maxDuration;
-        public float detectionDistance;
-        public float wallJumpUpSpeed;
-        public float wallJumpOutSpeed;
-        public float reattachCooldown;
-        public float minAirTimeBeforeAttach;
-        public float maxEntryFallSpeed;
-    }
-
-    [Serializable]
     public struct WallHookSettings
     {
         public float detectionDistance;
@@ -192,19 +178,6 @@ public sealed class MovementConfig : ScriptableObject
         airDiveDownBoost = 1f,
         maxSlideDuration = 1.75f,
         forcedExitCooldown = 1.5f,
-    };
-
-    public WallRunSettings wallRun = new()
-    {
-        minEntrySpeed = 5f,
-        gravityMultiplier = 0.2f,
-        maxDuration = 3f,
-        detectionDistance = 0.7f,
-        wallJumpUpSpeed = 5f,
-        wallJumpOutSpeed = 6f,
-        reattachCooldown = 0.3f,
-        minAirTimeBeforeAttach = 0.05f,
-        maxEntryFallSpeed = 1.5f,
     };
 
     public WallHookSettings wallHook = new()

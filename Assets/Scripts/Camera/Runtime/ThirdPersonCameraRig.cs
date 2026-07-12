@@ -8,7 +8,7 @@ namespace Game.CameraSystem;
 
 /// <summary>
 /// Presentation-only third-person camera: orbits the target, widens FOV with speed,
-/// tilts subtly during wall-runs, and shakes lightly on landing. Reads its own mouse/stick
+/// and shakes lightly on landing. Reads its own mouse/stick
 /// delta every frame (decoupled from the fixed-timestep simulation) for smooth look feel.
 /// </summary>
 public sealed class ThirdPersonCameraRig : MonoBehaviour
@@ -22,7 +22,6 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
     private float _yaw;
     private float _pitch;
     private bool _cursorUnlocked;
-    private float _currentTilt;
     private float _shakeTimer;
     private Vector3 _smoothedPivotPosition;
     private Vector3 _pivotVelocity;
@@ -175,14 +174,6 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
 
         Vector3 desiredCamPos = pivotWorld + dir * distance;
 
-        float targetTilt = 0f;
-        if (target.CurrentState == MotorState.WallRunning)
-        {
-            float side = Vector3.Dot(target.transform.right, target.WallNormal);
-            targetTilt = -Mathf.Sign(side) * config.maxTiltDegrees;
-        }
-        _currentTilt = Mathf.Lerp(_currentTilt, targetTilt, config.tiltLerpSpeed * Time.deltaTime);
-
         Vector3 shakeOffset = Vector3.zero;
         if (_shakeTimer > 0f)
         {
@@ -191,7 +182,7 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
             shakeOffset = Random.insideUnitSphere * (config.landingShakeAmplitude * t);
         }
 
-        cameraComponent.transform.SetPositionAndRotation(desiredCamPos + shakeOffset, rotation * Quaternion.Euler(0f, 0f, _currentTilt));
+        cameraComponent.transform.SetPositionAndRotation(desiredCamPos + shakeOffset, rotation);
 
         float speedT = Mathf.Clamp01(target.CurrentSpeed / config.speedForMaxFov);
         float targetFov = Mathf.Lerp(config.baseFov, config.maxFov, speedT);

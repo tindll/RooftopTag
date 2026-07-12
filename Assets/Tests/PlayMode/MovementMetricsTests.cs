@@ -176,46 +176,6 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
-    public IEnumerator WallRun_MeasuresSustainedDuration()
-    {
-        _sceneRoot = new GameObject("TestScene");
-        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 2.5f), new Vector3(6f, 1f, 5f));
-        CreateWall(_sceneRoot.transform, new Vector3(0.9f, 2f, 20f), new Vector3(0.6f, 4f, 45f));
-
-        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(0f, 1.1f, 0f));
-
-        // Tracks the LONGEST single wall-run cycle, not just the first start / first end — a
-        // spurious brief attach-detach during the initial spawn-settle fall (falling straight past
-        // the ground box before it's had a chance to land once) is a separate, harmless cycle from
-        // the real one after actually running off the ledge, and pairing "first end" with
-        // "whatever start happened most recently" produced a nonsensical negative duration.
-        float? currentCycleStart = null;
-        float longestCycleDuration = 0f;
-        bool everStarted = false;
-        bool everEnded = false;
-        motor.WallRunStarted += _ => { everStarted = true; currentCycleStart = Time.time; };
-        motor.WallRunEnded += () =>
-        {
-            everEnded = true;
-            if (currentCycleStart is { } start)
-            {
-                longestCycleDuration = Mathf.Max(longestCycleDuration, Time.time - start);
-                currentCycleStart = null;
-            }
-        };
-
-        input.Move = new Vector2(0f, 1f);
-        yield return RunForSeconds(6f);
-
-        Assert.IsTrue(everStarted, "Character should have entered a wall-run alongside the wall.");
-        Assert.IsTrue(everEnded, "Wall-run should have ended (timeout, speed loss, or wall-jump) within the test window.");
-
-        Debug.Log($"METRIC wall_run_duration_s={longestCycleDuration:0.00}");
-        Assert.Greater(longestCycleDuration, 0.2f, "Wall-run should sustain for a non-trivial duration.");
-        AssertNoPhysicsExplosion(motor);
-    }
-
-    [UnityTest]
     public IEnumerator Ladder_MeasuresClimbUpDuration()
     {
         _sceneRoot = new GameObject("TestScene");

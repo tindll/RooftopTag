@@ -1,9 +1,9 @@
 #nullable enable
 
-// Graph-only coverage for the map-expansion link kinds (WallRun/Swing/ClimbWall/VaultWall — see
+// Graph-only coverage for the map-expansion link kinds (Swing/ClimbWall/VaultWall — see
 // woolly-soaring-teapot.md). These tests build RooftopGraphBuilder's output directly and assert on
 // edge types/paths; they need no scene, geometry, or physics. A full physics traversal test that
-// drives a bot through an actual WallRun or Swing to the far roof is DELIBERATELY skipped this
+// drives a bot through an actual Swing to the far roof is DELIBERATELY skipped this
 // pass: bot execution through those edges is already measured by self-play
 // (Tools/selfplay.sh -> total_edge_usage), and a scripted single-agent traversal harness would be
 // a bigger investment than this task scopes.
@@ -26,7 +26,6 @@ public class RooftopGraphTests
         ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
 
         var seen = new HashSet<ParkourEdgeType>(graph.Edges.Select(e => e.Type));
-        Assert.That(seen, Does.Contain(ParkourEdgeType.WallRun));
         Assert.That(seen, Does.Contain(ParkourEdgeType.Swing));
         Assert.That(seen, Does.Contain(ParkourEdgeType.Climb));
         Assert.That(seen, Does.Contain(ParkourEdgeType.Vault));
@@ -34,7 +33,7 @@ public class RooftopGraphTests
     }
 
     [Test]
-    public void Graph_RoutesThroughWallRun()
+    public void Graph_RoutesBetweenW2AndConWest()
     {
         ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
 
@@ -43,7 +42,7 @@ public class RooftopGraphTests
         IReadOnlyList<ParkourEdge>? path = graph.FindPath(start, goal);
 
         Assert.That(path, Is.Not.Null);
-        Assert.That(path!.Any(e => e.Type == ParkourEdgeType.WallRun), Is.True);
+        Assert.That(path!.Any(e => e.Type == ParkourEdgeType.Jump), Is.True);
     }
 
     [Test]
@@ -95,7 +94,7 @@ public class RooftopGraphTests
         if (reverse is not null)
         {
             Assert.That(reverse.Any(e => e.Type == ParkourEdgeType.Swing), Is.False,
-                "23->22 must not use the one-directional Swing edge; it should route the long way (e.g. via the WallRun at 22<->15).");
+                "23->22 must not use the one-directional Swing edge; it should route the long way (e.g. via the Jump at 22<->15).");
         }
     }
 }

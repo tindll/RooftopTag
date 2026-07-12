@@ -122,7 +122,6 @@ public sealed class ParkourDebugVisualizer : MonoBehaviour
         ParkourEdgeType.Run => new Color(0.6f, 0.6f, 0.6f),
         ParkourEdgeType.Jump => Color.cyan,
         ParkourEdgeType.SlideHop => Color.blue,
-        ParkourEdgeType.WallRun => Color.magenta,
         ParkourEdgeType.Mantle => Color.green,
         ParkourEdgeType.Vault => new Color(0f, 0.6f, 0.2f),
         ParkourEdgeType.Climb => new Color(1f, 0.5f, 0f),

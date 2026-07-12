@@ -133,7 +133,7 @@ public sealed class VisualThemeConfig : ScriptableObject
     public float postContrast = 8f;
     public float postSaturation = -5f;
     public Color colorFilter = new Color32(0xFF, 0xF2, 0xE4, 0xFF);
-    /// <summary>Kept low — just enough to soften whip-pans and wall-run/mantle camera snaps,
+    /// <summary>Kept low — just enough to soften whip-pans and mantle camera snaps,
     /// not a strong cinematic blur that would fight the "feel fast" movement-first goal.</summary>
     [Range(0f, 1f)] public float motionBlurIntensity = 0.12f;
 }

@@ -7,7 +7,7 @@ namespace Game.AI;
 
 /// <summary>
 /// Waypoint/edge representation of the map's traversal routes, per the architecture note that a
-/// plain NavMesh can't express parkour techniques: edges are typed (run/jump/slide-hop/wall-run/
+/// plain NavMesh can't express parkour techniques: edges are typed (run/jump/slide-hop/
 /// mantle/vault/climb/ladder/swing/drop) and carry a required entry speed, so bot execution knows
 /// which technique and approach speed a given edge needs. Plain data — building it for a specific
 /// map and driving a character along it are separate concerns (see the Tag Arena graph builder
@@ -30,18 +30,16 @@ public sealed class ParkourGraph
         return id;
     }
 
-    public void AddEdge(int from, int to, ParkourEdgeType type, float requiredEntrySpeed, float? cost = null, bool bidirectional = false, Vector3 lateralDir = default)
+    public void AddEdge(int from, int to, ParkourEdgeType type, float requiredEntrySpeed, float? cost = null, bool bidirectional = false)
     {
         float resolvedCost = cost ?? Vector3.Distance(_nodes[from].Position, _nodes[to].Position);
-        var edge = new ParkourEdge(from, to, type, requiredEntrySpeed, resolvedCost, lateralDir);
+        var edge = new ParkourEdge(from, to, type, requiredEntrySpeed, resolvedCost);
         _edges.Add(edge);
         _outgoing[from].Add(edge);
 
         if (bidirectional)
         {
-            // Reverse edge keeps the SAME lateralDir — the wall is on the same world side of the
-            // corridor regardless of travel direction.
-            var reverse = new ParkourEdge(to, from, type, requiredEntrySpeed, resolvedCost, lateralDir);
+            var reverse = new ParkourEdge(to, from, type, requiredEntrySpeed, resolvedCost);
             _edges.Add(reverse);
             _outgoing[to].Add(reverse);
         }
