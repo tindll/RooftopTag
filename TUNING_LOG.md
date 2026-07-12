@@ -3,6 +3,45 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Wind audio redo (real-time filter, not hand-rolled), wall-run grab animation, slide-strafe speed exploit fix
+
+**Wind audio — reported as "terrible, just grey noise":** the previous version hand-shaped white
+noise into a "brown noise" rumble via a leaky integrator, which read as a flat, droning hum rather
+than wind. Replaced the approach: the clip is now plain crossfaded white noise, and shaping happens
+live via an `AudioLowPassFilter` on the wind `AudioSource`, whose cutoff sweeps from 400Hz (muffled)
+to 9000Hz (bright/full hiss) with speed — real DSP instead of an approximation, and it gives the
+sound a speed-reactive character (opens up as you speed up) that a static clip couldn't. Volume
+scaling unchanged. Not personally auditioned (no ears in this loop) — needs your feel-check again.
+
+**Wall-run grab animation:** `TagAgent.Update()`'s state-transition block gained a `WallRunning`
+branch reusing the same raise-then-push arm gesture as Mantling/Vaulting (same angles), held longer
+on the way back to rest (0.9s vs 0.35s) since a wall-run typically lasts well past a mantle's brief
+transition — reads as "catching and holding onto the wall" through most of the run instead of
+snapping back to idle almost immediately.
+
+**Slide + A/D "drift and build speed" exploit, still present after the earlier duration-cap fix:**
+root-caused to two compounding issues in `TickSliding`'s downhill acceleration:
+1. `downhill` was a normalized direction vector, discarding actual slope steepness — a floor barely
+   past `IsOnSlope`'s ~8-degree gate got the exact same full-strength accel bonus as a real ramp,
+   since only *alignment* (downhillDot), never *grade*, fed into the formula.
+2. A/D actively steers (rotates) the travel direction every tick, and nothing stopped a player from
+   continuously re-aiming back onto the fall line to keep downhillDot pinned near 1 indefinitely —
+   sustaining max accel far longer/more reliably than the natural fall-line auto-correction would
+   allow on its own.
+
+Fixed both: accel now scales by the ground normal's actual steepness (un-normalized
+`ProjectOnPlane` magnitude = sin of the slope angle), normalized against `ReferenceSlopeSteepness`
+(≈sin(22°), the test suite's ramp grade) so a real ramp's boost is unchanged from before — only
+shallower/near-flat floors lose most of the boost, steeper slopes gain some. Also scaled by
+`(1 - |strafe|)`, so actively steering and accelerating hard are now a trade-off rather than both
+free — straight-line downhill sliding keeps its full boost, pumping A/D to keep re-centering on the
+fall line no longer does.
+
+**Verified:** compile-check clean, all 3 scenes rebuilt without error. First full PlayMode pass
+caught a real regression from the steepness scaling (`SlideDownRamp_FasterThanRunningDownSameRamp`
+failed — 6.96 m/s tie, the scaling had crushed the ramp's boost too, not just the exploit) —
+recalibrated via the reference-angle normalization above, re-ran, 23/23 passing.
+
 ## Player facing decoupled from movement input (S no longer turns you around)
 
 **Report:** pressing S span the character 180° to face away from the camera instead of just

@@ -296,6 +296,12 @@ public sealed class CharacterMotor : MonoBehaviour
     // Fraction of the slide entry boost given on flat ground (full boost still reserved for downhill).
     private const float FlatSlideBoostFraction = 0.35f;
 
+    // Reference slope steepness (sin of ~22 degrees, the grade of the movement test suite's slide
+    // ramps) that downhillAccelMultiplier is tuned against. TickSliding's steepness scaling divides
+    // by this so a ramp at roughly this grade gets the same accel as before the scaling was added —
+    // only shallower slopes lose boost, steeper ones gain it, instead of uniformly crushing everyone.
+    private const float ReferenceSlopeSteepness = 0.3746f;
+
     /// <summary>On real (non-flat) ground the current ground probe is resting on.</summary>
     private bool IsOnSlope() => _ground.grounded && _ground.normal.y < 0.99f;
 
@@ -320,8 +326,16 @@ public sealed class CharacterMotor : MonoBehaviour
         }
 
         Vector3 horizontal = HorizontalVelocity;
-        Vector3 downhill = Vector3.ProjectOnPlane(Vector3.down, _ground.normal).normalized;
+
+        // Un-normalized: magnitude is sin(slope angle) — 0 on flat ground, growing with actual
+        // steepness. Normalizing this (the old code) threw that away, so a barely-tilted floor
+        // (anything past IsOnSlope's ~8-degree gate) gave the exact same full-strength downhill
+        // accel as a real ramp — see the steepness scaling on `accel` below for why that mattered.
+        Vector3 downhillRaw = Vector3.ProjectOnPlane(Vector3.down, _ground.normal);
+        float slopeSteepness = downhillRaw.magnitude;
+        Vector3 downhill = slopeSteepness > 0.0001f ? downhillRaw / slopeSteepness : Vector3.zero;
         Vector3 flatDownhill = new Vector3(downhill.x, 0f, downhill.z);
+        float strafe = 0f;
 
         // Decay any across-slope (lateral) velocity component toward zero, converging travel
         // onto the slope's true fall-line. This is what stops a slide from preserving
@@ -344,7 +358,7 @@ public sealed class CharacterMotor : MonoBehaviour
             // velocity — the latter flung you off sideways, which felt unnatural. This curves the
             // slide left/right while preserving speed; the fall-line alignment above still gently pulls
             // you back toward straight-down when you let off, like carving on a slope.
-            float strafe = Vector3.Dot(ComputeWishDirection(), acrossSlope);
+            strafe = Vector3.Dot(ComputeWishDirection(), acrossSlope);
             if (Mathf.Abs(strafe) > 0.01f)
                 horizontal = Quaternion.Euler(0f, strafe * SlideSteerDegPerSec * dt, 0f) * horizontal;
         }
@@ -352,8 +366,18 @@ public sealed class CharacterMotor : MonoBehaviour
         float speed = horizontal.magnitude;
         Vector3 flatDir = speed > 0.0001f ? horizontal.normalized : transform.forward;
 
+        // Regression fix: "hold CTRL and strafe A/D to build speed" — steering re-aims flatDir at
+        // the fall line every tick, and downhillDot alone can't tell an actively-farmed realignment
+        // apart from genuinely traveling straight downhill. Two scales close that off: steepnessFactor
+        // means a barely-tilted floor no longer gives ramp-strength accel just for being non-flat
+        // (normalized against ReferenceSlopeSteepness so an actual ramp's boost is unchanged), and
+        // (1 - |strafe|) means accelerating hard and steering hard are a trade-off, not both free —
+        // straight-line downhill sliding keeps its full boost, pumping A/D to keep re-centering on
+        // the fall line no longer does.
         float downhillDot = speed > 0.01f ? Vector3.Dot(downhill, flatDir) : 0f;
-        float accel = downhillDot > 0.1f ? config.slide.downhillAccelMultiplier * downhillDot * config.ground.acceleration : 0f;
+        float steepnessFactor = slopeSteepness / ReferenceSlopeSteepness;
+        float steerFactor = 1f - Mathf.Clamp01(Mathf.Abs(strafe));
+        float accel = downhillDot > 0.1f ? config.slide.downhillAccelMultiplier * downhillDot * steepnessFactor * steerFactor * config.ground.acceleration : 0f;
 
         speed = Mathf.Max(0f, speed - config.slide.slideFriction * dt + accel * dt);
 

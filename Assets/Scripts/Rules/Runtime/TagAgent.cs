@@ -80,13 +80,18 @@ public sealed class TagAgent : MonoBehaviour
 
     // Wind audio: local-player-only presentation feedback for speed, per the movement spec's
     // "player should feel fast" requirement. Fades in above a walking-speed floor so it doesn't
-    // hiss at a standstill, and reaches full volume/pitch at the character's actual movement cap
+    // hiss at a standstill, and reaches full intensity at the character's actual movement cap
     // rather than a hand-picked number, so retuning MovementConfig keeps this in sync for free.
+    // The clip itself is plain white noise — shaping into an airy "whoosh" (rather than the flat,
+    // droning "grey noise" an earlier hand-rolled filter produced) is done live by AudioLowPassFilter,
+    // whose cutoff sweeps open with speed: muffled/distant at low speed, bright/full hiss at max —
+    // real DSP instead of an approximation, and it gives the wind a speed-reactive character for free.
     private const float WindMinSpeed = 4f;
     private const float WindMaxVolume = 0.32f;
-    private const float WindMinPitch = 0.85f;
-    private const float WindMaxPitch = 1.2f;
+    private const float WindMinCutoffHz = 400f;
+    private const float WindMaxCutoffHz = 9000f;
     private AudioSource? _windAudioSource;
+    private AudioLowPassFilter? _windLowPassFilter;
     private static AudioClip? _windClip;
 
     // Landing feedback: a brief squash-and-stretch pulse on the body plus a soft thump, gated by
@@ -164,6 +169,9 @@ public sealed class TagAgent : MonoBehaviour
                 _windAudioSource.spatialBlend = 0f;
                 _windAudioSource.volume = 0f;
                 _windAudioSource.Play();
+
+                _windLowPassFilter = gameObject.AddComponent<AudioLowPassFilter>();
+                _windLowPassFilter.cutoffFrequency = WindMinCutoffHz;
             }
         }
 
@@ -222,6 +230,12 @@ public sealed class TagAgent : MonoBehaviour
             else if (state == MotorState.Sliding)
                 // Same arms-forward reach as the lunge — the slide reads as a committed forward dive.
                 PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.12f, backDuration: 0.3f);
+            else if (state == MotorState.WallRunning)
+                // Same raise-then-push gesture as a mantle grab, since it reads as the same "catch a
+                // surface" motion — held longer on the way back down since a wall-run typically lasts
+                // well over a mantle's brief transition, so the arms stay near the reach through most
+                // of the run instead of snapping back to rest almost immediately.
+                PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.9f);
         }
         _previousMotorState = state;
 
@@ -236,7 +250,8 @@ public sealed class TagAgent : MonoBehaviour
             float windMaxSpeed = _motor.Config.ground.maxHorizontalSpeed;
             float speedT = Mathf.Clamp01((_motor.CurrentSpeed - WindMinSpeed) / (windMaxSpeed - WindMinSpeed));
             _windAudioSource.volume = speedT * WindMaxVolume;
-            _windAudioSource.pitch = Mathf.Lerp(WindMinPitch, WindMaxPitch, speedT);
+            if (_windLowPassFilter != null)
+                _windLowPassFilter.cutoffFrequency = Mathf.Lerp(WindMinCutoffHz, WindMaxCutoffHz, speedT);
         }
     }
 
@@ -496,23 +511,20 @@ public sealed class TagAgent : MonoBehaviour
         if (_windClip != null) return _windClip;
 
         const int sampleRate = 44100;
-        const float loopDuration = 2f;
-        const float crossfadeDuration = 0.15f;
-        const float gain = 0.9f;
+        const float loopDuration = 3f;
+        const float crossfadeDuration = 0.2f;
+        const float gain = 0.5f;
         int loopSamples = Mathf.CeilToInt(sampleRate * loopDuration);
         int crossfadeSamples = Mathf.CeilToInt(sampleRate * crossfadeDuration);
 
-        // Leaky-integrated white noise reads as a soft rumble/hiss rather than the harsh hash of
-        // raw white noise — good enough for a background wind bed without an external audio asset.
+        // Plain white noise. An earlier version pre-shaped this into a "brown noise" rumble by hand
+        // (a leaky integrator) — it read as a flat, droning "grey noise" hum, not wind. Shaping is
+        // now done live by AudioLowPassFilter on the AudioSource (see Configure/Update) instead of
+        // baked into the clip, so the source content here just needs to be full-spectrum raw noise.
         var random = new System.Random(1337);
         var raw = new float[loopSamples + crossfadeSamples];
-        float state = 0f;
         for (int i = 0; i < raw.Length; i++)
-        {
-            float white = (float)(random.NextDouble() * 2.0 - 1.0);
-            state = state * 0.98f + white * 0.05f;
-            raw[i] = state;
-        }
+            raw[i] = (float)(random.NextDouble() * 2.0 - 1.0) * gain;
 
         // Crossfade the tail into the head so the loop point doesn't click.
         var samples = new float[loopSamples];
@@ -523,7 +535,6 @@ public sealed class TagAgent : MonoBehaviour
             int tailIndex = loopSamples - crossfadeSamples + i;
             samples[tailIndex] = Mathf.Lerp(raw[tailIndex], raw[i], t);
         }
-        for (int i = 0; i < loopSamples; i++) samples[i] *= gain;
 
         _windClip = AudioClip.Create("Wind", loopSamples, 1, sampleRate, false);
         _windClip.SetData(samples, 0);
