@@ -349,9 +349,12 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             case ParkourEdgeType.Swing:
                 // Hold interact the whole way across: the bot runs off the entry platform toward the
                 // exit and must grab the rope while airborne mid-chasm — the grab point is nowhere
-                // near either node, so it just keeps interact down until it catches the rope (then the
-                // motor auto-releases it toward the exit, see TickSwing).
-                InteractPressed = true;
+                // near either node, so it just keeps interact down until it catches the rope. Once ON
+                // the swing, interact must stop — E now releases from a swing (see TickSwing), so
+                // holding it in would grab and instantly bail. Letting go once attached is safe: the
+                // motor's ExitDirection auto-release still handles the actual departure toward the exit.
+                if (_agent.Motor.CurrentState != MotorState.OnSwing)
+                    InteractPressed = true;
                 _metrics?.RecordEdgeAttempt(edge.Type);
                 break;
 
