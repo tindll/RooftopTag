@@ -97,6 +97,12 @@ public sealed class MovementConfig : ScriptableObject
         public float entryMomentumRetention;
         public float topDismountForwardSpeed; // launch off the top of the ladder, toward the platform
         public float topDismountUpSpeed;      // ...and upward, to clear the wall onto it
+        // Cooldown after leaving a ladder before it can be re-grabbed. Guards against a held Interact
+        // (bots press E every tick while near the ladder's top node) re-attaching on the very next
+        // airborne tick right after the top dismount — which flapped OnLadder<->Airborne, zeroed the
+        // launch velocity every re-grab, and re-fired the arm hang pose (the "bot arms glitch on
+        // ladders" bug). The player's single tap never hit this; only a continuous hold did.
+        public float regrabCooldown;
     }
 
     [Serializable]
@@ -223,6 +229,10 @@ public sealed class MovementConfig : ScriptableObject
         // would drop the apex below 1 m and reintroduce the old "climber falls back down" bug.
         topDismountForwardSpeed = 3f,
         topDismountUpSpeed = 5f,
+        // 0.4s comfortably outlasts the ~0.2-0.3s the dismount arc spends still inside the ladder's
+        // grab range while clearing the wall lip, so a held Interact can't snap the climber back on;
+        // it's short enough to be imperceptible for a player deliberately re-grabbing a ladder.
+        regrabCooldown = 0.4f,
     };
 
     public SwingSettings swing = new()

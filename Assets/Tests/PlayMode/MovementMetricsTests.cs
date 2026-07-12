@@ -209,6 +209,52 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
+    public IEnumerator Ladder_HeldInteractThroughTopDismount_DoesNotReattachFlap()
+    {
+        // Regression: bots (ParkourBotInput) press Interact every tick while near the ladder's top
+        // node, unlike the player's single tap. That held press used to re-grab the ladder on the
+        // very next airborne tick right after the top dismount, flapping OnLadder<->Airborne — which
+        // re-fired TagAgent's arm hang pose and looked like the bot's arms glitching on the way up.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(6f, 1f, 6f));
+
+        const float ladderHeight = 6f;
+        LadderInteractable ladder = CreateLadder(_sceneRoot.transform, new Vector3(0f, 0f, 3f), ladderHeight);
+
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(0f, 1.1f, 2.2f));
+
+        input.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnLadder, motor.CurrentState, "Character should attach to the ladder.");
+
+        input.Move = new Vector2(0f, 1f);
+
+        // Climb to the top with Interact held every tick, exactly like the bot; loop until dismount.
+        float elapsed = 0f;
+        const float climbTimeout = 10f;
+        while (motor.CurrentState == MotorState.OnLadder && elapsed < climbTimeout)
+        {
+            input.PressInteract();
+            yield return new WaitForFixedUpdate();
+            elapsed += Time.fixedDeltaTime;
+        }
+        Assert.Less(elapsed, climbTimeout, "Ladder climb should reach the top and dismount.");
+        Assert.Greater(go.transform.position.y, ladderHeight * 0.8f, "Character should dismount near the top of the ladder.");
+
+        // Keep Interact held for a short window after dismount while still inside the ladder's grab
+        // range. The re-grab cooldown must absorb the held press so the motor stays off the ladder —
+        // pre-fix it snapped straight back to OnLadder on the next tick, failing here immediately.
+        for (int i = 0; i < 15; i++)
+        {
+            input.PressInteract();
+            yield return new WaitForFixedUpdate();
+            Assert.AreNotEqual(MotorState.OnLadder, motor.CurrentState,
+                "Motor must not re-grab the ladder right after the top dismount while Interact is held (no re-attach flap).");
+        }
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
     public IEnumerator Swing_MeasuresApexReleaseSpeed()
     {
         _sceneRoot = new GameObject("TestScene");

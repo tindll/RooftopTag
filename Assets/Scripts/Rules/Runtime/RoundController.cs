@@ -52,6 +52,7 @@ public sealed class RoundController : MonoBehaviour
         {
             _localPlayerAgent = agent;
             SetupMinimap();
+            SetupLungeSpinner();
         }
     }
 
@@ -245,53 +246,107 @@ public sealed class RoundController : MonoBehaviour
         _resultMessage = message;
     }
 
+    // ---------------------------------------------------------------- HUD (IMGUI)
+    //
+    // Whole HUD is OnGUI/IMGUI by project convention (no Canvas/UGUI/UI Toolkit anywhere). Styled to
+    // the "golden hour over the construction site" visual pass. Game.Rules can't reference
+    // Game.MapGeometry (asmdef), so the theme colors below are hand-mirrored from VisualThemeConfig
+    // — keep them in sync with it. Role colors come straight from TagRulesConfig (same assembly),
+    // which is the authoritative gameplay color language.
+    //
+    // NEVER call anything that rebinds render targets (Graphics.Blit / RenderTexture.active) from
+    // OnGUI — the minimap composite was moved out to LateUpdate for exactly that reason (see the
+    // comment above LateUpdate). OnGUI must stay a pure draw path.
+
+    private static readonly Color HudCream = new Color32(0xFF, 0xE9, 0xC4, 0xFF);     // warm text / runner cream
+    private static readonly Color HudRimOrange = new Color32(0xFF, 0xB6, 0x68, 0xFF); // rim-light accent
+    private static readonly Color HudHorizon = new Color32(0xF0, 0x90, 0x4A, 0xFF);   // sky horizon orange (runners-win accent)
+    private static readonly Color HudPanel = new(0.23f, 0.18f, 0.36f, 0.72f);         // dusk plum, semi-transparent backdrop
+
+    private GUIStyle? _timerStyle;
+    private GUIStyle? _bannerStyle;
+    private GUIStyle? _bannerSubStyle;
+    private GUIStyle? _youStyle;
+
     private void OnGUI()
     {
-        const int pad = 12;
-        var style = new GUIStyle(GUI.skin.label) { fontSize = 20, normal = { textColor = Color.white } };
+        EnsureHudStyles();
 
+        DrawTimer();
+
+        if (_roundOver) DrawEndScreen();
+
+        DrawMinimap();
+        DrawLungeSpinner();
+    }
+
+    // GUIStyle construction touches GUI.skin, so it must happen inside OnGUI — lazily cached here
+    // rather than rebuilt every frame. Per-draw textColor is assigned before each GUI.Label since it
+    // varies (endgame timer warming, win/lose accent).
+    private void EnsureHudStyles()
+    {
+        _timerStyle ??= new GUIStyle(GUI.skin.label) { fontSize = 30, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+        _bannerStyle ??= new GUIStyle(GUI.skin.label) { fontSize = 26, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+        _youStyle ??= new GUIStyle(GUI.skin.label) { fontSize = 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
+        _bannerSubStyle ??= new GUIStyle(GUI.skin.label) { fontSize = 16, alignment = TextAnchor.MiddleCenter };
+    }
+
+    // Centered top-middle MM:SS, warming from cream toward tagger red across the late-game phase
+    // (the window where taggers speed up) so mounting pressure is legible at a glance.
+    private void DrawTimer()
+    {
         int clamped = Mathf.Max(0, Mathf.FloorToInt(_timeRemaining));
-        GUI.Label(new Rect(pad, pad, 320, 28), $"Time: {clamped / 60:00}:{clamped % 60:00}", style);
+        string text = $"{clamped / 60:00}:{clamped % 60:00}";
 
-        int runnersRemaining = 0;
-        foreach (TagAgent agent in _agents)
-            if (agent.Role == Role.Runner) runnersRemaining++;
-        GUI.Label(new Rect(pad, pad + 26, 320, 28), $"Runners remaining: {runnersRemaining}", style);
+        Color color = HudCream;
+        if (!_roundOver && _config.lateGamePhaseDuration > 0f && _timeRemaining <= _config.lateGamePhaseDuration)
+        {
+            float pressure = 1f - Mathf.Clamp01(_timeRemaining / _config.lateGamePhaseDuration);
+            color = Color.Lerp(HudCream, _config.taggerColor, pressure * 0.85f);
+        }
+
+        const float w = 150f, h = 46f;
+        var panel = new Rect((Screen.width - w) * 0.5f, 8f, w, h);
+        DrawPanel(panel, HudPanel);
+        _timerStyle!.normal.textColor = color;
+        GUI.Label(panel, text, _timerStyle);
+    }
+
+    // Themed win/lose banner. The dark backdrop stays (the golden-hour sky can wash out light text),
+    // but the accent now follows the winner (horizon orange for a runners win, tagger red for a
+    // taggers win), and a "YOU WIN / YOU LOSE" line reads the outcome against the local player's
+    // final role.
+    private void DrawEndScreen()
+    {
+        bool runnersWon = _resultMessage.StartsWith("Runners");
+        Color accent = runnersWon ? HudHorizon : _config.taggerColor;
+        bool localWon = _localPlayerAgent == null
+            ? runnersWon
+            : runnersWon == (_localPlayerAgent.Role == Role.Runner);
+
+        const float w = 540f, h = 150f;
+        var panel = new Rect((Screen.width - w) * 0.5f, Screen.height * 0.5f - 80f, w, h);
+        DrawPanel(panel, new Color(HudPanel.r, HudPanel.g, HudPanel.b, 0.82f));
 
         if (_localPlayerAgent != null)
         {
-            string roleText = _localPlayerAgent.Role == Role.Tagger
-                ? (_localPlayerAgent.IsInGrace ? "Tagger (converting...)" : "Tagger")
-                : (_localPlayerAgent.IsInGrace ? "Runner (safe)" : "Runner");
-            GUI.Label(new Rect(pad, pad + 52, 320, 28), $"Role: {roleText}", style);
-
-            if (_localPlayerAgent.Role == Role.Tagger)
-            {
-                float cd = _localPlayerAgent.LungeCooldownRemaining;
-                GUI.Label(new Rect(pad, pad + 78, 320, 28), cd > 0.01f ? $"Lunge: {cd:0.0}s" : "Lunge: READY", style);
-            }
+            _youStyle!.normal.textColor = localWon ? HudRimOrange : _config.taggerColor;
+            GUI.Label(new Rect(panel.x, panel.y + 16f, panel.width, 26f), localWon ? "YOU WIN" : "YOU LOSE", _youStyle);
         }
 
-        if (_roundOver)
-        {
-            // Backdrop box behind the result text: the golden-hour sky/fog palette (VisualThemeConfig)
-            // runs warm yellow-orange right through the horizon and ground colors, which put plain
-            // Color.yellow text at real risk of washing out depending on camera facing when the round
-            // ends. A dark semi-transparent panel guarantees contrast regardless of what's behind it.
-            const float bannerWidth = 460f;
-            var bannerRect = new Rect((Screen.width - bannerWidth) / 2f, Screen.height / 2f - 70, bannerWidth, 110);
-            GUI.color = new Color(0f, 0f, 0f, 0.65f);
-            GUI.DrawTexture(bannerRect, Texture2D.whiteTexture);
-            GUI.color = Color.white;
+        _bannerStyle!.normal.textColor = accent;
+        GUI.Label(new Rect(panel.x, panel.y + 50f, panel.width, 40f), _resultMessage, _bannerStyle);
 
-            var bigStyle = new GUIStyle(GUI.skin.label) { fontSize = 32, alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.yellow } };
-            GUI.Label(new Rect(0, Screen.height / 2f - 60, Screen.width, 60), _resultMessage, bigStyle);
+        _bannerSubStyle!.normal.textColor = new Color(HudCream.r, HudCream.g, HudCream.b, 0.85f);
+        GUI.Label(new Rect(panel.x, panel.y + 110f, panel.width, 24f), "Press R to restart", _bannerSubStyle);
+    }
 
-            var smallStyle = new GUIStyle(GUI.skin.label) { fontSize = 18, alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.white } };
-            GUI.Label(new Rect(0, Screen.height / 2f, Screen.width, 30), "Press R to restart", smallStyle);
-        }
-
-        DrawMinimap();
+    private static void DrawPanel(Rect rect, Color color)
+    {
+        Color prev = GUI.color;
+        GUI.color = color;
+        GUI.DrawTexture(rect, Texture2D.whiteTexture);
+        GUI.color = prev;
     }
 
     // ---------------------------------------------------------------- Minimap
@@ -553,6 +608,128 @@ public sealed class RoundController : MonoBehaviour
             {
                 bool inside = insideY && Mathf.Abs(x + 0.5f - center) <= halfWidth;
                 pixels[y * size + x] = new Color(1f, 1f, 1f, inside ? 1f : 0f);
+            }
+        }
+        tex.SetPixels(pixels);
+        tex.Apply();
+        return tex;
+    }
+
+    // ---------------------------------------------------------------- Lunge cooldown spinner
+    //
+    // Crosshair-style radial "loader" shown at screen center whenever the local player is a Tagger
+    // and just pressed lunge while it was still on cooldown — a pie-wipe ring filling clockwise from
+    // 12 o'clock as the cooldown counts down, so a denied press reads as "not yet" instead of a dead
+    // click. Pure IMGUI presentation like the rest of this HUD, so (per this project's convention of
+    // reserving PlayMode tests for simulation/rules code) it has no automated test — nothing here
+    // drives simulation state.
+    //
+    // Frames are pre-generated ONCE into a small cached array (same rationale as the minimap icon
+    // textures above: OnGUI runs at least twice per frame, so building a Texture2D via SetPixels
+    // inside it would be a real, avoidable per-frame cost) and built lazily from RegisterAgent's
+    // isLocalPlayer branch — bot-only self-play never has a local player, so it skips this entirely,
+    // same as SetupMinimap.
+
+    private const int SpinnerFrameCount = 33; // frame i sweeps (i / 32) * 360° clockwise from 12 o'clock
+    private const int SpinnerTextureSize = 64;
+    private const float SpinnerOuterRadius = 30f;
+    private const float SpinnerInnerRadius = 22f;
+    private const float SpinnerOnScreenSize = 44f;
+    private const float SpinnerDeniedWindow = 0.75f; // how long a single denied press stays visible
+    private const float SpinnerFadeWindow = 0.25f;   // trailing portion of the window that eases out
+
+    private Texture2D[]? _lungeSpinnerFrames;
+
+    private void SetupLungeSpinner()
+    {
+        if (_lungeSpinnerFrames != null) return;
+
+        // Same headless/-nographics guard as SetupMinimap: no graphics device means no HUD to draw
+        // this on, and Texture2D creation would be wasted (or fail) there anyway.
+        if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return;
+
+        _lungeSpinnerFrames = new Texture2D[SpinnerFrameCount];
+        for (int i = 0; i < SpinnerFrameCount; i++)
+        {
+            float sweepDegrees = i / (float)(SpinnerFrameCount - 1) * 360f;
+            _lungeSpinnerFrames[i] = BuildSpinnerArcTexture(SpinnerTextureSize, SpinnerOuterRadius, SpinnerInnerRadius, sweepDegrees);
+        }
+    }
+
+    // Only shown for the local player, only while they're a Tagger, and only for a short window
+    // after a cooldown-denied press (TagAgent.LastDeniedLungeTime) — pressing again while still on
+    // cooldown re-triggers the window, so repeated impatient clicks keep it visible.
+    private void DrawLungeSpinner()
+    {
+        if (_lungeSpinnerFrames == null || _localPlayerAgent == null) return;
+        if (_localPlayerAgent.Role != Role.Tagger) return;
+
+        float elapsed = Time.time - _localPlayerAgent.LastDeniedLungeTime;
+        if (elapsed < 0f || elapsed >= SpinnerDeniedWindow) return;
+
+        float fill = Mathf.Clamp01(1f - _localPlayerAgent.LungeCooldownRemaining / Mathf.Max(_config.lungeCooldown, 0.0001f));
+        bool ready = _localPlayerAgent.LungeCooldownRemaining <= 0f;
+
+        var rect = new Rect(
+            Screen.width * 0.5f - SpinnerOnScreenSize * 0.5f,
+            Screen.height * 0.5f - SpinnerOnScreenSize * 0.5f,
+            SpinnerOnScreenSize, SpinnerOnScreenSize);
+
+        // Fade out over the last SpinnerFadeWindow seconds of the denied-press window rather than
+        // popping off abruptly.
+        float fadeStart = SpinnerDeniedWindow - SpinnerFadeWindow;
+        float alphaFade = elapsed <= fadeStart ? 1f : 1f - Mathf.Clamp01((elapsed - fadeStart) / SpinnerFadeWindow);
+
+        // Faint full-ring backdrop so the progress arc reads against something even near frame 0.
+        GUI.color = new Color(1f, 1f, 1f, 0.18f * alphaFade);
+        GUI.DrawTexture(rect, _lungeSpinnerFrames[SpinnerFrameCount - 1]);
+
+        // "Ready" flourish: cooldown finished inside the still-open denied window — full ring,
+        // brighter/greener, as an instant "go" cue instead of the amber wipe.
+        Color tint = ready ? new Color(0.55f, 1f, 0.55f, alphaFade) : new Color(1f, 0.85f, 0.4f, alphaFade);
+        int frameIndex = Mathf.Clamp(Mathf.RoundToInt(fill * (SpinnerFrameCount - 1)), 0, SpinnerFrameCount - 1);
+        GUI.color = tint;
+        GUI.DrawTexture(rect, _lungeSpinnerFrames[frameIndex]);
+
+        GUI.color = Color.white;
+    }
+
+    /// <summary>Ring-shaped pie-wipe frame: filled between <paramref name="innerRadius"/> and
+    /// <paramref name="outerRadius"/>, swept clockwise from 12 o'clock (0°) by <paramref
+    /// name="sweepDegrees"/>, both the angular edge and the radial band antialiased. Called 33 times
+    /// by <see cref="SetupLungeSpinner"/> to build the cached frame array, never per-OnGUI-call.</summary>
+    private static Texture2D BuildSpinnerArcTexture(int size, float outerRadius, float innerRadius, float sweepDegrees)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        Vector2 center = new(size * 0.5f, size * 0.5f);
+        var pixels = new Color[size * size];
+        const float angularFeatherDeg = 3f;
+        const float radialFeather = 1.5f;
+        bool fullCircle = sweepDegrees >= 359.99f;
+
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float dx = x + 0.5f - center.x;
+                float dy = y + 0.5f - center.y;
+                float dist = Mathf.Sqrt(dx * dx + dy * dy);
+
+                float outerAlpha = Mathf.Clamp01((outerRadius - dist) / radialFeather);
+                float innerAlpha = Mathf.Clamp01((dist - innerRadius) / radialFeather);
+                float radialAlpha = Mathf.Min(outerAlpha, innerAlpha);
+
+                // 0° at 12 o'clock (straight up), growing clockwise — atan2(dx, dy) rather than the
+                // usual atan2(dy, dx) so the seam sits at the top instead of the right.
+                float angularAlpha = 1f;
+                if (!fullCircle)
+                {
+                    float angle = Mathf.Atan2(dx, dy) * Mathf.Rad2Deg;
+                    if (angle < 0f) angle += 360f;
+                    angularAlpha = Mathf.Clamp01((sweepDegrees - angle) / angularFeatherDeg);
+                }
+
+                pixels[y * size + x] = new Color(1f, 1f, 1f, radialAlpha * angularAlpha);
             }
         }
         tex.SetPixels(pixels);

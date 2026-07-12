@@ -56,10 +56,16 @@ public static class RooftopInteractableBuilder
         float height = top.y - bottom.y;
         Vector3 midXZ = new(bottom.x, (bottom.y + top.y) * 0.5f, bottom.z);
 
-        // Visual wall sits just inside the ladder line, offset toward the building (-outward).
+        // Backing wall sits just inside the ladder line, offset toward the building (-outward). It is
+        // now plain concrete (WallBody): the safety-orange "you can use this" colour language is
+        // carried by the rail/rung ladder visual built below, not the wall.
         Vector3 wallCenter = midXZ - outward * 0.4f;
         TagArenaMapGeometry.CreateBox("RoofLadderWall", root, wallCenter,
-            new Vector3(2f, height, 0.5f), TagArenaMapGeometry.SurfaceRole.Interactable);
+            new Vector3(2f, height, 0.5f), TagArenaMapGeometry.SurfaceRole.WallBody);
+
+        // Rails + rungs (collider-free dressing) along the actual climb line — inert in headless
+        // self-play, so movement/tag physics stay identical.
+        TagArenaMapGeometry.BuildLadderVisual(root, bottom, top, outward);
 
         var bottomGo = new GameObject("RoofLadderBottom");
         bottomGo.transform.SetParent(root, false);

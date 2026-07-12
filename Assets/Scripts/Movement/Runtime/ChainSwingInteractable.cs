@@ -32,6 +32,8 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     // tests spawn at 30deg / full-length, i.e. ~2m horizontal offset from the rope line), so a thin
     // 0.5m capsule would leave them out of reach.
     private const float GrabTriggerRadius = 1.2f;
+    // Extra trigger length below the rope's visible end — see EnsureGrabTrigger's hemisphere note.
+    private const float BottomGrabSlack = 1.5f;
     private bool _grabTriggerBuilt;
 
     private static readonly Color ChainColor = new(0.20f, 0.19f, 0.18f);
@@ -104,12 +106,17 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     private void EnsureGrabTrigger()
     {
         if (_grabTriggerBuilt || pivot == null) return;
-        Vector3 centerWorld = PivotPosition + Vector3.down * (length * 0.5f);
+        // The capsule extends BottomGrabSlack below the rope's visual end: a capsule's bottom is a
+        // hemisphere, so its lateral reach tapers to zero over the last GrabTriggerRadius of height.
+        // Ending the capsule exactly at the rope tip put that dead taper right where players arrive
+        // jumping from below ("can't grab the bottom of the rope") — pushing the cap into the empty
+        // air beneath keeps the full grab radius all the way down to the visible bottom link.
+        Vector3 centerWorld = PivotPosition + Vector3.down * ((length + BottomGrabSlack) * 0.5f);
         var capsule = gameObject.AddComponent<CapsuleCollider>();
         capsule.isTrigger = true;
         capsule.direction = 1; // Y axis
         capsule.radius = GrabTriggerRadius;
-        capsule.height = Mathf.Max(length, GrabTriggerRadius * 2f);
+        capsule.height = Mathf.Max(length + BottomGrabSlack, GrabTriggerRadius * 2f);
         capsule.center = transform.InverseTransformPoint(centerWorld);
         _grabTriggerBuilt = true;
     }

@@ -98,6 +98,72 @@ public static class TagArenaMapGeometry
         return go;
     }
 
+    /// <summary>
+    /// Procedural ladder VISUAL: two vertical side rails + evenly spaced horizontal rungs spanning the
+    /// climb line from <paramref name="bottom"/> to <paramref name="top"/>. Pure dressing — every piece
+    /// is a thin emissive (Interactable-orange) box with its collider STRIPPED, so it never touches
+    /// movement/physics (the climb line, the trigger volume and the wall behind stay the gameplay). The
+    /// rails/rungs now carry the "you can use this" colour language, so the wall behind can be plain
+    /// concrete (<see cref="SurfaceRole.WallBody"/>). Shared by the Editor scene path
+    /// (PlaygroundBuilder.BuildRoofLadder / BuildLadder) and the runtime/self-play path
+    /// (RooftopInteractableBuilder.BuildLadder) so every ladder in the game looks identical.
+    /// </summary>
+    /// <param name="outward">Horizontal unit vector pointing away from the wall (toward open air); the
+    /// ladder plane is perpendicular to it, so rails/rungs face this way.</param>
+    /// <param name="width">Rail-centre separation. Default 0.9m — just wider than the 0.8m agent capsule
+    /// that climbs between the rails (the 2m grab trigger is deliberately oversized for catch tolerance
+    /// and would not read as a ladder).</param>
+    public static void BuildLadderVisual(Transform? parent, Vector3 bottom, Vector3 top, Vector3 outward, float width = 0.9f)
+    {
+        Vector3 fwd = outward.sqrMagnitude > 1e-6f ? outward.normalized : Vector3.forward;
+        // Local axes of every rail/rung box: x = along the ladder's width, y = up, z = outward.
+        Quaternion rot = Quaternion.LookRotation(fwd, Vector3.up);
+        Vector3 side = rot * Vector3.right;
+
+        float height = Mathf.Max(0.05f, top.y - bottom.y);
+        Vector3 baseXZ = new(bottom.x, 0f, bottom.z);
+        Vector3 mid = new(baseXZ.x, bottom.y + height * 0.5f, baseXZ.z);
+        // Nudge the whole visual a touch outward of the climb line so rails/rungs sit clearly proud of
+        // the wall face rather than z-fighting it.
+        Vector3 faceOffset = fwd * 0.06f;
+
+        const float railThickness = 0.08f; // along width
+        const float railDepth = 0.08f;     // along outward
+        const float rungThickness = 0.05f; // vertical
+        const float rungDepth = 0.10f;     // along outward — slightly prouder than the rails
+
+        var group = new GameObject("LadderVisual");
+        if (parent != null) group.transform.SetParent(parent, false);
+
+        // Two vertical side rails.
+        for (int s = -1; s <= 1; s += 2)
+        {
+            GameObject rail = CreateBox("LadderRail", group.transform, mid + faceOffset + side * (s * width * 0.5f),
+                new Vector3(railThickness, height, railDepth), SurfaceRole.Interactable);
+            rail.transform.rotation = rot;
+            StripCollider(rail);
+        }
+
+        // Evenly spaced rungs, ~0.32m apart (human-scale), from bottom to top inclusive.
+        int steps = Mathf.Max(1, Mathf.RoundToInt(height / 0.32f));
+        float rungLength = width + railThickness; // reach the rail centres
+        for (int i = 0; i <= steps; i++)
+        {
+            float y = bottom.y + height * (i / (float)steps);
+            GameObject rung = CreateBox("LadderRung", group.transform, new Vector3(baseXZ.x, y, baseXZ.z) + faceOffset,
+                new Vector3(rungLength, rungThickness, rungDepth), SurfaceRole.Interactable);
+            rung.transform.rotation = rot;
+            StripCollider(rung);
+        }
+    }
+
+    /// <summary>Removes a primitive's auto-added collider so a purely-visual box is inert to physics
+    /// (same technique as <see cref="AddTopRim"/>). Safe in both Editor and headless runtime builds.</summary>
+    private static void StripCollider(GameObject go)
+    {
+        if (go.TryGetComponent(out Collider col)) Object.DestroyImmediate(col);
+    }
+
     public static void CreateRamp(Transform parent, string name, float zStart, float yStart, float length, float deltaY, float width, SurfaceRole role)
     {
         // Same top-face-aligned placement as the Color overload; only the material source differs.

@@ -303,33 +303,62 @@ public static class RooftopArena
 
     private static void BuildRamp(Transform parent, Roof from, Roof to)
     {
-        // A straight ramp from the lower roof's edge up to the higher roof's edge.
+        // The ramp's top face lands FLUSH at the upper roof's edge and starts FLUSH on the lower
+        // roof's surface, extending back over the lower roof as far as a fixed comfortable slope
+        // requires. The old version ran centre-to-centre, which laid half the slab ON TOP of each
+        // roof with the inclined top poking ~0.1m proud at the ends — a felt "bump" at every ramp
+        // seam (user feel-test). Ending flush at the upper lip and starting flush on the lower
+        // surface removes both bumps: walking on/off transitions at exact surface height, only the
+        // slope changes. (Pure edge-to-edge is NOT viable instead: the Yard→Crane gap is ~1.3m for
+        // a 3.3m rise — a 68° wall — so the ramp must borrow run length over the lower roof.)
         Roof lower = from.Center.y <= to.Center.y ? from : to;
         Roof upper = from.Center.y <= to.Center.y ? to : from;
 
-        Vector3 a = lower.Walk;
-        Vector3 b = upper.Walk;
-        Vector3 flat = new(b.x - a.x, 0f, b.z - a.z);
-        float run = flat.magnitude;
-        float rise = b.y - a.y;
+        Vector3 dirFlat = new(upper.Center.x - lower.Center.x, 0f, upper.Center.z - lower.Center.z);
+        Vector3 dir = dirFlat.normalized;
+        float rise = upper.Center.y - lower.Center.y;
 
-        // Place along the line between the two roof centres.
-        float zStart = a.z;
-        // CreateRamp builds along +Z; our ramp is roughly along the connecting line, so orient it.
+        // Point where the centre-to-centre line crosses the upper roof's edge rectangle — the top
+        // of the ramp, at the upper roof's surface height.
+        Vector3 upperEdge = RectEdgePoint(upper, -dir);
+        Vector3 top = new(upperEdge.x, upper.Center.y, upperEdge.z);
+
+        // Fixed ~30° grade: run = rise / tan(30°) ≈ rise * 1.73. Clamp so the ramp's foot stays
+        // over the lower roof (margin inside its far edge) — steeper than 30° only if the lower
+        // roof is too small to host the full run, which none of the current ramps hit.
+        const float maxSlopeRun = 1.732f; // 1/tan(30°)
+        float run = rise * maxSlopeRun;
+        Vector3 footFlat = new Vector3(top.x, 0f, top.z) - dir * run;
+        Vector3 lowerEdge = RectEdgePoint(lower, dir);
+        float maxReach = Vector3.Distance(new Vector3(lowerEdge.x, 0f, lowerEdge.z),
+                                          new Vector3(top.x, 0f, top.z))
+                         + Mathf.Min(lower.SizeX, lower.SizeZ) - 1f; // stay ≥1m inside the far edge
+        if (run > maxReach) { run = maxReach; footFlat = new Vector3(top.x, 0f, top.z) - dir * run; }
+        Vector3 foot = new(footFlat.x, lower.Center.y, footFlat.z);
+
         var rampGo = new GameObject("Ramp");
         rampGo.transform.SetParent(parent, false);
         const float thickness = 0.5f;
-        float length3D = Mathf.Sqrt(run * run + rise * rise);
-        Vector3 mid = (a + b) * 0.5f;
-        Quaternion rot = Quaternion.LookRotation(new Vector3(b.x - a.x, rise, b.z - a.z).normalized, Vector3.up);
+        Vector3 span = top - foot;
+        Quaternion rot = Quaternion.LookRotation(span.normalized, Vector3.up);
         Vector3 localUp = rot * Vector3.up;
         var box = GameObject.CreatePrimitive(PrimitiveType.Cube);
         box.name = "RampSurface";
         box.transform.SetParent(rampGo.transform, false);
-        box.transform.position = mid - localUp * (thickness * 0.5f);
+        box.transform.position = (foot + top) * 0.5f - localUp * (thickness * 0.5f);
         box.transform.rotation = rot;
-        box.transform.localScale = new Vector3(3f, thickness, length3D);
+        box.transform.localScale = new Vector3(3f, thickness, span.magnitude);
         box.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Ramp);
+    }
+
+    /// <summary>Point where a ray from the roof's centre along <paramref name="dirFlat"/> (horizontal,
+    /// normalized) crosses the roof's footprint rectangle. Y is left at 0 — callers set the height.</summary>
+    private static Vector3 RectEdgePoint(Roof roof, Vector3 dirFlat)
+    {
+        float tX = Mathf.Abs(dirFlat.x) > 1e-4f ? (roof.SizeX * 0.5f) / Mathf.Abs(dirFlat.x) : float.MaxValue;
+        float tZ = Mathf.Abs(dirFlat.z) > 1e-4f ? (roof.SizeZ * 0.5f) / Mathf.Abs(dirFlat.z) : float.MaxValue;
+        float t = Mathf.Min(tX, tZ);
+        return new Vector3(roof.Center.x + dirFlat.x * t, 0f, roof.Center.z + dirFlat.z * t);
     }
 
     public static (Vector3 bottom, Vector3 top, Vector3 outward) LadderAnchors(Roof from, Roof to)

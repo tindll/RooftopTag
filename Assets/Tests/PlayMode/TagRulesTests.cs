@@ -59,6 +59,36 @@ public sealed class TagRulesTests
     }
 
     [UnityTest]
+    public IEnumerator Runner_CanLunge_ButOpensNoTagWindowAndTagsNobody()
+    {
+        // The lunge is now available to Runners too, as a pure movement/escape dash — but a
+        // Runner's lunge must never be able to tag: it should apply the same velocity impulse
+        // (proving the dash itself works for a Runner) while leaving the contact-tag window closed,
+        // so colliding with another Runner mid-dive tags nobody.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
+
+        (_, CharacterMotor aMotor, TagAgent runnerA, _) = CreateTagAgent(new Vector3(-0.3f, 1.1f, 0f));
+        (_, _, TagAgent runnerB, _) = CreateTagAgent(new Vector3(0.3f, 1.1f, 0f));
+
+        runnerA.SetRole(Role.Runner, startGrace: false);
+        runnerB.SetRole(Role.Runner, startGrace: false);
+
+        float speedBefore = aMotor.CurrentSpeed;
+        runnerA.TryLunge();
+        float speedAfter = aMotor.CurrentSpeed;
+
+        yield return new WaitForFixedUpdate();
+        yield return new WaitForFixedUpdate();
+
+        Debug.Log($"METRIC runner_lunge_speed_delta={speedAfter - speedBefore:0.00} runner_b_role={runnerB.Role}");
+        Assert.Greater(speedAfter - speedBefore, 0f, "A Runner's lunge should still apply a velocity impulse — it's a movement dash, not a no-op.");
+        Assert.AreEqual(Role.Runner, runnerB.Role, "A Runner's lunge must never tag another Runner it collides with.");
+        Assert.AreEqual(Role.Runner, runnerA.Role, "Lunging does not change the lunging agent's own role.");
+        Assert.IsFalse(runnerB.IsInGrace, "No conversion grace should start — nobody was tagged.");
+    }
+
+    [UnityTest]
     public IEnumerator TaggedAgent_CannotTagAnyoneDuringGracePeriod()
     {
         _sceneRoot = new GameObject("TestScene");

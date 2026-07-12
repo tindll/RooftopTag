@@ -99,6 +99,12 @@ public sealed class TagAgent : MonoBehaviour
     public float LungeCooldownRemaining => Mathf.Max(0f, _lungeCooldownRemaining);
     public CharacterMotor Motor => _motor;
 
+    /// <summary>Time.time of the most recent lunge press that was denied purely by cooldown (Tagger,
+    /// not in grace, cooldown still ticking) — drives the HUD lunge-cooldown spinner. Left at
+    /// -infinity, and NOT set, for wrong-role or grace denials: only a Tagger actively waiting on
+    /// cooldown should see the spinner.</summary>
+    public float LastDeniedLungeTime { get; private set; } = float.NegativeInfinity;
+
     /// <summary>Raised on the agent that was just converted to Tagger.</summary>
     public event Action<TagAgent>? WasTagged;
 
@@ -247,9 +253,24 @@ public sealed class TagAgent : MonoBehaviour
         UpdateColor();
     }
 
+    /// <summary>
+    /// Any role may lunge — it is a movement/escape dash, not a tag attempt in itself. Only a
+    /// Tagger's lunge can actually tag: the contact-tag window below is armed only when
+    /// <c>Role == Role.Tagger</c>, so a Runner's dash never opens it (and <see cref="OnCollisionEnter"/>
+    /// and <see cref="TryTagInRange"/> independently re-check <c>Role == Role.Tagger</c> too, as
+    /// defense in depth).
+    /// </summary>
     public void TryLunge()
     {
-        if (Role != Role.Tagger || IsInGrace || _lungeCooldownRemaining > 0f) return;
+        if (IsInGrace || _lungeCooldownRemaining > 0f)
+        {
+            // Cooldown-only denial for an active Tagger — record it so the HUD spinner can flash.
+            // A Runner's dash has no cooldown gate to speak of here (see class summary), and a
+            // grace-window denial isn't "waiting on cooldown", so neither should trigger the spinner.
+            if (Role == Role.Tagger && !IsInGrace && _lungeCooldownRemaining > 0f)
+                LastDeniedLungeTime = Time.time;
+            return;
+        }
 
         float impulseMagnitude = _config.lungeBaseImpulse + _motor.CurrentSpeed * _config.lungeVelocityScale;
         _motor.AddImpulse(_motor.transform.forward * impulseMagnitude);
@@ -264,8 +285,11 @@ public sealed class TagAgent : MonoBehaviour
             PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.08f, backDuration: 0.45f);
         _diveElapsed = 0f; // start the body-pitch dive (see LateUpdate)
 
-        _lungeTagWindowRemaining = LungeTagWindow; // arm contact-tag for the dive
-        _lungeTagUsed = false;
+        if (Role == Role.Tagger)
+        {
+            _lungeTagWindowRemaining = LungeTagWindow; // arm contact-tag for the dive
+            _lungeTagUsed = false;
+        }
     }
 
     // Contact tag — active ONLY during the lunge window, and only the first runner touched per lunge.

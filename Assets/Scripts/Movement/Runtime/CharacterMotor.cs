@@ -67,6 +67,9 @@ public sealed class CharacterMotor : MonoBehaviour
     private LadderInteractable? _currentLadder;
     private float _ladderT;
     private float _ladderCarryover;
+    // Time we last left a ladder — see config.ladder.regrabCooldown. NegativeInfinity so the very
+    // first attach is never gated by the cooldown.
+    private float _lastLadderDetachTime = float.NegativeInfinity;
 
     // Approach direction captured when a climb-to-ledge starts, handed to StartMantle at the top.
     // (Formerly overloaded onto the now-removed _swingPlaneAxis field; the swing no longer needs it.)
@@ -827,6 +830,7 @@ public sealed class CharacterMotor : MonoBehaviour
             Vector3 pushOut = _currentLadder.OutwardNormal * config.ladder.detachPushSpeed;
             _rb.linearVelocity = new Vector3(pushOut.x, config.jump.jumpSpeed * 0.6f, pushOut.z);
             _currentLadder = null;
+            _lastLadderDetachTime = Time.time;
             _state = MotorState.Airborne;
             return;
         }
@@ -854,12 +858,14 @@ public sealed class CharacterMotor : MonoBehaviour
             // climber fell right back down and could never reach the top platform.
             Vector3 ontoLanding = -_currentLadder.OutwardNormal;
             _currentLadder = null;
+            _lastLadderDetachTime = Time.time;
             _rb.linearVelocity = ontoLanding * config.ladder.topDismountForwardSpeed + Vector3.up * config.ladder.topDismountUpSpeed;
             _state = MotorState.Airborne;
         }
         else if (_ladderT <= 0f && climbInput < 0f)
         {
             _currentLadder = null;
+            _lastLadderDetachTime = Time.time;
             _state = MotorState.Airborne;
         }
     }
@@ -985,7 +991,9 @@ public sealed class CharacterMotor : MonoBehaviour
         Collider[] hits = Physics.OverlapSphere(transform.position, ladderGrabRange, ~0, QueryTriggerInteraction.Collide);
         foreach (Collider col in hits)
         {
-            if (_currentLadder is null && col.TryGetComponent(out LadderInteractable ladder))
+            if (_currentLadder is null
+                && Time.time - _lastLadderDetachTime >= config.ladder.regrabCooldown
+                && col.TryGetComponent(out LadderInteractable ladder))
             {
                 AttachToLadder(ladder);
                 return true;
