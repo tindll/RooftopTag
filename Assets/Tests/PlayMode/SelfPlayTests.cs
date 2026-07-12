@@ -63,7 +63,9 @@ public sealed class SelfPlayTests
         tagConfig.lateGamePhaseDuration = RoundDurationSeconds * (75f / 300f);
 
         var botConfig = ScriptableObject.CreateInstance<BotConfig>();
-        ParkourGraph graph = TagArenaParkourGraphBuilder.Build(movementConfig);
+        // Branching RooftopArena topology, not the old linear corridor — see TUNING_LOG.md for why
+        // (0% runner_avg_survival measured on the corridor; a single lane can't let Runners evade).
+        ParkourGraph graph = RooftopGraphBuilder.Build(movementConfig);
 
         var allResults = new List<MatchMetrics>();
         for (int matchIndex = 0; matchIndex < MatchCount; matchIndex++)
@@ -84,14 +86,18 @@ public sealed class SelfPlayTests
         Scene activeScene = SceneManager.GetActiveScene();
         var rootsBefore = new HashSet<GameObject>(activeScene.GetRootGameObjects());
 
-        TagArenaMapGeometry.BuildMainCorridor(movementConfig);
+        // Ladder InteractableMarker construction is skipped here — that helper lives in the
+        // Editor-only Game.EditorTools assembly (PlaygroundBuilder.BuildRoofLadder), not callable
+        // from a PlayMode test. The Ladder edge (Tower access) isn't exercised by self-play as a
+        // result — same gap that already existed on the old corridor (blocked there by a dead-end).
+        RooftopArena.BuildAndGetLadder(movementConfig);
         TagArenaMapGeometry.BuildFallCatchPlane();
 
         var controllerGo = new GameObject("SelfPlayRoundController");
         RoundController controller = controllerGo.AddComponent<RoundController>();
         controller.Configure(tagConfig);
 
-        Vector3[] spawnPoints = TagArenaMapGeometry.BuildSpawnGrid(AgentCount, new Vector3(0f, 1.1f, 0f), spacing: 5f);
+        Vector3[] spawnPoints = RooftopArena.SpawnPoints(AgentCount);
 
         var agents = new List<TagAgent>(AgentCount);
         float elapsedRef = 0f;
@@ -152,8 +158,11 @@ public sealed class SelfPlayTests
             {
                 if (agent.transform.position.y < FallYThreshold && countedFallen.Add(agent))
                     metrics.FallCount++;
-                if (agent.transform.position.z > metrics.MaxZReached)
-                    metrics.MaxZReached = agent.transform.position.z;
+                // Straight-line distance from the spawn roof — RooftopArena's branching topology
+                // spreads agents radially in both X and Z, not along a single +Z corridor axis.
+                float distanceFromSpawn = Vector3.Distance(agent.transform.position, RooftopArena.Roofs[0].Walk);
+                if (distanceFromSpawn > metrics.MaxDistanceFromSpawn)
+                    metrics.MaxDistanceFromSpawn = distanceFromSpawn;
             }
 
             if (elapsed >= nextStuckCheck)
@@ -233,7 +242,7 @@ public sealed class SelfPlayTests
                   $"runner_avg_survival={avgRunnerSurvival:0.00} " +
                   $"speed_p50={p50:0.00} speed_p90={p90:0.00} total_stuck={totalStuck} total_fallen={totalFallen} " +
                   $"total_edge_usage=[{edgeUsageSummary}] total_edge_attempts=[{edgeAttemptSummary}] " +
-                  $"max_z_reached={results.Max(m => m.MaxZReached):0.0} " +
+                  $"max_distance_from_spawn={results.Max(m => m.MaxDistanceFromSpawn):0.0} " +
                   $"jump_takeoff_speed_avg={AverageOrZero(results.SelectMany(m => m.JumpTakeoffSpeeds)):0.00} " +
                   $"jump_landing_err_avg={AverageOrZero(results.SelectMany(m => m.JumpLandingErrors)):0.00} " +
                   $"jump_land_within_1.75m={FractionWithin(results.SelectMany(m => m.JumpLandingErrors), 1.75f):0.00} " +

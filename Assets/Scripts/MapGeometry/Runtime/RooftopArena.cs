@@ -172,19 +172,36 @@ public static class RooftopArena
         return (bottom, top, outward);
     }
 
-    /// <summary>Spawn points spread across the central spawn roof.</summary>
+    // Spawn, E1, W1, N1, S1 — the central roof and its 4 direct jump neighbours. Cycling agents
+    // across all 5 (self-play regression found via a 12-agent measurement: crowding all 12 onto
+    // the single 12x12 spawn roof caused near-instant tag cascades — every match ended within a
+    // few seconds of round-start grace lifting, before any real fleeing/pathing happened, matching
+    // 0.00 speed_p50 and empty edge usage) gives real physical separation using the branching
+    // topology itself, rather than trying to out-tune one small platform.
+    private static readonly int[] SpawnRoofIndices = { 0, 1, 3, 4, 12 };
+
+    /// <summary>Spawn points spread across the spawn roof and its immediate neighbours.</summary>
     public static Vector3[] SpawnPoints(int count)
     {
-        Roof spawn = Roofs[0];
         var pts = new Vector3[count];
-        int perRow = Mathf.CeilToInt(Mathf.Sqrt(count));
+        var onRoofCount = new int[SpawnRoofIndices.Length];
         for (int i = 0; i < count; i++)
         {
-            int row = i / perRow, col = i % perRow;
-            pts[i] = new Vector3(
-                spawn.Center.x + (col - (perRow - 1) * 0.5f) * 2.5f,
-                spawn.Center.y + 1.1f,
-                spawn.Center.z + (row - (perRow - 1) * 0.5f) * 2.5f);
+            int roofSlot = i % SpawnRoofIndices.Length;
+            Roof roof = Roofs[SpawnRoofIndices[roofSlot]];
+            int onRoof = onRoofCount[roofSlot]++;
+
+            // First agent on a roof sits at its centre; each additional one rings outward so they
+            // don't stack exactly — golden-angle step avoids a visible grid pattern for the small
+            // counts (2-3) each roof actually gets.
+            Vector3 offset = Vector3.zero;
+            if (onRoof > 0)
+            {
+                float angle = onRoof * 2.4f;
+                float radius = 1.5f + (onRoof - 1) * 1.2f;
+                offset = new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
+            }
+            pts[i] = roof.Walk + offset;
         }
         return pts;
     }

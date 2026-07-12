@@ -3,6 +3,63 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Tag Arena rebuilt on branching RooftopArena geometry — infrastructure solid, uncovered a deeper bot-pathing gap
+
+**Change (user decision: extend RooftopArena into the real Tag Arena, per the previous entry's
+finding that the old linear corridor structurally couldn't support Runner evasion):**
+- `PlaygroundBuilder.BuildTagArena()` now builds on `RooftopArena.cs`'s branching topology (13
+  roofs, real loop routes, 4-way branching from spawn) instead of `TagArenaMapGeometry.
+  BuildMainCorridor`, sized for the real 12-agent (2 Tagger / 10 Runner) ruleset —
+  `TagArenaAgentCount` 3→12, `forcePlayerAsRunner=false` (player is assigned a role like any other
+  agent, not forced Runner). `RooftopArena.unity`'s 3-agent "chase me" scene is untouched, kept as a
+  separate lighter scene.
+- `TagArenaBootstrap`'s now-dead `useRooftopGraph` toggle removed (both scenes use the rooftop graph).
+- `TaggerSpawnBackOffset` recalibrated (-6 → -1.5) for the smaller rooftop spawn geometry.
+- `SelfPlayTests` points at the same branching geometry/graph/spawn helpers as the real scene.
+- `MatchMetrics.MaxZReached` → `MaxDistanceFromSpawn` (straight-line, not corridor-axis-specific).
+- `TagRulesTests.TagArenaScene_SpawnsWithCorrectRoleDistribution` updated to 12/2/10.
+- Verified: compile clean, all 3 scenes rebuild without error, full PlayMode suite 23/23 passing.
+
+**First self-play measurement was a regression, not an improvement — diagnosed, not guessed at:**
+`runner_avg_survival` stayed 0.00 and match durations got FASTER (3.7-6.3s) with `edges=[]`
+entirely and `speed_p50=0.00`. Root-caused to spawn crowding: 12 agents on one 12x12 roof with only
+a small tagger offset reproduced the exact "instant cascade before anyone can flee" bug already
+fixed once on the linear corridor. Fixed by spreading spawns across the spawn roof and its 4 direct
+neighbours (`RooftopArena.SpawnPoints` redesigned, golden-angle ring offset per agent sharing a
+roof) instead of cramming everyone onto one platform — a fix that uses the branching topology
+itself rather than trying to out-tune a single small platform.
+
+**Re-measuring surfaced a second, deeper, distinct problem** (`total_stuck` jumped to ~11-12 of 12
+agents almost every match, `edges=[]`/`edge_attempts=[]` stayed empty even though match durations
+got longer and agents clearly moved far — `max_distance_from_spawn=32m`). Added temporary diagnostic
+logging (`ParkourBotInput.Tick`, removed after) to one agent and confirmed via the trace: `_path` is
+`null` or an **empty array** on nearly every decision cycle, for both Taggers and Runners. Root
+cause: `RooftopGraphBuilder` puts exactly **one node per roof** — fine for a single bot crossing the
+whole map (its original purpose), but `ParkourGraph.FindPath` returns an empty path whenever start
+and goal resolve to the *same nearest node*, which now happens constantly with 12 agents clustered
+close together (multiple agents sharing or standing near the same roof). With no path, bots fall
+back to beelining straight at the target's raw position (`ComputeSteerPoint`'s null-path branch) —
+and because that fallback isn't a recognized "expected gap crossing" edge type, `ApplySteeringSafety`
+keeps cliff-avoidance (`FindSafeDirection`) active the whole time, fighting the beeline at every
+roof edge instead of committing to a jump. That's why edge usage and jump attempts stayed at zero
+even as agents visibly moved and fell around — CharacterMotor's own auto-mantle/wall-run/climb
+detection was firing semi-randomly off the chaotic fallback steering, not the graph.
+
+**Stopping here to report rather than patching further.** This is a real, separate finding from the
+spawn-crowding fix above (that fix is correct and stays) — it's a graph-density problem, not
+something another spawn/offset tweak can solve. Likely needs one of: denser graph nodes (e.g. a few
+edge/corner waypoints per roof instead of one center node), a different `FindPath`/fallback
+behavior for the "already adjacent, same effective node" case, or a rethink of the coarse
+per-building graph now that it's serving 12 densely-packed agents instead of one bot crossing the
+whole map. Flagging for a decision rather than guessing blind — matches this project's own stated
+discipline (stop and report when the problem is structural).
+
+**Net effect of this session's branching-arena work:** the map/scene/config/test infrastructure is
+solid, verified, and committed — TagArena.unity genuinely is a branching 12-agent arena now, no
+linear corridor, no 3-vs-1 "chase me" default. The self-play *balance* numbers are not yet
+meaningful (bots aren't really using the graph) and shouldn't be compared against target bands until
+the pathing-density issue above is resolved.
+
 ## Added runner_avg_survival metric (user decision on the win-rate wall) — reveals a sharper finding
 
 **Decision:** per the earlier-flagged design question, added `MatchMetrics.RunnerSurvivalFraction`

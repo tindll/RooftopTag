@@ -25,8 +25,8 @@ public sealed class MatchMetrics
     public int StuckAgentCount;
     public int FallCount;
     public float MatchDuration;
-    /// <summary>Farthest +Z any agent reached this match — the corridor runs along +Z, so this shows how deep into the gap gauntlet (gap0 z=36, gap1 z=43, gap2 z=52) runners actually get.</summary>
-    public float MaxZReached;
+    /// <summary>Farthest straight-line distance any agent reached from the spawn roof this match — RooftopArena's branching topology spreads agents radially in both X and Z, not along a single corridor axis.</summary>
+    public float MaxDistanceFromSpawn;
     /// <summary>
     /// Fraction of the agents that STARTED the match as Runner and were still Runner (never tagged)
     /// at round end. A secondary metric alongside <see cref="Winner"/>'s strict all-or-nothing win:

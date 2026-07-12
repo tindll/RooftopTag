@@ -77,7 +77,11 @@ public static class PlaygroundBuilder
     }
 
     private const string TagArenaScenePath = "Assets/Scenes/TagArena.unity";
-    private const int TagArenaAgentCount = 3; // "chase me" mode: the player + 2 bot taggers
+    // The real 12-agent ruleset (2 Tagger / 10 Runner) per CLAUDE.md, not the "chase me" 3-agent
+    // mode — see RooftopAgentCount below for that. Built on the same branching RooftopArena
+    // topology as BuildRooftopArena (the old linear corridor had no branching, so a Runner could
+    // only go forward or get caught — self-play measured 0% Runner survival on it).
+    private const int TagArenaAgentCount = 12;
 
     [MenuItem("RooftopTag/Build Tag Arena")]
     public static void BuildTagArena()
@@ -87,14 +91,12 @@ public static class PlaygroundBuilder
         int groundMask = ~(1 << playerLayer);
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-        BuildMapGeometry(movementConfig);
 
-        // 1.8m used to leave capsules within a couple meters of each other in every direction —
-        // combined with no round-start grace, this produced near-instant tag cascades before
-        // anyone could react (found via the self-play harness's first batch). 2.5m still fits
-        // the 8x8 spawn platform (a 4x3 grid spans 7.5x5.0) with real room to react at round start.
-        Vector3[] spawnPoints = TagArenaMapGeometry.BuildSpawnGrid(TagArenaAgentCount, new Vector3(0f, 1.1f, 0f), spacing: 5f);
+        var ladder = RooftopArena.BuildAndGetLadder(movementConfig);
+        if (ladder.HasValue) BuildRoofLadder(ladder.Value.bottom, ladder.Value.top, ladder.Value.outward);
+        TagArenaMapGeometry.BuildFallCatchPlane();
 
+        Vector3[] spawnPoints = RooftopArena.SpawnPoints(TagArenaAgentCount);
         GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, spawnPoints[0], new Color(0.2f, 0.6f, 1f));
         (GameObject cameraRig, Camera cam, Transform yawPivot) = TagArenaMapGeometry.BuildCamera(player);
 
@@ -102,7 +104,9 @@ public static class PlaygroundBuilder
         for (int i = 0; i < botRoots.Length; i++)
             botRoots[i] = TagArenaMapGeometry.BuildAgentCapsule($"Bot_{i}", playerLayer, spawnPoints[i + 1], new Color(0.6f, 0.6f, 0.6f));
 
-        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask);
+        // Player is assigned a role like any other agent — no "always-Runner human," matching the
+        // real 12-agent ruleset (unlike the 3-agent "chase me" scenes, which keep the default true).
+        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, forcePlayerAsRunner: false);
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, TagArenaScenePath);
@@ -132,7 +136,7 @@ public static class PlaygroundBuilder
         for (int i = 0; i < botRoots.Length; i++)
             botRoots[i] = TagArenaMapGeometry.BuildAgentCapsule($"Bot_{i}", playerLayer, spawns[i + 1], new Color(0.6f, 0.6f, 0.6f));
 
-        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, useRooftopGraph: true);
+        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask);
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, RooftopScenePath);
@@ -174,7 +178,7 @@ public static class PlaygroundBuilder
         marker.outwardDirection = outward;
     }
 
-    private static void BuildTagArenaBootstrap(GameObject player, GameObject cameraRig, Camera cam, Transform yawPivot, GameObject[] botRoots, int groundMask, int wallMask, bool useRooftopGraph = false)
+    private static void BuildTagArenaBootstrap(GameObject player, GameObject cameraRig, Camera cam, Transform yawPivot, GameObject[] botRoots, int groundMask, int wallMask, bool forcePlayerAsRunner = true)
     {
         var bootstrapGo = new GameObject("TagArenaBootstrap");
         TagArenaBootstrap bootstrap = bootstrapGo.AddComponent<TagArenaBootstrap>();
@@ -185,7 +189,7 @@ public static class PlaygroundBuilder
         SetObjectRef(bootstrap, "cameraYawPivot", yawPivot);
         SetInt(bootstrap, "groundMask", groundMask);
         SetInt(bootstrap, "wallMask", wallMask);
-        SetBool(bootstrap, "useRooftopGraph", useRooftopGraph);
+        SetBool(bootstrap, "forcePlayerAsRunner", forcePlayerAsRunner);
 
         var so = new SerializedObject(bootstrap);
         SerializedProperty botsProp = so.FindProperty("botRoots");

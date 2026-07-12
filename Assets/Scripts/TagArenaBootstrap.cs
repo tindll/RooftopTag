@@ -23,16 +23,21 @@ public sealed class TagArenaBootstrap : MonoBehaviour
     [SerializeField] private int groundMask = ~0;
     [SerializeField] private int wallMask = ~0;
     [SerializeField] private BotDifficulty difficulty = BotDifficulty.Skilled;
-    [SerializeField] private bool useRooftopGraph = false; // false = linear Tag Arena graph, true = Rooftop playground graph
+    // Default true matches TagRulesConfig's own default (the "chase me" scenes: player always
+    // Runner, hunted by the bot Taggers). The real 12-agent Tag Arena overrides this to false so
+    // the player is assigned a role like any other agent, per CLAUDE.md's actual ruleset.
+    [SerializeField] private bool forcePlayerAsRunner = true;
 
     private void Awake()
     {
         var tagConfig = ScriptableObject.CreateInstance<TagRulesConfig>();
+        tagConfig.forcePlayerAsRunner = forcePlayerAsRunner;
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         var botConfig = ScriptableObject.CreateInstance<BotConfig>();
-        ParkourGraph graph = useRooftopGraph
-            ? Game.AI.RooftopGraphBuilder.Build(movementConfig)
-            : TagArenaParkourGraphBuilder.Build(movementConfig);
+        // Both scenes that use this bootstrap (Tag Arena, Rooftop Arena) build on the same branching
+        // RooftopArena topology now — the old linear-corridor graph (TagArenaParkourGraphBuilder) has
+        // no caller left through this path.
+        ParkourGraph graph = Game.AI.RooftopGraphBuilder.Build(movementConfig);
 
         var roundControllerGo = new GameObject("RoundController");
         RoundController roundController = roundControllerGo.AddComponent<RoundController>();

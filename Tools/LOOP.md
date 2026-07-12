@@ -20,8 +20,11 @@ first if a run errors with a lock.
   usable gradient; CLAUDE.md's 0.40–0.60 band for it is realistically a human-playtest target, not
   a bot-self-play one. Still logged for visibility; a healthy `runner_avg_survival` should pull it
   off zero over time even if it never hits the full band via bots alone.
-- `total_edge_usage` — every reachable edge type used at least a few times per batch
-  (Run, Jump, WallRun, Vault, Mantle, Climb, Ladder, Swing). Baseline uses **Run only**.
+- `total_edge_usage` — every edge type the current map actually has, used at least a few times per
+  batch. **As of the branching-arena change below, that's Run, Jump, Ladder only** — RooftopArena's
+  `Links` table has no WallRun/Vault/Mantle/Climb/Swing/SlideHop entries at all, so those showing
+  zero is expected, not a bot-tuning gap. Adding them is a map-content change (`RooftopArena.cs`),
+  not something bot tuning can produce.
 - `total_stuck` **0**.
 - `total_fallen` — low single digits per match at most.
 - `speed_p90` ~ sprint speed (8 m/s), not pinned to the 13 m/s cap.
@@ -35,7 +38,28 @@ low end, 40%, needs ~95% per-agent survival — a very high bar). Decision (user
 `runner_win_rate` as a tracked/reported number but tune against the new `runner_avg_survival`
 metric instead, which has an actual gradient to iterate against.
 
-## Baseline (this loop's start)
+### Branching-arena change (2026-07-12) — baseline below is STALE
+The `runner_avg_survival` metric, once added, measured **0.00** too — not partial credit, every
+single Runner got tagged in every single match. Investigated further: self-play and the real
+`TagArena.unity` scene both built on `TagArenaMapGeometry.BuildMainCorridor`, a single linear
+corridor with no branching — a Runner could only go forward or get caught, never juke or double
+back, violating CLAUDE.md's own "no dead ends... reachable and leavable by at least two routes" map
+rule. Self-play and Tag Arena now build on `RooftopArena.cs`'s branching topology instead (13
+rooftops, real loop routes, 4-way branching from spawn) — see `TUNING_LOG.md` for the full change.
+**Everything below this point (baseline + M3 loop history) describes the retired linear-corridor
+map and is kept only as a historical record — do not compare new measurements against it.** A fresh
+baseline needs capturing on the branching map before tuning resumes.
+
+**Do not resume tuning against self-play numbers on this map yet.** Fixing spawn crowding (agents
+now spread across 5 roofs, not 1) surfaced a deeper, separate problem: `RooftopGraphBuilder` puts
+one node per roof, which is too coarse once many agents are close together — `ParkourGraph.FindPath`
+returns an empty path whenever two agents' nearest nodes coincide, so bots mostly fall back to raw
+beeline steering that fights its own cliff-avoidance instead of using the graph at all (near-zero
+edge usage even as agents move and fall around). See TUNING_LOG.md's full entry for the diagnostic
+trace. This needs a real fix (denser graph nodes, or different fallback behavior) before self-play
+numbers on this map mean anything — don't tune bot execution numbers against them until then.
+
+## Baseline (linear-corridor era — STALE, see above)
 `matches=3 runner_win_rate=0.00 speed_p50=4.09 speed_p90=8.00 total_stuck=0 total_fallen=10
 total_edge_usage=[Run=26]` — taggers always win, no parkour, ~3 falls/match, 5–9s matches.
 
@@ -43,7 +67,8 @@ total_edge_usage=[Run=26]` — taggers always win, no parkour, ~3 falls/match, 5
 - `Assets/Scripts/Movement/Runtime/MovementConfig.cs` — movement feel/speeds.
 - `Assets/Scripts/Rules/Runtime/TagRulesConfig.cs` — grace, tag reach, round rules.
 - `Assets/Scripts/AI/Runtime/BotConfig.cs` + `ParkourBotInput.cs` — bot decision logic / graph use.
-- `Assets/Scripts/AI/Runtime/TagArenaParkourGraphBuilder.cs` — the parkour graph bots navigate.
+- `Assets/Scripts/AI/Runtime/RooftopGraphBuilder.cs` + `Assets/Scripts/MapGeometry/Runtime/
+  RooftopArena.cs` — the parkour graph bots navigate and the map data it's built from.
 
 ## Each iteration
 1. `bash Tools/selfplay.sh` → read `METRIC selfplay_batch`.

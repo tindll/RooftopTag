@@ -169,10 +169,13 @@ public sealed class RoundController : MonoBehaviour
         }
     }
 
-    // Kept comfortably inside the (now 24m) spawn platform's bounds even for the widest spawn grid
-    // (12 agents at 5m spacing spans +-5m in Z) — -8 would push the most-offset agent to Z=-13,
-    // just off a +-12 platform edge.
-    private static readonly Vector3 TaggerSpawnBackOffset = new(0f, 0f, -6f);
+    // Tag Arena now spawns on RooftopArena.Roofs[0], a 12x12 roof (half-width 6). Its SpawnPoints(12)
+    // grid spreads agents up to Z=-3.75 from center (row-centering math in RooftopArena.SpawnPoints),
+    // so -6 (tuned for the old 24m linear-corridor platform) would push the most-offset Tagger to
+    // Z≈-9.75 — well off the roof. -1.5 keeps the worst case at 3.75+1.5=5.25, a 0.75m margin inside
+    // the +-6 bound. Round-start grace still independently protects against instant tag-cascades
+    // regardless of this offset's size.
+    private static readonly Vector3 TaggerSpawnBackOffset = new(0f, 0f, -1.5f);
 
     private void Update()
     {
