@@ -62,6 +62,8 @@ public static class PlaygroundBuilder
 
         BuildBootstrap(player, cameraRig, cam, yawPivot, groundMask, groundMask);
 
+        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>());
+
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, ScenePath);
         Debug.Log($"PLAYGROUND_BUILD_OK: saved to {ScenePath}");
@@ -108,6 +110,8 @@ public static class PlaygroundBuilder
         // real 12-agent ruleset (unlike the 3-agent "chase me" scenes, which keep the default true).
         BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, forcePlayerAsRunner: false);
 
+        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>());
+
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, TagArenaScenePath);
         Debug.Log($"TAG_ARENA_BUILD_OK: saved to {TagArenaScenePath}");
@@ -137,6 +141,8 @@ public static class PlaygroundBuilder
             botRoots[i] = TagArenaMapGeometry.BuildAgentCapsule($"Bot_{i}", playerLayer, spawns[i + 1], new Color(0.6f, 0.6f, 0.6f));
 
         BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask);
+
+        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>());
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, RooftopScenePath);
