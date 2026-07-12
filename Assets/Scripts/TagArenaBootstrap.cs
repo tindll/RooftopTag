@@ -52,7 +52,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         roundController.RegisterAgent(playerAgent, isLocalPlayer: true);
 
         ThirdPersonCameraRig rig = cameraRig.AddComponent<ThirdPersonCameraRig>();
-        rig.Configure(playerMotor, mainCamera, cameraYawPivot);
+        rig.Configure(playerMotor, mainCamera, cameraYawPivot, groundMask);
         roundController.SetCameraRig(rig);
 
         var bots = new System.Collections.Generic.List<ParkourBotInput>(botRoots.Length);

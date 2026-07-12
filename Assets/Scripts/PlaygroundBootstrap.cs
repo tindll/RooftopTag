@@ -44,7 +44,7 @@ public sealed class PlaygroundBootstrap : MonoBehaviour
         _motor.Configure(groundMask, wallMask, cameraYawPivot);
 
         _cameraRig = cameraRig.AddComponent<ThirdPersonCameraRig>();
-        _cameraRig.Configure(_motor, mainCamera, cameraYawPivot);
+        _cameraRig.Configure(_motor, mainCamera, cameraYawPivot, groundMask);
 
         foreach (InteractableMarker marker in FindObjectsByType<InteractableMarker>(FindObjectsInactive.Exclude))
         {

@@ -27,6 +27,7 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
     private Vector3 _smoothedPivotPosition;
     private Vector3 _pivotVelocity;
     private bool _pivotInitialized;
+    private int _obstructionMask = ~0;
 
     public Transform YawPivot => yawPivot!;
 
@@ -37,13 +38,14 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
         if (target != null) target.Landed += OnLanded;
     }
 
-    /// <summary>For runtime wiring (e.g. a bootstrap that attaches this component live) instead of Inspector assignment.</summary>
-    public void Configure(CharacterMotor motor, Camera cam, Transform yaw)
+    /// <summary>For runtime wiring (e.g. a bootstrap that attaches this component live) instead of Inspector assignment. <paramref name="obstructionMask"/> should exclude the target's own layer — see the collision SphereCast below for why.</summary>
+    public void Configure(CharacterMotor motor, Camera cam, Transform yaw, int obstructionMask = ~0)
     {
         SetTarget(motor);
         cameraComponent = cam;
         if (yawPivot != null && yawPivot != yaw) Destroy(yawPivot.gameObject);
         yawPivot = yaw;
+        _obstructionMask = obstructionMask;
     }
 
     /// <summary>Forces the next frame to jump straight to the target's position instead of smoothing into it — for use right after a hard teleport (e.g. a playground reset).</summary>
@@ -148,7 +150,12 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
         Vector3 dir = -(rotation * Vector3.forward);
         float distance = config.orbitDistance;
 
-        if (Physics.SphereCast(pivotWorld, config.collisionRadius, dir, out RaycastHit hit, distance, ~0, QueryTriggerInteraction.Ignore))
+        // _obstructionMask excludes the target's own layer — without that, this SphereCast could
+        // graze the player's own capsule collider as the camera orbits around it (the exact angle
+        // it clips at shifts continuously with orbit direction), yanking the camera in and out and
+        // reading as jitter specifically while looking around — the ground-probe code already
+        // excludes the player layer for the same reason (see CharacterMotor.Configure's groundMask).
+        if (Physics.SphereCast(pivotWorld, config.collisionRadius, dir, out RaycastHit hit, distance, _obstructionMask, QueryTriggerInteraction.Ignore))
             distance = Mathf.Max(hit.distance, 0.3f);
 
         Vector3 desiredCamPos = pivotWorld + dir * distance;
