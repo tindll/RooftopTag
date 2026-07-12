@@ -49,6 +49,15 @@ public static class SceneStyler
         var rng = new System.Random(4242); // fixed seed: identical layout on every rebuild
         Shader shader = Shader.Find("Sprites/Default"); // alpha-blended, same as haze planes
         var center = new Vector3(6f, 0f, 13f); // roughly the play area's center (matches silhouette dressing's offset)
+        // Root cause of "no minimap": the minimap camera (RoundController.SetupMinimap) is an
+        // ortho top-down view with a default (everything) cullingMask, sitting at player height +
+        // MinimapCameraHeight (~40) — squarely inside cloudHeightMin/Max (35-55). Huge
+        // semi-transparent cloud slabs (length up to 110) render straight across the minimap,
+        // washing it out. PlaygroundBuilder.EnsureLayer("Dressing") reserves this layer at build
+        // time; -1 here just means the layer wasn't created (e.g. a stale scene, or this method
+        // invoked outside the normal PlaygroundBuilder path) — fall back to layer 0 (Default) so
+        // clouds still render normally everywhere except the (now unfiltered) minimap.
+        int dressingLayer = LayerMask.NameToLayer("Dressing");
 
         for (int i = 0; i < theme.cloudCount; i++)
         {
@@ -62,6 +71,7 @@ public static class SceneStyler
 
             GameObject cloud = GameObject.CreatePrimitive(PrimitiveType.Cube);
             cloud.name = $"Cloud_{i}";
+            if (dressingLayer >= 0) cloud.layer = dressingLayer;
             Object.DestroyImmediate(cloud.GetComponent<BoxCollider>());
             cloud.transform.SetParent(root.transform, false);
             cloud.transform.position = position;
@@ -237,6 +247,12 @@ public static class SceneStyler
     {
         GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
         go.name = name;
+        // Outside the play radius (skylineInnerRadius=72+) so the ortho minimap camera
+        // (orthographicSize 25, ~35m view radius) mostly never reaches these anyway — same
+        // "Dressing" layer fix as clouds/haze is applied for consistency/robustness rather than to
+        // fix an observed bug here.
+        int dressingLayer = LayerMask.NameToLayer("Dressing");
+        if (dressingLayer >= 0) go.layer = dressingLayer;
         Object.DestroyImmediate(go.GetComponent<BoxCollider>());
         go.transform.SetParent(parent, false);
         go.transform.position = center;
@@ -250,6 +266,8 @@ public static class SceneStyler
     {
         GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
         go.name = name;
+        int dressingLayer = LayerMask.NameToLayer("Dressing");
+        if (dressingLayer >= 0) go.layer = dressingLayer;
         Object.DestroyImmediate(go.GetComponent<BoxCollider>());
         go.transform.SetParent(parent, false);
         go.transform.position = center;
@@ -359,10 +377,15 @@ public static class SceneStyler
     {
         var root = new GameObject("StreetHaze");
         Shader shader = Shader.Find("Sprites/Default"); // alpha-blended, double-sided; already used by the reach ring
+        // Same minimap-interference fix as CreateClouds: haze sits below roof level, so the
+        // top-down minimap camera would otherwise render these large tinted quads across the
+        // whole view. -1 fallback (layer unset) keeps this a no-op when "Dressing" doesn't exist.
+        int dressingLayer = LayerMask.NameToLayer("Dressing");
         for (int i = 0; i < theme.hazePlaneCount; i++)
         {
             GameObject quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
             quad.name = $"HazePlane_{i}";
+            if (dressingLayer >= 0) quad.layer = dressingLayer;
             Object.DestroyImmediate(quad.GetComponent<Collider>());
             quad.transform.SetParent(root.transform);
             quad.transform.position = new Vector3(0f, theme.hazeTopY - i * theme.hazeSpacing, 30f);

@@ -53,6 +53,10 @@ public static class PlaygroundBuilder
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         int playerLayer = EnsureLayer("Player");
         int groundMask = ~(1 << playerLayer);
+        // Ensures the "Dressing" layer slot exists before SceneStyler assigns presentation-only
+        // objects (clouds/haze/silhouettes) to it — see RoundController.SetupMinimap, which
+        // excludes this layer from the minimap camera's cullingMask so cloud slabs don't wash it out.
+        EnsureLayer("Dressing");
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
         Light sun = BuildMapGeometry(movementConfig);
@@ -93,6 +97,8 @@ public static class PlaygroundBuilder
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         int playerLayer = EnsureLayer("Player");
         int groundMask = ~(1 << playerLayer);
+        // See the matching call in Build() — ensures "Dressing" exists before SceneStyler.Apply.
+        EnsureLayer("Dressing");
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -134,6 +140,8 @@ public static class PlaygroundBuilder
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         int playerLayer = EnsureLayer("Player");
         int groundMask = ~(1 << playerLayer);
+        // See the matching call in Build() — ensures "Dressing" exists before SceneStyler.Apply.
+        EnsureLayer("Dressing");
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 

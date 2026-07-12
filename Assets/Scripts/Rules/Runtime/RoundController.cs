@@ -274,6 +274,16 @@ public sealed class RoundController : MonoBehaviour
 
         if (_roundOver)
         {
+            // Backdrop box behind the result text: the golden-hour sky/fog palette (VisualThemeConfig)
+            // runs warm yellow-orange right through the horizon and ground colors, which put plain
+            // Color.yellow text at real risk of washing out depending on camera facing when the round
+            // ends. A dark semi-transparent panel guarantees contrast regardless of what's behind it.
+            const float bannerWidth = 460f;
+            var bannerRect = new Rect((Screen.width - bannerWidth) / 2f, Screen.height / 2f - 70, bannerWidth, 110);
+            GUI.color = new Color(0f, 0f, 0f, 0.65f);
+            GUI.DrawTexture(bannerRect, Texture2D.whiteTexture);
+            GUI.color = Color.white;
+
             var bigStyle = new GUIStyle(GUI.skin.label) { fontSize = 32, alignment = TextAnchor.MiddleCenter, normal = { textColor = Color.yellow } };
             GUI.Label(new Rect(0, Screen.height / 2f - 60, Screen.width, 60), _resultMessage, bigStyle);
 
@@ -341,6 +351,20 @@ public sealed class RoundController : MonoBehaviour
         _minimapCamera.clearFlags = CameraClearFlags.SolidColor;
         _minimapCamera.backgroundColor = new Color(0.05f, 0.05f, 0.05f);
         camGo.transform.rotation = Quaternion.Euler(90f, 0f, 0f); // straight down, north-up (no yaw)
+
+        // Exclude presentation-only dressing (clouds, street haze, far-skyline silhouettes — see
+        // SceneStyler) from the minimap render. Root cause of the reported "no minimap": this
+        // camera sits at the local player's Y + MinimapCameraHeight (~40), which lands squarely
+        // inside cloudHeightMin/Max (35-55, VisualThemeConfig), and a default (everything)
+        // cullingMask let those huge semi-transparent cloud slabs (and, below roof level, the
+        // street-haze planes) render straight across the whole minimap, washing it out to a hazy
+        // blur instead of a usable top-down map. PlaygroundBuilder.EnsureLayer("Dressing") reserves
+        // the layer at scene-build time and SceneStyler assigns dressing objects to it; when the
+        // layer doesn't exist (e.g. self-play, which never builds a minimap or runs SceneStyler in
+        // the first place, or an older scene built before this fix) NameToLayer returns -1 and this
+        // falls back to ~0 (everything) — unchanged prior behavior.
+        int dressingLayer = LayerMask.NameToLayer("Dressing");
+        _minimapCamera.cullingMask = dressingLayer >= 0 ? ~(1 << dressingLayer) : ~0;
 
         // Cached once — OnGUI runs at least twice per frame (Layout + Repaint), so regenerating
         // these via SetPixels/Apply on every call would be a real, avoidable cost.
