@@ -86,11 +86,12 @@ public sealed class SelfPlayTests
         Scene activeScene = SceneManager.GetActiveScene();
         var rootsBefore = new HashSet<GameObject>(activeScene.GetRootGameObjects());
 
-        // Ladder/Swing InteractableMarker construction is skipped here — that helper lives in the
-        // Editor-only Game.EditorTools assembly (PlaygroundBuilder.BuildRoofLadder), not callable
-        // from a PlayMode test. The Ladder edge (Tower access) isn't exercised by self-play as a
-        // result — same gap that already existed on the old corridor (blocked there by a dead-end).
-        RooftopArena.Build(movementConfig);
+        // The Editor-only InteractableMarker path (PlaygroundBuilder.BuildRoofLadder) can't run in a
+        // live headless process, so ladders (and later swings) are built directly from Build's
+        // returned anchors via RooftopInteractableBuilder — the same AddComponent+Initialize technique
+        // MovementMetricsTests uses. This makes the Ladder edge (Tower access) traversable in self-play.
+        RooftopArena.ArenaInteractables interactables = RooftopArena.Build(movementConfig);
+        RooftopInteractableBuilder.BuildAll(interactables);
         TagArenaMapGeometry.BuildFallCatchPlane();
 
         var controllerGo = new GameObject("SelfPlayRoundController");
@@ -181,8 +182,10 @@ public sealed class SelfPlayTests
 
         metrics.MatchDuration = elapsed;
         metrics.Winner = controller.ResultMessage;
+        // A Runner who fell off the map is eliminated (still Role.Runner, but IsEliminated) — it did
+        // NOT survive, so exclude it from the survivor count.
         metrics.RunnerSurvivalFraction = originalRunners.Count > 0
-            ? originalRunners.Count(a => a.Role == Role.Runner) / (float)originalRunners.Count
+            ? originalRunners.Count(a => a.Role == Role.Runner && !a.IsEliminated) / (float)originalRunners.Count
             : 0f;
 
         // Clean up everything this match created (geometry + agents + controller), regardless of
