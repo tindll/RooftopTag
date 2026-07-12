@@ -23,6 +23,17 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     private Transform[]? _links;
     private bool _visualBuilt;
 
+    // Grab trigger: a full-length capsule spanning pivot -> pivot+down*length, on the SAME GameObject
+    // as this component so CharacterMotor's grab OverlapSphere -> TryGetComponent finds it. This is
+    // what lets the player attach WHERE they touch the rope rather than only near an old bottom sphere.
+    // Physical (like the crane's structural colliders), NOT display-gated, so it exists headless for
+    // self-play and PlayMode tests. Radius is generous: the player's own 1.2m grab OverlapSphere plus
+    // this radius must still reach spawn points offset ~2m to the side of the rope (the existing swing
+    // tests spawn at 30deg / full-length, i.e. ~2m horizontal offset from the rope line), so a thin
+    // 0.5m capsule would leave them out of reach.
+    private const float GrabTriggerRadius = 1.2f;
+    private bool _grabTriggerBuilt;
+
     private static readonly Color ChainColor = new(0.20f, 0.19f, 0.18f);
     private static readonly Color CraneColor = new(0.30f, 0.29f, 0.27f);
     private static Mesh? _cubeMesh;
@@ -80,8 +91,30 @@ public sealed class ChainSwingInteractable : MonoBehaviour
         pivot = pivotTransform;
         length = chainLength;
         ExitDirection = exitDirection;
+        EnsureGrabTrigger();
         EnsureVisual();
     }
+
+    // Build the grab trigger once pivot/length are known. Called from Awake (covers the test path,
+    // which sets the serialized pivot/length on an inactive GO then activates it), from Initialize
+    // (runtime/self-play/editor-bootstrap), and as a non-headless retry from Update. The GameObject's
+    // own position varies per constructor (usually the rope's rest-hang point), so the capsule centre
+    // is computed from the world pivot/length transformed into local space; direction is Y (the rope
+    // hangs straight down from the pivot).
+    private void EnsureGrabTrigger()
+    {
+        if (_grabTriggerBuilt || pivot == null) return;
+        Vector3 centerWorld = PivotPosition + Vector3.down * (length * 0.5f);
+        var capsule = gameObject.AddComponent<CapsuleCollider>();
+        capsule.isTrigger = true;
+        capsule.direction = 1; // Y axis
+        capsule.radius = GrabTriggerRadius;
+        capsule.height = Mathf.Max(length, GrabTriggerRadius * 2f);
+        capsule.center = transform.InverseTransformPoint(centerWorld);
+        _grabTriggerBuilt = true;
+    }
+
+    private void Awake() => EnsureGrabTrigger();
 
     public Vector3 PivotPosition => pivot != null ? pivot.position : transform.position;
     public float Length => length;
@@ -101,6 +134,7 @@ public sealed class ChainSwingInteractable : MonoBehaviour
 
     private void Update()
     {
+        EnsureGrabTrigger();
         if (Headless) return;
         EnsureVisual();
         UpdateChainLinks();
@@ -133,24 +167,52 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     {
         if (_links == null) return;
         Vector3 p = PivotPosition;
-        // Occupied: draw to the swinger's hands (~1.2m above their feet), not their feet. Free: draw
-        // to the chain's rest hang point straight below the pivot.
-        Vector3 end = IsOccupied
-            ? Occupant!.transform.position + Vector3.up * 1.2f
-            : p + Vector3.down * length;
+        int n = _links.Length;
 
-        Vector3 delta = end - p;
+        if (IsOccupied)
+        {
+            // The occupant grabbed somewhere along the rope (their hands, ~1.2m above their feet, are
+            // the grab point). Draw the rope in TWO segments from the fixed link pool: pivot -> hands
+            // taut (the part actually being swung on), and the leftover rope below the hands dangling
+            // straight DOWN — so a high grab visibly shortens the swinging span and leaves a tail.
+            Vector3 hands = Occupant!.transform.position + Vector3.up * 1.2f;
+            float handDist = Vector3.Distance(p, hands);
+            float effFraction = length > 1e-4f ? Mathf.Clamp01(handDist / length) : 1f;
+            int taut = Mathf.Clamp(Mathf.CeilToInt(n * effFraction), 1, n);
+
+            PlaceLinkRun(0, taut, p, hands);
+
+            float remaining = length - handDist;
+            if (remaining > 0.3f && taut < n)
+                PlaceLinkRun(taut, n, hands, hands + Vector3.down * remaining);
+            else
+                for (int i = taut; i < n; i++) // no visible tail — park leftover links on the hand point
+                    _links[i].SetPositionAndRotation(hands, _links[i].rotation);
+            return;
+        }
+
+        // Free-hanging: straight down from the pivot to the rest hang point.
+        PlaceLinkRun(0, n, p, p + Vector3.down * length);
+    }
+
+    // Reposition (never allocate) the link-pool slots [start, end) evenly along from->to, alternating a
+    // 90-degree roll about the chain axis so links interlock like real chain. Zero-allocation pool
+    // pattern preserved — links are only repositioned/reoriented.
+    private void PlaceLinkRun(int start, int end, Vector3 from, Vector3 to)
+    {
+        if (_links == null) return;
+        int m = end - start;
+        if (m <= 0) return;
+        Vector3 delta = to - from;
         float dist = delta.magnitude;
         if (dist < 1e-4f) return;
         Quaternion look = Quaternion.LookRotation(delta / dist);
-
-        int n = _links.Length;
-        for (int i = 0; i < n; i++)
+        for (int k = 0; k < m; k++)
         {
-            float t = (i + 0.5f) / n;
-            // Alternate a 90-degree roll about the chain axis so links interlock like real chain.
+            int i = start + k;
+            float t = (k + 0.5f) / m;
             Quaternion roll = (i & 1) == 0 ? Quaternion.identity : Quaternion.Euler(0f, 0f, 90f);
-            _links[i].SetPositionAndRotation(p + delta * t, look * roll);
+            _links[i].SetPositionAndRotation(from + delta * t, look * roll);
         }
     }
 

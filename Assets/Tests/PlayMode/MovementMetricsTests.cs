@@ -483,6 +483,58 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
+    public IEnumerator Swing_GrabsAtTouchPointNotBottom()
+    {
+        // Variable grab point: grabbing partway UP the rope should swing you from THERE (a short, fast
+        // pendulum), not snap you down to the bottom of the full rope. This path is PLAYER-only
+        // (cameraYaw != null), so wire a yaw transform like WallHook_BufferedInteractGrabsWhileFalling does.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -20f, 0f), new Vector3(300f, 1f, 300f));
+
+        const float length = 4f;
+        Vector3 pivot = new(0f, 8f, 0f); // rope rest-hang bottom at y=4
+        ChainSwingInteractable swing = CreateSwing(_sceneRoot.transform, pivot, length);
+
+        var yaw = new GameObject("CameraYaw");
+        yaw.transform.SetParent(_sceneRoot.transform, false);
+        yaw.transform.rotation = Quaternion.LookRotation(Vector3.forward, Vector3.up);
+
+        // Spawn HIGH beside the rope: hands (feet + up*1.2) sit ~1.77m from the pivot, so the effective
+        // pendulum length is ~1.77 — far short of the full 4m, and well within the capsule's grab reach.
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(1.2f, 5.5f, 0f));
+        motor.Configure(~0, ~0, yaw.transform);
+
+        input.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Player should attach where they touched the rope, partway up.");
+
+        // Let the taut-rope constraint snap the body onto the effective radius before measuring.
+        yield return new WaitForFixedUpdate();
+        float grabDistance = Vector3.Distance(go.transform.position, pivot);
+
+        float maxDistance = grabDistance;
+        float elapsed = 0f;
+        while (elapsed < 1f)
+        {
+            input.Move = new Vector2(0f, 1f); // pump the swing
+            yield return new WaitForFixedUpdate();
+            elapsed += Time.fixedDeltaTime;
+
+            float d = Vector3.Distance(go.transform.position, pivot);
+            if (d > maxDistance) maxDistance = d;
+            Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Should stay on the swing while pumping.");
+            Assert.Less(Mathf.Abs(d - grabDistance), 0.4f,
+                "Distance from the pivot should stay ~the grab distance (a short pendulum), not lengthen toward the rope's full length.");
+        }
+
+        Debug.Log($"METRIC swing_grab_distance_m={grabDistance:0.00} max_distance_m={maxDistance:0.00} full_length_m={length:0.00}");
+        Assert.Greater(grabDistance, 1.2f, "Sanity: the grab was partway up the rope, not clamped down at the bottom.");
+        Assert.Less(maxDistance, 3f,
+            "A mid-rope grab must swing from the touch point (~1.8m), never near the full 4m rope length.");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
     public IEnumerator Climb_ReachesThresholdHeightLedge()
     {
         _sceneRoot = new GameObject("TestScene");
@@ -812,15 +864,20 @@ public sealed class MovementMetricsTests
         var chainGo = new GameObject("ChainSwing");
         chainGo.transform.SetParent(parent, false);
         chainGo.transform.position = pivotPosition + Vector3.down * length;
-        var sphere = chainGo.AddComponent<SphereCollider>();
-        sphere.isTrigger = true;
-        sphere.radius = 1.5f;
 
+        // No manual grab-trigger: ChainSwingInteractable builds its own full-length capsule grab trigger.
+        // It does that in Awake (from the serialized pivot/length), so create the GO inactive, set the
+        // serialized fields, THEN activate — Awake fires synchronously on SetActive with the fields in
+        // place, so the trigger exists before the motor's first FixedUpdate (deterministic, no reliance
+        // on Start/Update timing). Building via the serialized fields rather than Initialize deliberately
+        // skips the crane colliders, which Initialize would add and which would sit in some tests' swept arc.
+        chainGo.SetActive(false);
         ChainSwingInteractable swing = chainGo.AddComponent<ChainSwingInteractable>();
         var so = new SerializedObject(swing);
         so.FindProperty("pivot").objectReferenceValue = pivotGo.transform;
         so.FindProperty("length").floatValue = length;
         so.ApplyModifiedProperties();
+        chainGo.SetActive(true);
 
         return swing;
     }

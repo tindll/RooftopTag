@@ -241,11 +241,11 @@ public static class PlaygroundBuilder
         pivotGo.transform.SetParent(root.transform);
         pivotGo.transform.position = pivot;
 
+        // No grab-trigger here: the live ChainSwingInteractable (added from this marker by the
+        // bootstrap) builds its own full-length capsule grab trigger in Initialize, so the player can
+        // grab anywhere along the rope, not only at a bottom sphere.
         var chainGo = new GameObject("ChainSwing");
         chainGo.transform.SetParent(root.transform);
-        var sphere = chainGo.AddComponent<SphereCollider>();
-        sphere.isTrigger = true;
-        sphere.radius = 1.5f;
         chainGo.transform.position = pivot + Vector3.down * length;
 
         InteractableMarker marker = chainGo.AddComponent<InteractableMarker>();
@@ -357,11 +357,10 @@ public static class PlaygroundBuilder
         pivotGo.transform.SetParent(root.transform);
         pivotGo.transform.position = new Vector3(0f, 6f, chasmStart + chasmLength * 0.5f);
 
+        // No grab-trigger here: the live ChainSwingInteractable (added from this marker by the
+        // bootstrap) builds its own full-length capsule grab trigger in Initialize.
         var chainGo = new GameObject("ChainSwing");
         chainGo.transform.SetParent(root.transform);
-        var sphere = chainGo.AddComponent<SphereCollider>();
-        sphere.isTrigger = true;
-        sphere.radius = 1.5f;
         chainGo.transform.position = pivotGo.transform.position + Vector3.down * 4f;
 
         InteractableMarker marker = chainGo.AddComponent<InteractableMarker>();

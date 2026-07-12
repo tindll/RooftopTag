@@ -76,6 +76,10 @@ public sealed class CharacterMotor : MonoBehaviour
     // World-space velocity of the bob on the swing (the full simulation state — see TickSwing). The
     // old planar angle-state (_swingTheta/_swingOmega/_swingPlaneAxis) only swung in one frozen plane.
     private Vector3 _swingVelocity;
+    // Effective per-attachment rope length: distance from the pivot to where the swinger actually
+    // grabbed (their hands). Grabbing high up the rope makes a SHORTER, faster pendulum; grabbing near
+    // the bottom uses the full rope. Player-only — bots always use the full length (see AttachToSwing).
+    private float _swingLength;
     // Counts down after attach: during it, release input is ignored so the grab press can't instantly bail.
     private float _swingGrace;
 
@@ -156,6 +160,7 @@ public sealed class CharacterMotor : MonoBehaviour
         _currentSwing?.ReleaseClaim(this);
         _currentSwing = null;
         _swingVelocity = Vector3.zero;
+        _swingLength = 0f;
         _swingGrace = 0f;
 
         _capsule.height = _defaultCapsuleHeight;
@@ -879,7 +884,7 @@ public sealed class CharacterMotor : MonoBehaviour
         _swingGrace = Mathf.Max(0f, _swingGrace - dt);
 
         Vector3 pivot = _currentSwing.PivotPosition;
-        float length = _currentSwing.Length;
+        float length = _swingLength; // effective (per-attachment) length — see AttachToSwing
         // Radial unit vector from pivot to bob. Tangential motion is anything orthogonal to this.
         Vector3 ropeDir = (transform.position - pivot).normalized;
 
@@ -1011,6 +1016,23 @@ public sealed class CharacterMotor : MonoBehaviour
     private void AttachToSwing(ChainSwingInteractable swing)
     {
         _currentSwing = swing;
+
+        // Effective rope length = where you actually grabbed. The PLAYER grabs at their hands
+        // (feet + up*1.2, matching the chain visual's hand anchor), measured from the pivot, so a high
+        // grab yields a short fast pendulum and a low grab the full slow one (momentum is easier to
+        // build at the bottom). Clamp to [1, full length] so a grab right at the pivot still leaves a
+        // usable pendulum. BOTS deliberately always use the FULL length: their parkour-graph route
+        // planning and the ExitDirection auto-release are tuned for full-length dynamics — a shortened
+        // mid-rope grab could strand them dangling instead of flinging them across the gap.
+        if (cameraYaw != null)
+        {
+            Vector3 handPos = transform.position + Vector3.up * 1.2f;
+            _swingLength = Mathf.Clamp(Vector3.Distance(handPos, swing.PivotPosition), 1f, swing.Length);
+        }
+        else
+        {
+            _swingLength = swing.Length;
+        }
 
         // Seed the swing velocity from the entry momentum, projected onto the rope's tangent plane so
         // any-direction speed carries into the swing (the radial component is dropped by the taut rope).

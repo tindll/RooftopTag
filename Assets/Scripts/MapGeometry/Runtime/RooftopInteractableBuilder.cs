@@ -84,8 +84,8 @@ public static class RooftopInteractableBuilder
         ladder.Initialize(bottomGo.transform, topGo.transform, outward);
     }
 
-    /// <summary>Mirrors BuildSwingChasm's functional pieces (pivot anchor + trigger sphere at the
-    /// chain's grab point). No extra solid boxes are added here for physics parity: the swing's solid
+    /// <summary>Mirrors BuildSwingChasm's functional pieces (pivot anchor + chain component, which builds
+    /// its own full-length capsule grab trigger). No extra solid boxes are added here for physics parity: the swing's solid
     /// structure is already present headlessly — the <see cref="ChainSwingInteractable"/> attached below
     /// builds its crane's structural COLLIDERS even when headless (renderers are the only display-gated
     /// part), and RooftopArena.BuildSwing emits the solid SwingBeam hub in both the saved scene and the
@@ -100,10 +100,8 @@ public static class RooftopInteractableBuilder
         chainGo.transform.SetParent(root, false);
         chainGo.transform.position = pivot + Vector3.down * length;
 
-        var sphere = chainGo.AddComponent<SphereCollider>();
-        sphere.isTrigger = true;
-        sphere.radius = 1.5f;
-
+        // No manual grab-trigger: ChainSwingInteractable.Initialize builds its own full-length capsule
+        // grab trigger on this same GameObject (so a self-play bot can grab it exactly as a player does).
         ChainSwingInteractable swing = chainGo.AddComponent<ChainSwingInteractable>();
         swing.Initialize(pivotGo.transform, length, exitDir);
     }
