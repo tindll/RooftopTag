@@ -213,6 +213,17 @@ public sealed class TagAgent : MonoBehaviour
                 // well over a mantle's brief transition, so the arms stay near the reach through most
                 // of the run instead of snapping back to rest almost immediately.
                 PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.9f);
+            else if (state == MotorState.WallHook)
+                // Grabbing and hanging on a wall reads as the same "catch a surface" reach as a mantle,
+                // but it is a sustained hold (the player can stay hooked for a while), so mirror the
+                // wall-run timing rather than the brief mantle: a quick reach out, then a long hold on
+                // the way back so the arms stay near the grab through most of the hang instead of
+                // snapping back to rest almost immediately.
+                PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.9f);
+            else if (state == MotorState.Climbing)
+                // Bot-only auto-climb over a low wall: the same "catch a surface" reach, but it is a
+                // brief per-edge scramble like a mantle, so use the short mantle timing.
+                PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.35f);
         }
         _previousMotorState = state;
 
