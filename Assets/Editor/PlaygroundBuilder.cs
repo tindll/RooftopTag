@@ -97,6 +97,7 @@ public static class PlaygroundBuilder
 
         RooftopArena.ArenaInteractables interactables = RooftopArena.Build(movementConfig, out Light sun);
         foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward);
+        foreach (var s in interactables.Swings) BuildRoofSwing(s.pivot, s.length, s.exitDir);
         TagArenaMapGeometry.BuildFallCatchPlane();
 
         Vector3[] spawnPoints = RooftopArena.SpawnPoints(TagArenaAgentCount);
@@ -132,6 +133,7 @@ public static class PlaygroundBuilder
 
         RooftopArena.ArenaInteractables interactables = RooftopArena.Build(movementConfig, out Light sun);
         foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward);
+        foreach (var s in interactables.Swings) BuildRoofSwing(s.pivot, s.length, s.exitDir);
 
         Vector3[] spawns = RooftopArena.SpawnPoints(RooftopAgentCount);
         GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, spawns[0], new Color(0.2f, 0.6f, 1f));
@@ -183,6 +185,32 @@ public static class PlaygroundBuilder
         marker.pointA = bottomGo.transform;
         marker.pointB = topGo.transform;
         marker.outwardDirection = outward;
+    }
+
+    // Rooftop swing: an overhead pivot + a trigger sphere at the chain's grab point, with the
+    // InteractableMarker (namespace-free, so built here not in Game.MapGeometry). Mirrors
+    // BuildSwingChasm's marker wiring; exitDir (the From→To crossing direction) rides in the marker's
+    // outwardDirection field, which the bootstraps thread into ChainSwingInteractable's 3-arg Initialize.
+    private static void BuildRoofSwing(Vector3 pivot, float length, Vector3 exitDir)
+    {
+        var root = new GameObject("RoofSwingSection");
+
+        var pivotGo = new GameObject("ChainPivot");
+        pivotGo.transform.SetParent(root.transform);
+        pivotGo.transform.position = pivot;
+
+        var chainGo = new GameObject("ChainSwing");
+        chainGo.transform.SetParent(root.transform);
+        var sphere = chainGo.AddComponent<SphereCollider>();
+        sphere.isTrigger = true;
+        sphere.radius = 1.5f;
+        chainGo.transform.position = pivot + Vector3.down * length;
+
+        InteractableMarker marker = chainGo.AddComponent<InteractableMarker>();
+        marker.kind = InteractableMarker.Kind.Swing;
+        marker.pointA = pivotGo.transform;
+        marker.length = length;
+        marker.outwardDirection = exitDir;
     }
 
     private static void BuildTagArenaBootstrap(GameObject player, GameObject cameraRig, Camera cam, Transform yawPivot, GameObject[] botRoots, int groundMask, int wallMask, bool forcePlayerAsRunner = true)

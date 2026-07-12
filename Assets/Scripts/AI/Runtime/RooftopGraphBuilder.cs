@@ -78,6 +78,32 @@ public static class RooftopGraphBuilder
                     graph.AddEdge(exitNode, roofNodes[link.To], ParkourEdgeType.Run, 0f, bidirectional: true);
                     break;
                 }
+
+                case RooftopArena.LinkKind.Swing:
+                {
+                    // Entry node at the From-roof lip, exit node at the To-roof lip, both on the
+                    // crossing axis facing the other roof at that roof's walk height. Same shape as the
+                    // Ladder case. The swing edge is UNIDIRECTIONAL (From→To): the motor's bot
+                    // auto-release fires on Dot(releaseVelocity, exitDir) > threshold, which only holds
+                    // for the From→To direction (see RooftopArena's 22↔23 link comment); 22 keeps its
+                    // WallRun exit to 15, so the reverse direction has a route and isn't a dead end.
+                    RooftopArena.Roof swFrom = RooftopArena.Roofs[link.From];
+                    RooftopArena.Roof swTo = RooftopArena.Roofs[link.To];
+                    Vector3 toward = new Vector3(swTo.Center.x - swFrom.Center.x, 0f, swTo.Center.z - swFrom.Center.z).normalized;
+                    var swEntry = new Vector3(
+                        swFrom.Center.x + toward.x * swFrom.SizeX * 0.5f, swFrom.Walk.y,
+                        swFrom.Center.z + toward.z * swFrom.SizeZ * 0.5f);
+                    var swExit = new Vector3(
+                        swTo.Center.x - toward.x * swTo.SizeX * 0.5f, swTo.Walk.y,
+                        swTo.Center.z - toward.z * swTo.SizeZ * 0.5f);
+
+                    int swEntryNode = graph.AddNode(swEntry);
+                    int swExitNode = graph.AddNode(swExit);
+                    graph.AddEdge(roofNodes[link.From], swEntryNode, ParkourEdgeType.Run, 0f, bidirectional: true);
+                    graph.AddEdge(swEntryNode, swExitNode, ParkourEdgeType.Swing, sprint, bidirectional: false);
+                    graph.AddEdge(swExitNode, roofNodes[link.To], ParkourEdgeType.Run, 0f, bidirectional: true);
+                    break;
+                }
             }
         }
 

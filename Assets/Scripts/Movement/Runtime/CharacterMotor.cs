@@ -727,7 +727,15 @@ public sealed class CharacterMotor : MonoBehaviour
     /// Hanging slides you slowly down (TickWallHook); jump to launch off, chaining wall to wall.</summary>
     private bool TryWallHang(Vector3 wallNormal)
     {
-        if (cameraYaw == null || !InteractBuffered) return false;
+        // Require the current-frame press, NOT the lingering interact buffer. The buffer (set for
+        // InteractBufferTime whenever E is pressed) makes mantle/vault forgiving, but wall-hang is a
+        // hard, movement-arresting state: consuming a stale buffered press here caused unwanted grabs
+        // — e.g. pressing E at an out-of-range ladder (which does not clear the buffer) leaves the
+        // flag live, and running into an unrelated wall within the window then grabbed it. A
+        // deliberate wall-grab should be a fresh input, matching TryStartWallHook which already gates
+        // on the raw edge. ConsumeInteract() still clears the buffer so this used press can't also
+        // feed a mantle a couple frames later.
+        if (cameraYaw == null || !_input.InteractPressed) return false;
         ConsumeInteract();
         _wallHookNormal = wallNormal;
         _wallHookElapsed = 0f;
@@ -829,7 +837,18 @@ public sealed class CharacterMotor : MonoBehaviour
         float t = Mathf.Clamp01(_transitionElapsed / _transitionDuration);
         float eased = t * t * (3f - 2f * t);
         Vector3 pos = Vector3.Lerp(_transitionStart, _transitionEnd, eased);
-        _rb.MovePosition(pos);
+
+        // Drive the transition through velocity rather than MovePosition, for the same reason the
+        // ladder climb does: MovePosition leaves linearVelocity at zero between physics steps, so the
+        // Rigidbody interpolator sees a stationary body and only snaps the transform forward when the
+        // next MovePosition target lands — visible per-frame judder on the vault/mantle. Feeding a
+        // real velocity toward the eased target lets Interpolate smooth the transform between fixed
+        // steps. Gravity is off during this state (useGravity == false and no ApplyGravity call), so
+        // nothing accumulates on top of this velocity, and the (pos - _rb.position) form tracks the
+        // absolute eased curve exactly each step regardless of where the body currently sits. The
+        // smoothstep curve is flat at t == 1, so the body is already at _transitionEnd by the final
+        // step, where the exit-velocity branch below takes over.
+        _rb.linearVelocity = (pos - _rb.position) / dt;
 
         if (t >= 1f)
         {
@@ -952,9 +971,10 @@ public sealed class CharacterMotor : MonoBehaviour
         Vector3 releaseVelocity = tangent * (_swingOmega * length * config.swing.releaseSpeedMultiplier);
 
         // Player releases on jump. A bot can't time an apex release, so it auto-releases the moment
-        // the swing would fling it forward (toward the +Z exit, the corridor's forward axis) and
-        // upward — an up-and-across launch that carries it over the chasm to the far platform.
-        bool botAutoRelease = cameraYaw == null && releaseVelocity.z > 5f && releaseVelocity.y > 1f;
+        // the swing would fling it toward the swing's exit direction (the From→To crossing axis,
+        // +Z for the playground corridor swing) and upward — an up-and-across launch that carries it
+        // over the chasm to the far platform.
+        bool botAutoRelease = cameraYaw == null && Vector3.Dot(releaseVelocity, _currentSwing.ExitDirection) > 5f && releaseVelocity.y > 1f;
         if (_input.JumpPressed || botAutoRelease)
         {
             _rb.linearVelocity = releaseVelocity;

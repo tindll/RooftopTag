@@ -58,7 +58,10 @@ public sealed class PlaygroundBootstrap : MonoBehaviour
             else
             {
                 ChainSwingInteractable swing = marker.gameObject.AddComponent<ChainSwingInteractable>();
-                swing.Initialize(marker.pointA!, marker.length);
+                // Old playground swing markers leave outwardDirection unset/zero → default to forward
+                // so the corridor swing behaves identically; rooftop swing markers carry a real exit dir.
+                Vector3 exitDir = marker.outwardDirection.sqrMagnitude > 0.001f ? marker.outwardDirection : Vector3.forward;
+                swing.Initialize(marker.pointA!, marker.length, exitDir);
             }
 
             Destroy(marker);

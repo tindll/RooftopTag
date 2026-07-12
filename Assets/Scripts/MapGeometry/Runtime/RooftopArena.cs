@@ -145,6 +145,13 @@ public static class RooftopArena
         // WallRun across the un-jumpable ~10m E-W gap between W2 (x-30 edge) and Con_West (x-40 edge)
         // at z0: the wall panel (built below) is the surface the runner hugs across the void.
         new(15, 22, LinkKind.WallRun),
+
+        // Swing across the ~10m N-S chasm between Con_West (south edge z-4) and Con_Alley (north edge
+        // z-14). Param = chain length (5.5m); grab point ~y3.5 mid-chasm. LIMITATION: the graph edge
+        // and the bot auto-release both use Dot(releaseVelocity, exitDir) > threshold, so only the
+        // From→To (22→23) direction fires — the edge is emitted UNIDIRECTIONAL. Reverse (23→22)
+        // traversal isn't lost: 22 also exits via the WallRun to 15, so no dead end.
+        new(22, 23, LinkKind.Swing, param: 5.5f),
     };
 
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
@@ -189,7 +196,7 @@ public static class RooftopArena
                     BuildWallRun(root.transform, Roofs[link.From], Roofs[link.To]);
                     break;
                 case LinkKind.Swing:
-                    // built in a later task
+                    swings.Add(BuildSwing(root.transform, Roofs[link.From], Roofs[link.To], link.Param));
                     break;
                 case LinkKind.ClimbWall:
                     // built in a later task
@@ -243,6 +250,42 @@ public static class RooftopArena
             new Vector3(centerX, centerY, centerZ),
             new Vector3(gapLength, panelHeight, 0.4f),
             TagArenaMapGeometry.SurfaceRole.WallBody);
+    }
+
+    /// <summary>
+    /// Overhead beam + hanging chain a runner grabs to swing across an un-jumpable N-S chasm, mirroring
+    /// PlaygroundBuilder.BuildSwingChasm's look (CreateBox WallBody beam + a thin chain visual). Returns
+    /// the (pivot, chainLength, exitDir) tuple the interactable builders spawn the live trigger from.
+    ///
+    /// <para>Pivot is (x=-40.5, y=9, z=-9): x is the midpoint of the two roofs' x-overlap
+    /// (Con_West x[-48,-40] ∩ Con_Alley x[-41,-33] = [-41,-40] → -40.5), y=9 clears the h3.5/h2 roofs
+    /// for a tall beam, z=-9 is the midpoint of the crossing (Con_West south edge z-4 → Con_Alley north
+    /// edge z-14). exitDir is the horizontal unit vector from the From roof toward the To roof.</para>
+    /// </summary>
+    private static (Vector3 pivot, float length, Vector3 exitDir) BuildSwing(Transform parent, Roof from, Roof to, float length)
+    {
+        var pivot = new Vector3(-40.5f, 9f, -9f);
+        Vector3 exitDir = new Vector3(to.Center.x - from.Center.x, 0f, to.Center.z - from.Center.z).normalized;
+
+        // Overhead beam the chain hangs from — visual + a coarse blocker well above the play area.
+        TagArenaMapGeometry.CreateBox("SwingBeam", parent,
+            new Vector3(pivot.x, pivot.y, pivot.z),
+            new Vector3(1f, 0.3f, 12f),
+            TagArenaMapGeometry.SurfaceRole.WallBody);
+
+        // Thin chain visual from the beam down to the grab point (collider stripped so only the live
+        // trigger the interactable builder adds detects the grab).
+        var chainGo = new GameObject("SwingChainVisual");
+        chainGo.transform.SetParent(parent, false);
+        chainGo.transform.position = pivot + Vector3.down * (length * 0.5f);
+        chainGo.transform.localScale = new Vector3(0.1f, length, 0.1f);
+        var chainCube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        chainCube.name = "SwingChainSurface";
+        chainCube.transform.SetParent(chainGo.transform, false);
+        Object.DestroyImmediate(chainCube.GetComponent<BoxCollider>());
+        chainCube.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.WallBody);
+
+        return (pivot, length, exitDir);
     }
 
     private static void BuildRamp(Transform parent, Roof from, Roof to)

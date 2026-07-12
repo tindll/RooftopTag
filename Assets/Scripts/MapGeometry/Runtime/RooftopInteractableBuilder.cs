@@ -102,6 +102,6 @@ public static class RooftopInteractableBuilder
         sphere.radius = 1.5f;
 
         ChainSwingInteractable swing = chainGo.AddComponent<ChainSwingInteractable>();
-        swing.Initialize(pivotGo.transform, length); // exitDir threaded in a later task
+        swing.Initialize(pivotGo.transform, length, exitDir);
     }
 }
