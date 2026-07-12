@@ -51,8 +51,14 @@ public sealed class TagRulesConfig : ScriptableObject
     public Color runnerColor = new Color32(0xFF, 0xE9, 0xC4, 0xFF);
     public Color conversionGraceColor = new(0.9f, 0.7f, 0.1f);
     /// <summary>Emission multipliers per role — taggers must read as a red glow in silhouette
-    /// at range (spec: gameplay color language). Runners stay non-emissive.</summary>
-    public float taggerEmissiveIntensity = 1.8f;
+    /// at range (spec: gameplay color language). Runners stay non-emissive.
+    /// Kept deliberately low: the emission is added on top of an already warm-lit base red, and
+    /// the scene Bloom threshold is 1.0, so a high multiplier (this was 1.8) pushed the red channel
+    /// far past the threshold and blew the capsule core out to a glowing pink/white haze — the
+    /// tagger read as a washed-out, "semi-transparent" red rather than a solid one. At 0.5 the
+    /// opaque saturated base red dominates (solid, same visual opacity as a runner, just red) while
+    /// a gentle glow survives for the silhouette-at-range read.</summary>
+    public float taggerEmissiveIntensity = 0.5f;
     public float runnerEmissiveIntensity = 0f;
     public float graceEmissiveIntensity = 1.2f;
     public float gracePulseHz = 2.5f;
