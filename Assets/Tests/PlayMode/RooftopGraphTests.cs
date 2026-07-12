@@ -47,6 +47,39 @@ public class RooftopGraphTests
     }
 
     [Test]
+    public void Graph_HasDenseNodesPerRoof()
+    {
+        ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
+
+        // 5 nodes per roof (centre + 4 edge-midpoints) is the minimum; link approach/exit nodes add more.
+        Assert.That(graph.Nodes.Count, Is.GreaterThanOrEqualTo(RooftopArena.Roofs.Length * 5));
+    }
+
+    [Test]
+    public void Graph_DistinctNearestNodesOnSameRoof()
+    {
+        ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
+
+        // Two points ~4m apart on the 12x12 spawn roof (idx 0) must snap to DIFFERENT nodes — the
+        // exact failure the one-node-per-roof graph had (both resolved to the single centre node, so
+        // FindPath got start==goal and returned empty, collapsing bots to raw beeline steering).
+        Vector3 walk = RooftopArena.Roofs[0].Walk;
+        Vector3 pA = walk + new Vector3(3.5f, 0f, 0.5f); // near the +X lip
+        Vector3 pB = walk + new Vector3(0.5f, 0f, 3.5f); // near the +Z lip (~4.2m from pA)
+        int nA = graph.NearestNode(pA);
+        int nB = graph.NearestNode(pB);
+        Assert.That(nA, Is.Not.EqualTo(nB), "off-centre positions on the same roof must resolve to distinct nodes");
+
+        // And an off-centre spawn-roof node to an adjacent roof (E1, idx 1) must yield a non-empty
+        // path — previously this produced the empty path that stranded bots on beeline steering.
+        int goal = graph.NearestNode(RooftopArena.Roofs[1].Walk);
+        Assert.That(nA, Is.Not.EqualTo(goal));
+        IReadOnlyList<ParkourEdge>? path = graph.FindPath(nA, goal);
+        Assert.That(path, Is.Not.Null);
+        Assert.That(path!.Count, Is.GreaterThan(0));
+    }
+
+    [Test]
     public void Graph_SwingEdgeIsOneDirectional()
     {
         ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());

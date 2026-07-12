@@ -7,20 +7,92 @@ using UnityEngine;
 namespace Game.AI;
 
 /// <summary>
-/// Parkour graph for the <see cref="RooftopArena"/> chase playground: one node per roof, one edge
-/// per link (jump across a gap, run up a ramp, climb a ladder). Reads roof/link data straight from
-/// RooftopArena so the graph nodes land on the exact physical roofs the geometry builds.
+/// Parkour graph for the <see cref="RooftopArena"/> chase playground. Each roof gets FIVE nodes — a
+/// centre (<see cref="RooftopArena.Roof.Walk"/>) plus four edge-midpoints inset ~1m from the roof
+/// lips — wired into an intra-roof mesh (centre↔midpoint spokes + a midpoint-to-midpoint perimeter
+/// ring). This density is the fix for the "start==goal → empty path" collapse: with only one node
+/// per roof, 12 agents clustered on a roof all resolved to the same nearest node, so
+/// <see cref="ParkourGraph.FindPath"/> returned start==goal and bots fell back to raw beeline
+/// steering (symptom: total_edge_usage=[] and runner_avg_survival=0.00). Off-centre agents now
+/// resolve to DISTINCT nodes and get real planned paths. Link edges are wired lip-to-lip (the
+/// closest node pair across the two roofs), which is both shorter and truer than centre-to-centre.
+///
+/// Reads roof/link data straight from RooftopArena so nodes land on the exact physical roofs the
+/// geometry builds. Node/edge budget: ~26*5 + 6 link nodes ≈ 136 nodes, ~250 logical edges —
+/// Dijkstra's linear-scan frontier and NearestNode's linear scan stay fine at this size
+/// (12 agents × ~3 replans/s), so no priority queue / spatial index is warranted.
 /// </summary>
 public static class RooftopGraphBuilder
 {
+    /// <summary>How far each edge-midpoint node is inset from the roof lip (matches Walk height).</summary>
+    private const float EdgeInset = 1.0f;
+
     public static ParkourGraph Build(MovementConfig config)
     {
         var graph = new ParkourGraph();
         float sprint = config.ground.sprintSpeed;
 
-        var roofNodes = new int[RooftopArena.Roofs.Length];
+        // roofNodes[i] = { centre, +X, -X, +Z, -Z } node ids for roof i.
+        var roofNodes = new int[RooftopArena.Roofs.Length][];
         for (int i = 0; i < roofNodes.Length; i++)
-            roofNodes[i] = graph.AddNode(RooftopArena.Roofs[i].Walk);
+        {
+            RooftopArena.Roof r = RooftopArena.Roofs[i];
+            float y = r.Walk.y;
+            float hx = Mathf.Max(0.1f, r.SizeX * 0.5f - EdgeInset);
+            float hz = Mathf.Max(0.1f, r.SizeZ * 0.5f - EdgeInset);
+
+            int centre = graph.AddNode(r.Walk);
+            int px = graph.AddNode(new Vector3(r.Center.x + hx, y, r.Center.z));
+            int nx = graph.AddNode(new Vector3(r.Center.x - hx, y, r.Center.z));
+            int pz = graph.AddNode(new Vector3(r.Center.x, y, r.Center.z + hz));
+            int nz = graph.AddNode(new Vector3(r.Center.x, y, r.Center.z - hz));
+            roofNodes[i] = new[] { centre, px, nx, pz, nz };
+
+            // Spokes: centre ↔ each midpoint. Plain Run, entry speed 0, bidirectional.
+            graph.AddEdge(centre, px, ParkourEdgeType.Run, 0f, bidirectional: true);
+            graph.AddEdge(centre, nx, ParkourEdgeType.Run, 0f, bidirectional: true);
+            graph.AddEdge(centre, pz, ParkourEdgeType.Run, 0f, bidirectional: true);
+            graph.AddEdge(centre, nz, ParkourEdgeType.Run, 0f, bidirectional: true);
+
+            // Perimeter ring: +X → +Z → -X → -Z → +X, so a path can hug the roof edge without
+            // detouring through centre. 4 spokes + 4 ring = 8 logical intra-roof edges per roof.
+            graph.AddEdge(px, pz, ParkourEdgeType.Run, 0f, bidirectional: true);
+            graph.AddEdge(pz, nx, ParkourEdgeType.Run, 0f, bidirectional: true);
+            graph.AddEdge(nx, nz, ParkourEdgeType.Run, 0f, bidirectional: true);
+            graph.AddEdge(nz, px, ParkourEdgeType.Run, 0f, bidirectional: true);
+        }
+
+        // Nearest of roof's 5 nodes to a world point (XZ distance) — used to attach link
+        // approach/exit nodes to the closest roof node instead of always the centre.
+        int NearestOfRoof(int roof, Vector3 point)
+        {
+            int best = roofNodes[roof][0];
+            float bestSqr = float.MaxValue;
+            foreach (int id in roofNodes[roof])
+            {
+                Vector3 p = graph.Nodes[id].Position;
+                float dx = p.x - point.x, dz = p.z - point.z;
+                float sqr = dx * dx + dz * dz;
+                if (sqr < bestSqr) { bestSqr = sqr; best = id; }
+            }
+            return best;
+        }
+
+        // Closest node pair (by XZ distance) across two roofs' 5-node sets — lip-to-lip for a Jump.
+        (int from, int to) ClosestPair(int roofA, int roofB)
+        {
+            int bestA = roofNodes[roofA][0], bestB = roofNodes[roofB][0];
+            float bestSqr = float.MaxValue;
+            foreach (int ia in roofNodes[roofA])
+            foreach (int ib in roofNodes[roofB])
+            {
+                Vector3 pa = graph.Nodes[ia].Position, pb = graph.Nodes[ib].Position;
+                float dx = pa.x - pb.x, dz = pa.z - pb.z;
+                float sqr = dx * dx + dz * dz;
+                if (sqr < bestSqr) { bestSqr = sqr; bestA = ia; bestB = ib; }
+            }
+            return (bestA, bestB);
+        }
 
         foreach (RooftopArena.Link link in RooftopArena.Links)
         {
@@ -30,8 +102,11 @@ public static class RooftopGraphBuilder
                 {
                     // Only add the Jump edge if the character can actually make it, so pathfinding
                     // never routes a bot through a jump it can't clear (they'd sail into the void).
-                    Vector3 a = RooftopArena.Roofs[link.From].Walk;
-                    Vector3 b = RooftopArena.Roofs[link.To].Walk;
+                    // Validate the CHOSEN lip-to-lip node pair, not centre-to-centre: lip-to-lip is
+                    // the shorter, truer gap, so more borderline links correctly become makeable.
+                    (int fromNode, int toNode) = ClosestPair(link.From, link.To);
+                    Vector3 a = graph.Nodes[fromNode].Position;
+                    Vector3 b = graph.Nodes[toNode].Position;
                     if (JumpMakeable(a, b) && JumpMakeable(b, a))
                     {
                         // Con_ScafHi (idx24, x=-30 sizeX=10 -> x[-35,-25]) overlaps both Con_Deck
@@ -46,7 +121,7 @@ public static class RooftopGraphBuilder
                             || (link.From == 23 && link.To == 24) || (link.From == 24 && link.To == 23);
                         ParkourEdgeType jumpEdgeType = isScafHiOverlap ? ParkourEdgeType.Vault : ParkourEdgeType.Jump;
                         float jumpEntrySpeed = isScafHiOverlap ? config.mantleVault.vaultMinApproachSpeed : sprint;
-                        graph.AddEdge(roofNodes[link.From], roofNodes[link.To], jumpEdgeType, jumpEntrySpeed, bidirectional: true);
+                        graph.AddEdge(fromNode, toNode, jumpEdgeType, jumpEntrySpeed, bidirectional: true);
                     }
                     else
                     {
@@ -56,8 +131,11 @@ public static class RooftopGraphBuilder
                 }
 
                 case RooftopArena.LinkKind.Ramp:
-                    graph.AddEdge(roofNodes[link.From], roofNodes[link.To], ParkourEdgeType.Run, 0f, bidirectional: true);
+                {
+                    (int rampFrom, int rampTo) = ClosestPair(link.From, link.To);
+                    graph.AddEdge(rampFrom, rampTo, ParkourEdgeType.Run, 0f, bidirectional: true);
                     break;
+                }
 
                 case RooftopArena.LinkKind.Ladder:
                     RooftopArena.Roof from = RooftopArena.Roofs[link.From];
@@ -68,9 +146,10 @@ public static class RooftopGraphBuilder
 
                     int bottomNode = graph.AddNode(bottom);
                     int topNode = graph.AddNode(top);
-                    graph.AddEdge(roofNodes[lowerRoof], bottomNode, ParkourEdgeType.Run, 0f, bidirectional: true);
+                    // Attach to the nearest of each roof's 5 nodes rather than the centre.
+                    graph.AddEdge(NearestOfRoof(lowerRoof, bottom), bottomNode, ParkourEdgeType.Run, 0f, bidirectional: true);
                     graph.AddEdge(bottomNode, topNode, ParkourEdgeType.Ladder, 0f, bidirectional: true);
-                    graph.AddEdge(topNode, roofNodes[upperRoof], ParkourEdgeType.Run, 0f, bidirectional: true);
+                    graph.AddEdge(topNode, NearestOfRoof(upperRoof, top), ParkourEdgeType.Run, 0f, bidirectional: true);
                     break;
 
                 case RooftopArena.LinkKind.WallRun:
@@ -91,10 +170,11 @@ public static class RooftopGraphBuilder
 
                     // The wall panel sits at z = corridor + 0.85 (RooftopArena.BuildWallRun) — the +Z
                     // side of the z≈0 corridor — so the runner hugs +Z (Vector3.forward) to keep the
-                    // wall within CharacterMotor's side raycast.
-                    graph.AddEdge(roofNodes[link.From], approachNode, ParkourEdgeType.Run, 0f, bidirectional: true);
+                    // wall within CharacterMotor's side raycast. Attach the approach/exit to the
+                    // nearest of each roof's 5 nodes instead of the centre.
+                    graph.AddEdge(NearestOfRoof(link.From, approach), approachNode, ParkourEdgeType.Run, 0f, bidirectional: true);
                     graph.AddEdge(approachNode, exitNode, ParkourEdgeType.WallRun, config.wallRun.minEntrySpeed, bidirectional: true, lateralDir: Vector3.forward);
-                    graph.AddEdge(exitNode, roofNodes[link.To], ParkourEdgeType.Run, 0f, bidirectional: true);
+                    graph.AddEdge(exitNode, NearestOfRoof(link.To, exit), ParkourEdgeType.Run, 0f, bidirectional: true);
                     break;
                 }
 
@@ -119,9 +199,9 @@ public static class RooftopGraphBuilder
 
                     int swEntryNode = graph.AddNode(swEntry);
                     int swExitNode = graph.AddNode(swExit);
-                    graph.AddEdge(roofNodes[link.From], swEntryNode, ParkourEdgeType.Run, 0f, bidirectional: true);
+                    graph.AddEdge(NearestOfRoof(link.From, swEntry), swEntryNode, ParkourEdgeType.Run, 0f, bidirectional: true);
                     graph.AddEdge(swEntryNode, swExitNode, ParkourEdgeType.Swing, sprint, bidirectional: false);
-                    graph.AddEdge(swExitNode, roofNodes[link.To], ParkourEdgeType.Run, 0f, bidirectional: true);
+                    graph.AddEdge(swExitNode, NearestOfRoof(link.To, swExit), ParkourEdgeType.Run, 0f, bidirectional: true);
                     break;
                 }
 
@@ -133,17 +213,22 @@ public static class RooftopGraphBuilder
                     // entry speed 0f): the downward direction (21->19) is just a drop-off/walk-off, and
                     // bidirectional is how the existing Climb edge type is modeled elsewhere in this
                     // codebase — bots holding interact near either endpoint is harmless downhill.
-                    graph.AddEdge(roofNodes[link.From], roofNodes[link.To], ParkourEdgeType.Climb, 0f, bidirectional: true);
+                    // Wired lip-to-lip (closest node pair) rather than centre-to-centre.
+                    (int climbFrom, int climbTo) = ClosestPair(link.From, link.To);
+                    graph.AddEdge(climbFrom, climbTo, ParkourEdgeType.Climb, 0f, bidirectional: true);
                     break;
 
                 case RooftopArena.LinkKind.VaultWall:
-                    // Single bidirectional edge straight between the two roof nodes. From the Yard
-                    // side (h1.5) the 1m wall on the Alley's h2 surface presents 1.5m -> resolves as
-                    // Mantle in the motor; from the Alley side it's a clean 1m -> Vault. Bots execute
-                    // both identically (interact held + HopIfStalled), so a single Vault-typed edge
-                    // with the vault entry-speed gate covers both directions.
-                    graph.AddEdge(roofNodes[link.From], roofNodes[link.To], ParkourEdgeType.Vault, config.mantleVault.vaultMinApproachSpeed, bidirectional: true);
+                {
+                    // Single bidirectional edge, wired lip-to-lip. From the Yard side (h1.5) the 1m
+                    // wall on the Alley's h2 surface presents 1.5m -> resolves as Mantle in the motor;
+                    // from the Alley side it's a clean 1m -> Vault. Bots execute both identically
+                    // (interact held + HopIfStalled), so a single Vault-typed edge with the vault
+                    // entry-speed gate covers both directions.
+                    (int vaultFrom, int vaultTo) = ClosestPair(link.From, link.To);
+                    graph.AddEdge(vaultFrom, vaultTo, ParkourEdgeType.Vault, config.mantleVault.vaultMinApproachSpeed, bidirectional: true);
                     break;
+                }
             }
         }
 
