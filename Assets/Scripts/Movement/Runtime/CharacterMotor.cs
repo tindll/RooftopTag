@@ -890,9 +890,15 @@ public sealed class CharacterMotor : MonoBehaviour
         float speed = climbInput * config.ladder.climbSpeed + Mathf.Sign(climbInput == 0f ? 1f : climbInput) * _ladderCarryover;
         _ladderT = Mathf.Clamp01(_ladderT + speed * dt / _currentLadder.Length);
 
+        // Drive the climb through velocity rather than MovePosition + a per-step velocity reset.
+        // Zeroing linearVelocity every FixedUpdate defeats Rigidbody interpolation: the interpolator
+        // sees a stationary body between physics steps and only snaps forward when the next
+        // MovePosition target lands, which renders as the model juddering its way up the ladder.
+        // Feeding a real velocity toward the next point (same per-step target, just expressed as a
+        // velocity) lets Interpolate smooth the visible transform between fixed steps. The dismount /
+        // detach branches below overwrite this velocity, so it only governs the steady climb.
         Vector3 pos = _currentLadder.PointAt(_ladderT);
-        _rb.MovePosition(pos);
-        _rb.linearVelocity = Vector3.zero;
+        _rb.linearVelocity = (pos - _rb.position) / dt;
 
         if (_ladderT >= 1f)
         {

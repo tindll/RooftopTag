@@ -220,8 +220,14 @@ public sealed class MovementConfig : ScriptableObject
         climbSpeed = 3.5f,
         detachPushSpeed = 3f,
         entryMomentumRetention = 0.5f,
-        topDismountForwardSpeed = 5f,
-        topDismountUpSpeed = 5.5f,
+        // Off-the-top launch, tuned down from 5 / 5.5: it read as "flying off like a big jump".
+        // The forward fling is the main culprit, so it's cut hardest (5 -> 3) — 3 m/s still carries
+        // the climber clear of the wall lip and a metre onto the platform. Up is only trimmed
+        // (5.5 -> 5): the playground ladder tops out ~1 m below its landing surface, and ascent
+        // gravity is 9.81, so up=5 gives a ~1.27 m apex that reliably clears that ledge; halving it
+        // would drop the apex below 1 m and reintroduce the old "climber falls back down" bug.
+        topDismountForwardSpeed = 3f,
+        topDismountUpSpeed = 5f,
     };
 
     public SwingSettings swing = new()
