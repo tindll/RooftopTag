@@ -227,26 +227,25 @@ public sealed class MovementConfig : ScriptableObject
 
     public SwingSettings swing = new()
     {
-        // Defaults derived from pendulum math, not guesses (playground swing L=4). A modest ~15-20%
-        // momentum trim from the previous 20 / 12 tuning, per playtest feedback that the rope moved too
-        // much:
-        //   Holding one direction adds inputAcceleration (16 m/s^2) tangentially, which tilts the
-        //   effective gravity by atan(16/9.81) ~= 58.5 degrees, g_eff = sqrt(9.81^2 + 16^2) ~= 18.8 m/s^2.
-        //   Peak speed at the new equilibrium is sqrt(2 * g_eff * L * (1 - cos 58.5deg)) ~= 8.5 m/s,
-        //   reached in a half-period ~= pi*sqrt(L/g_eff) ~= 1.45 s. Release at 8.5 * 1.15 ~= 9.7 m/s —
-        //   under the 13 m/s global cap, above sprint (8), still "one of the fastest moves in the game".
-        //   A sprint entry (~8 m/s) seeds ~8 m/s before any pumping. releaseSpeedMultiplier/jumpReleaseBonus
-        //   kept as-is: the trimmed base speed still releases comfortably above sprint.
-        //   maxTangentialSpeed=10 is now an ENERGY BUDGET, not a flat wall: the swing's speed cap is
+        // Defaults derived from pendulum math, not guesses (playground swing L=4). History: originally
+        // 20/12, trimmed to 16/10 ("rope moved too much"), restored to 20/12 after a later feel-test
+        // landed the trim as "a little too slow" — the restored values are the well-measured ones
+        // (11.93 m/s release, Swing_MeasuresApexReleaseSpeed):
+        //   Holding one direction adds inputAcceleration (20 m/s^2) tangentially, which tilts the
+        //   effective gravity by atan(20/9.81) ~= 64 degrees, g_eff = sqrt(9.81^2 + 20^2) ~= 22.3 m/s^2.
+        //   Peak speed at the new equilibrium is sqrt(2 * g_eff * L * (1 - cos 64deg)) ~= 10 m/s,
+        //   reached in a half-period ~= pi*sqrt(L/g_eff) ~= 1.3 s. Release at 10 * 1.15 ~= 11.5 m/s —
+        //   under the 13 m/s global cap, "one of the fastest moves in the game".
+        //   maxTangentialSpeed=12 is an ENERGY BUDGET, not a flat wall: the swing's speed cap is
         //   applied height-dependently (see TickSwing), so instead of a hard invisible-ceiling angle
         //   clamp the bob simply runs out of speed budget as it climbs and coasts to a soft apex at
-        //   maxTangentialSpeed^2/(2g) = 100/19.62 ~= 5.1 m above the arc's lowest point (~106 deg polar at
-        //   L=4). That is well under the 2L=8 m (~12.5 m/s) needed to swing over the pivot, so the taut
-        //   rope never goes slack — pump harder within the budget to reach higher, no felt wall.
+        //   maxTangentialSpeed^2/(2g) = 144/19.62 ~= 7.3 m above the arc's lowest point. That is under
+        //   the 2L=8 m (~12.5 m/s) needed to swing over the pivot at L=4, so the taut rope never goes
+        //   slack — pump harder within the budget to reach higher, no felt wall.
         //   dampingPerSecond=0.15 is ~14%/s decay, vs the old model's ~64%/s that killed all momentum.
-        inputAcceleration = 16f,
+        inputAcceleration = 20f,
         dampingPerSecond = 0.15f,
-        maxTangentialSpeed = 10f,
+        maxTangentialSpeed = 12f,
         releaseSpeedMultiplier = 1.15f,
         jumpReleaseBonus = 1.5f,
         attachReleaseGraceSeconds = 0.15f,

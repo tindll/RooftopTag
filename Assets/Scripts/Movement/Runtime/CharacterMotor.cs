@@ -904,7 +904,14 @@ public sealed class CharacterMotor : MonoBehaviour
         float g = Physics.gravity.magnitude;
         float cosPolar = Vector3.Dot(Vector3.down, ropeDir); // ropeDir is unit -> = cos(polar angle from straight-down)
         float height = length * (1f - cosPolar);             // height of the bob above the arc's lowest point
-        float speedBudget = config.swing.maxTangentialSpeed * config.swing.maxTangentialSpeed - 2f * g * height;
+        // Per-rope budget trim: on a SHORT rope the global budget can carry the bob to within a hair
+        // of over-the-top (L=4 with a 12 m/s budget reaches ~147 deg polar — nearly looping). Cap the
+        // effective budget so the apex always stays at least OverTopSafetyMargin of height below the
+        // full 2L loop height; long ropes are unaffected (their geometric cap exceeds the global one).
+        const float OverTopSafetyMargin = 1.2f; // > the tests' 1m assertion margin, so the bound isn't razor-edge
+        float loopSafeSpeed = Mathf.Sqrt(2f * g * Mathf.Max(0.1f, 2f * length - OverTopSafetyMargin));
+        float budgetSpeed = Mathf.Min(config.swing.maxTangentialSpeed, loopSafeSpeed);
+        float speedBudget = budgetSpeed * budgetSpeed - 2f * g * height;
         float maxSpeedAtHeight = speedBudget > 0f ? Mathf.Sqrt(speedBudget) : 0f;
         if (_swingVelocity.magnitude > maxSpeedAtHeight)
             _swingVelocity = _swingVelocity.normalized * maxSpeedAtHeight;

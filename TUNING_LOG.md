@@ -3,6 +3,28 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Swing speed restored + solid cranes + per-rope over-loop guard (2026-07-13)
+
+**Feel-test:** "swinging feels a little too slow" → restored the 20/12 tuning (the well-measured
+11.93 m/s-release values) from the trimmed 16/10; user preference overrides the earlier "moved too
+much" trim. Also: "make the cranes actual physics objects — I don't like phasing through them."
+
+**Solid cranes:** every structural crane member (mast/jib/brace) now carries a BoxCollider, built
+in BOTH the scene path and headless self-play (physics-parity principle) — renderers stay
+display-gated, chain-link dressing and the grab trigger stay non-solid. Collision math caught a
+real hazard before it shipped: with the restored 12 m/s budget, the old arc-spanning overhead beams
+sat squarely inside the swing's swept volume (playground apex reaches ~147° polar = above the
+pivot) — solid beams would have fought the taut-rope constraint. Fixed geometrically: beams shrunk
+to 1.5×1.5 hub stubs at the pivot that the swept volume can never reach.
+
+**Per-rope over-loop guard (found by the energy-cap test):** restoring the 12 m/s budget let the
+SHORT playground rope (L=4) apex within 0.66m of a full loop (test failed its "stay ≥1m below
+over-the-top" safety assertion at 11.34m vs 11.00 bound). Principled fix in TickSwing: the
+effective energy budget is now `min(maxTangentialSpeed, sqrt(2g·(2L − 1.2m)))` — short ropes get
+trimmed just enough to never near-loop, long ropes (rooftop L=5.5) are untouched, and release speed
+is unaffected (releases happen near the arc bottom where the budget isn't binding). Re-measured:
+apex 134°/10.80m (bound 11.00), release still 11.93 m/s, 19/19 movement suite.
+
 ## Wall-run removed; wall-grab made trustworthy; minimap unblocked (2026-07-12)
 
 **Wall-run removed by user decision** (auto-attach "sometimes just messes you up"; WallHook + jump

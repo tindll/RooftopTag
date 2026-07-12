@@ -245,10 +245,16 @@ public static class RooftopArena
         var pivot = new Vector3(-37.5f, 9f, -9f);
         Vector3 exitDir = new Vector3(to.Center.x - from.Center.x, 0f, to.Center.z - from.Center.z).normalized;
 
-        // Overhead beam the chain hangs from — visual + a coarse blocker well above the play area.
+        // Solid beam-hub the chain hangs from, at the pivot. It is a COMPACT 1.5x1.5 stub, NOT the old
+        // 12m span: at maxTangentialSpeed=12 the energy cap lets the bob apex ~7.34m above the arc's
+        // lowest point (feet to pivot.y+1.84, ~110deg polar; the 1.8m capsule head to pivot.y+3.64), so
+        // a full-length beam at pivot height sat squarely in the swept arc and the taut-rope constraint
+        // would fight its collider. Whenever any part of the capsule is at beam height the bob is ~L
+        // (>=5m here) away along the swing axis, so a stub this size never intersects the swing while
+        // still reading as the hub (the ChainSwingInteractable crane's solid jib is the visible arm).
         TagArenaMapGeometry.CreateBox("SwingBeam", parent,
             new Vector3(pivot.x, pivot.y, pivot.z),
-            new Vector3(1f, 0.3f, 12f),
+            new Vector3(1.5f, 0.3f, 1.5f),
             TagArenaMapGeometry.SurfaceRole.WallBody);
 
         // The chain itself is drawn at runtime by ChainSwingInteractable's LineRenderer (which also

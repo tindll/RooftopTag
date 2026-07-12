@@ -29,9 +29,12 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     private static Material? _chainMaterial;
     private static Material? _craneMaterial;
 
-    // Real per-frame chain/crane work is pointless (and a measurable cost across dozens of headless
-    // self-play matches, several swings each) when there is no display. Update short-circuits on it
-    // and EnsureVisual never builds the pool/crane. Mirrors the guard in RoundController.SetupMinimap.
+    // Real per-frame chain-link work and mesh/material allocation is pointless (and a measurable cost
+    // across dozens of headless self-play matches, several swings each) when there is no display, so
+    // Update short-circuits and the crane/chain RENDERERS are skipped headless. The crane's structural
+    // COLLIDERS are physical, not visual, so they ARE built headless (see BuildCrane) — physics parity
+    // requires a swing to be as solid to a self-play bot as it is to a player. Mirrors the guard in
+    // RoundController.SetupMinimap.
     // Lazily evaluated: Unity forbids SystemInfo.graphicsDeviceType in a field initializer (it runs
     // in the MonoBehaviour constructor), which threw on every ChainSwing instantiation and failed
     // every test that touched one — it must be read from Awake/Update-time code instead.
@@ -83,14 +86,16 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     public Vector3 PivotPosition => pivot != null ? pivot.position : transform.position;
     public float Length => length;
 
-    // Lazily build the chain-link pool and the supporting crane. Skipped entirely when headless
-    // (no display) or before Initialize has supplied a pivot; retried from Update until it succeeds.
+    // Lazily build the supporting crane (structural colliders + — when not headless — its meshes) and
+    // the chain-link pool. Runs even headless so the crane colliders exist for self-play physics parity;
+    // only the visual pieces (chain links, crane renderers) are display-gated. Retried from Update
+    // (non-headless) until pivot is supplied; headless callers always Initialize with a pivot up front.
     private void EnsureVisual()
     {
-        if (_visualBuilt || Headless) return;
+        if (_visualBuilt) return;
         if (pivot == null) return;
-        BuildCrane();
-        BuildChainLinks();
+        BuildCrane();                      // structural colliders always; renderers only when not headless
+        if (!Headless) BuildChainLinks();  // rope dressing is purely visual — non-solid, display-only
         _visualBuilt = true;
     }
 
@@ -149,10 +154,14 @@ public sealed class ChainSwingInteractable : MonoBehaviour
         }
     }
 
-    // A small, purely-visual crane the chain hangs from: a mast offset to the side (perpendicular to
-    // the swing arc so it never blocks the player or the trigger sphere), a horizontal jib reaching
-    // over the pivot, a diagonal brace to the jib tip, and a counter-jib + counterweight for
-    // silhouette. No colliders — gameplay physics and the ChainSwing trigger are untouched.
+    // A small crane the chain hangs from: a mast offset to the side (perpendicular to the swing arc so
+    // it never blocks the player or the trigger sphere), a horizontal jib reaching over the pivot, a
+    // diagonal brace to the jib tip, and a counter-jib + counterweight for silhouette. Every piece is
+    // SOLID (a BoxCollider each) so the player/bots stop phasing through it. This is safe against the
+    // swing itself: all pieces sit off the swing arc — the mast/brace/counter-jib/counterweight are
+    // offset along `side` (perpendicular to the exit), and the jib runs along `side` too, so whenever
+    // any part of the swinging capsule is at jib height the bob is ~L metres away along the swing axis.
+    // The ChainSwing trigger sphere (a separate object) stays a trigger; the chain LINKS stay non-solid.
     private void BuildCrane()
     {
         Vector3 p = PivotPosition;
@@ -171,47 +180,55 @@ public sealed class ChainSwingInteractable : MonoBehaviour
         Vector3 mastTop = new Vector3(p.x, mastTopY, p.z) + side * jib;
         Vector3 jibTip = p; // the chain hangs from here
 
-        Mesh mesh = CubeMesh();
-        Material mat = CraneMaterial();
         var crane = new GameObject("SwingCrane");
         crane.transform.SetParent(transform, false);
 
         // Mast (vertical post).
         float mastH = mastTopY - mastBottomY;
-        CraneBox(crane.transform, mesh, mat, "Mast",
+        CraneBox(crane.transform, "Mast",
             new Vector3(mastTop.x, (mastTopY + mastBottomY) * 0.5f, mastTop.z),
             new Vector3(0.5f, mastH, 0.5f), Quaternion.identity);
 
         // Jib (horizontal arm at pivot height, from the mast out to the pivot).
         Vector3 jibA = new Vector3(mastTop.x, p.y, mastTop.z);
-        CraneBox(crane.transform, mesh, mat, "Jib", (jibA + jibTip) * 0.5f,
+        CraneBox(crane.transform, "Jib", (jibA + jibTip) * 0.5f,
             new Vector3(0.35f, 0.35f, Vector3.Distance(jibA, jibTip) + 0.3f),
             Quaternion.LookRotation((jibTip - jibA).normalized));
 
         // Diagonal brace from the mast top down to the jib tip (classic crane triangle).
-        CraneBox(crane.transform, mesh, mat, "Brace", (mastTop + jibTip) * 0.5f,
+        CraneBox(crane.transform, "Brace", (mastTop + jibTip) * 0.5f,
             new Vector3(0.18f, 0.18f, Vector3.Distance(mastTop, jibTip)),
             Quaternion.LookRotation((jibTip - mastTop).normalized));
 
         // Counter-jib + counterweight on the far side of the mast top.
         Vector3 counterEnd = mastTop - side * (jib * 0.5f);
         Vector3 counterMid = (mastTop + counterEnd) * 0.5f;
-        CraneBox(crane.transform, mesh, mat, "CounterJib",
+        CraneBox(crane.transform, "CounterJib",
             new Vector3(counterMid.x, mastTopY, counterMid.z),
             new Vector3(0.3f, 0.3f, Vector3.Distance(mastTop, counterEnd) + 0.2f),
             Quaternion.LookRotation((-side).normalized));
-        CraneBox(crane.transform, mesh, mat, "Counterweight",
+        CraneBox(crane.transform, "Counterweight",
             new Vector3(counterEnd.x, mastTopY - 0.3f, counterEnd.z),
             new Vector3(0.8f, 0.9f, 0.8f), Quaternion.identity);
     }
 
-    private static void CraneBox(Transform parent, Mesh mesh, Material mat, string name,
+    // One structural crane member. The BoxCollider is ALWAYS added (physical — must exist headless for
+    // self-play parity); the unit-cube size/centre make it match the visual mesh exactly regardless of
+    // whether the mesh is present. The MeshFilter/MeshRenderer (and their static mesh/material caches)
+    // are allocated only when not headless.
+    private static void CraneBox(Transform parent, string name,
         Vector3 worldPos, Vector3 scale, Quaternion rot)
     {
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
-        go.AddComponent<MeshFilter>().sharedMesh = mesh;
-        go.AddComponent<MeshRenderer>().sharedMaterial = mat;
+        var box = go.AddComponent<BoxCollider>();
+        box.size = Vector3.one;
+        box.center = Vector3.zero;
+        if (!Headless)
+        {
+            go.AddComponent<MeshFilter>().sharedMesh = CubeMesh();
+            go.AddComponent<MeshRenderer>().sharedMaterial = CraneMaterial();
+        }
         go.transform.SetPositionAndRotation(worldPos, rot);
         go.transform.localScale = scale;
     }

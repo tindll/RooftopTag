@@ -85,8 +85,11 @@ public static class RooftopInteractableBuilder
     }
 
     /// <summary>Mirrors BuildSwingChasm's functional pieces (pivot anchor + trigger sphere at the
-    /// chain's grab point). Beam/chain visuals are omitted — swing geometry is a later task, and the
-    /// Swings list is empty until then.</summary>
+    /// chain's grab point). No extra solid boxes are added here for physics parity: the swing's solid
+    /// structure is already present headlessly — the <see cref="ChainSwingInteractable"/> attached below
+    /// builds its crane's structural COLLIDERS even when headless (renderers are the only display-gated
+    /// part), and RooftopArena.BuildSwing emits the solid SwingBeam hub in both the saved scene and the
+    /// runtime/self-play build. So a self-play bot hits the same solid crane a player does.</summary>
     private static void BuildSwing(Transform root, Vector3 pivot, float length, Vector3 exitDir)
     {
         var pivotGo = new GameObject("ChainPivot");

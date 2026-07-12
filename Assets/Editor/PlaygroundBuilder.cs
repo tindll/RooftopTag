@@ -338,13 +338,19 @@ public static class PlaygroundBuilder
         float chasmStart = z + 4f;
         TagArenaMapGeometry.CreateBox("SwingExit", root.transform, new Vector3(0f, -0.5f, chasmStart + chasmLength + 2f), new Vector3(6f, 1f, 4f), TagArenaMapGeometry.SurfaceRole.Floor);
 
+        // Solid beam-hub the chain hangs from, at the pivot (SOLID now — the collider is kept, not
+        // destroyed, so the player stops phasing through it). It is a COMPACT 1.5x1.5 stub, NOT the old
+        // ~14m span: at maxTangentialSpeed=12 the energy cap lets this L=4 swing apex ~7.34m above the
+        // arc's lowest point (feet to pivot.y+3.34, ~147deg polar; the 1.8m capsule head to pivot.y+5.14),
+        // so a full-length beam at pivot height sat in the swept arc and would fight the taut-rope
+        // constraint. Whenever any capsule point is at beam height the bob is >=3.5m away along the swing
+        // axis, so a stub this size never intersects the swing (the crane's solid jib is the visible arm).
         var beamGo = new GameObject("OverheadBeam");
         beamGo.transform.SetParent(root.transform);
         beamGo.transform.position = new Vector3(0f, 6f, chasmStart + chasmLength * 0.5f);
-        beamGo.transform.localScale = new Vector3(1f, 0.3f, chasmLength + 2f);
+        beamGo.transform.localScale = new Vector3(1.5f, 0.3f, 1.5f);
         var beamRenderer = GameObject.CreatePrimitive(PrimitiveType.Cube);
         beamRenderer.transform.SetParent(beamGo.transform, false);
-        Object.DestroyImmediate(beamRenderer.GetComponent<BoxCollider>());
         beamRenderer.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.WallBody);
 
         var pivotGo = new GameObject("ChainPivot");
