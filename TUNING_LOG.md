@@ -3,6 +3,22 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Wind audio removed entirely
+
+**Report:** the AudioLowPassFilter-based redo from the previous entry was worse, not better —
+described directly as "ear rape." Two attempts at procedural wind synthesis in a row have both
+failed the feel-check, and there's no way to audition audio output in this loop to iterate blind a
+third time responsibly.
+
+**Change:** removed the wind audio system completely from `TagAgent.cs` — the `AudioSource`,
+`AudioLowPassFilter`, `GetWindClip()`, and all associated fields/constants. Landing thump/squash and
+the tag boop are untouched (not flagged as a problem). If wind/speed audio feedback is wanted again
+later, it likely needs an actual authored/recorded asset rather than another from-scratch synthesis
+attempt, given the track record here.
+
+**Verified:** compile-check clean, all 3 scenes rebuilt without error, full PlayMode suite 23/23
+passing.
+
 ## Wind audio redo (real-time filter, not hand-rolled), wall-run grab animation, slide-strafe speed exploit fix
 
 **Wind audio — reported as "terrible, just grey noise":** the previous version hand-shaped white

@@ -78,22 +78,6 @@ public sealed class TagAgent : MonoBehaviour
     private LineRenderer? _reachRing;
     private static AudioClip? _boopClip;
 
-    // Wind audio: local-player-only presentation feedback for speed, per the movement spec's
-    // "player should feel fast" requirement. Fades in above a walking-speed floor so it doesn't
-    // hiss at a standstill, and reaches full intensity at the character's actual movement cap
-    // rather than a hand-picked number, so retuning MovementConfig keeps this in sync for free.
-    // The clip itself is plain white noise — shaping into an airy "whoosh" (rather than the flat,
-    // droning "grey noise" an earlier hand-rolled filter produced) is done live by AudioLowPassFilter,
-    // whose cutoff sweeps open with speed: muffled/distant at low speed, bright/full hiss at max —
-    // real DSP instead of an approximation, and it gives the wind a speed-reactive character for free.
-    private const float WindMinSpeed = 4f;
-    private const float WindMaxVolume = 0.32f;
-    private const float WindMinCutoffHz = 400f;
-    private const float WindMaxCutoffHz = 9000f;
-    private AudioSource? _windAudioSource;
-    private AudioLowPassFilter? _windLowPassFilter;
-    private static AudioClip? _windClip;
-
     // Landing feedback: a brief squash-and-stretch pulse on the body plus a soft thump, gated by
     // CharacterMotor's own minAirTimeForLandingEffects (the same gate camera shake uses) so tiny
     // ground-probe seams don't trigger it — only real falls do.
@@ -157,22 +141,6 @@ public sealed class TagAgent : MonoBehaviour
             _reachRing.widthMultiplier = 0.05f;
             _reachRing.material = new Material(Shader.Find("Sprites/Default"));
             _reachRing.enabled = false;
-
-            // Same headless guard RoundController's minimap uses: batch-mode/self-play test runs
-            // report Null here, and creating a looping AudioSource there is a pointless allocation
-            // at best and a console-spam risk at worst.
-            if (SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
-            {
-                _windAudioSource = gameObject.AddComponent<AudioSource>();
-                _windAudioSource.clip = GetWindClip();
-                _windAudioSource.loop = true;
-                _windAudioSource.spatialBlend = 0f;
-                _windAudioSource.volume = 0f;
-                _windAudioSource.Play();
-
-                _windLowPassFilter = gameObject.AddComponent<AudioLowPassFilter>();
-                _windLowPassFilter.cutoffFrequency = WindMinCutoffHz;
-            }
         }
 
         UpdateColor();
@@ -186,7 +154,6 @@ public sealed class TagAgent : MonoBehaviour
         _lungeAction?.Dispose();
         _tagAction?.Dispose();
         if (_reachRing != null) Destroy(_reachRing.gameObject);
-        if (_windAudioSource != null) Destroy(_windAudioSource);
         _motor.Landed -= OnLanded;
     }
 
@@ -244,15 +211,6 @@ public sealed class TagAgent : MonoBehaviour
         if (diving && !_wasAirDiving)
             PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.12f, backDuration: 0.3f);
         _wasAirDiving = diving;
-
-        if (_windAudioSource != null)
-        {
-            float windMaxSpeed = _motor.Config.ground.maxHorizontalSpeed;
-            float speedT = Mathf.Clamp01((_motor.CurrentSpeed - WindMinSpeed) / (windMaxSpeed - WindMinSpeed));
-            _windAudioSource.volume = speedT * WindMaxVolume;
-            if (_windLowPassFilter != null)
-                _windLowPassFilter.cutoffFrequency = Mathf.Lerp(WindMinCutoffHz, WindMaxCutoffHz, speedT);
-        }
     }
 
     public void SetRole(Role role, bool startGrace)
@@ -502,43 +460,6 @@ public sealed class TagAgent : MonoBehaviour
         _boopClip = AudioClip.Create("TagBoop", sampleCount, 1, sampleRate, false);
         _boopClip.SetData(samples, 0);
         return _boopClip;
-    }
-
-    // ---------------------------------------------------------------- Wind sound
-
-    private static AudioClip GetWindClip()
-    {
-        if (_windClip != null) return _windClip;
-
-        const int sampleRate = 44100;
-        const float loopDuration = 3f;
-        const float crossfadeDuration = 0.2f;
-        const float gain = 0.5f;
-        int loopSamples = Mathf.CeilToInt(sampleRate * loopDuration);
-        int crossfadeSamples = Mathf.CeilToInt(sampleRate * crossfadeDuration);
-
-        // Plain white noise. An earlier version pre-shaped this into a "brown noise" rumble by hand
-        // (a leaky integrator) — it read as a flat, droning "grey noise" hum, not wind. Shaping is
-        // now done live by AudioLowPassFilter on the AudioSource (see Configure/Update) instead of
-        // baked into the clip, so the source content here just needs to be full-spectrum raw noise.
-        var random = new System.Random(1337);
-        var raw = new float[loopSamples + crossfadeSamples];
-        for (int i = 0; i < raw.Length; i++)
-            raw[i] = (float)(random.NextDouble() * 2.0 - 1.0) * gain;
-
-        // Crossfade the tail into the head so the loop point doesn't click.
-        var samples = new float[loopSamples];
-        Array.Copy(raw, samples, loopSamples);
-        for (int i = 0; i < crossfadeSamples; i++)
-        {
-            float t = i / (float)crossfadeSamples;
-            int tailIndex = loopSamples - crossfadeSamples + i;
-            samples[tailIndex] = Mathf.Lerp(raw[tailIndex], raw[i], t);
-        }
-
-        _windClip = AudioClip.Create("Wind", loopSamples, 1, sampleRate, false);
-        _windClip.SetData(samples, 0);
-        return _windClip;
     }
 
     // ---------------------------------------------------------------- Landing thump sound
