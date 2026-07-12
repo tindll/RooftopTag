@@ -30,16 +30,18 @@ public sealed class ParkourGraph
         return id;
     }
 
-    public void AddEdge(int from, int to, ParkourEdgeType type, float requiredEntrySpeed, float? cost = null, bool bidirectional = false)
+    public void AddEdge(int from, int to, ParkourEdgeType type, float requiredEntrySpeed, float? cost = null, bool bidirectional = false, Vector3 lateralDir = default)
     {
         float resolvedCost = cost ?? Vector3.Distance(_nodes[from].Position, _nodes[to].Position);
-        var edge = new ParkourEdge(from, to, type, requiredEntrySpeed, resolvedCost);
+        var edge = new ParkourEdge(from, to, type, requiredEntrySpeed, resolvedCost, lateralDir);
         _edges.Add(edge);
         _outgoing[from].Add(edge);
 
         if (bidirectional)
         {
-            var reverse = new ParkourEdge(to, from, type, requiredEntrySpeed, resolvedCost);
+            // Reverse edge keeps the SAME lateralDir — the wall is on the same world side of the
+            // corridor regardless of travel direction.
+            var reverse = new ParkourEdge(to, from, type, requiredEntrySpeed, resolvedCost, lateralDir);
             _edges.Add(reverse);
             _outgoing[to].Add(reverse);
         }

@@ -141,6 +141,10 @@ public static class RooftopArena
         new(23, 24, LinkKind.Jump),
         new(17, 18, LinkKind.Ramp),  // Gate h4 -> Yard h1.5
         new(18, 21, LinkKind.Ramp),  // Yard h1.5 -> Crane h4.8, crane-access
+
+        // WallRun across the un-jumpable ~10m E-W gap between W2 (x-30 edge) and Con_West (x-40 edge)
+        // at z0: the wall panel (built below) is the surface the runner hugs across the void.
+        new(15, 22, LinkKind.WallRun),
     };
 
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
@@ -182,7 +186,7 @@ public static class RooftopArena
                     ladders.Add(LadderAnchors(Roofs[link.From], Roofs[link.To]));
                     break;
                 case LinkKind.WallRun:
-                    // built in a later task
+                    BuildWallRun(root.transform, Roofs[link.From], Roofs[link.To]);
                     break;
                 case LinkKind.Swing:
                     // built in a later task
@@ -205,6 +209,40 @@ public static class RooftopArena
 
         Debug.Log($"ROOFTOP_BUILD: {Roofs.Length} roofs, {Links.Length} links; sprintSpeed={config.ground.sprintSpeed}");
         return new ArenaInteractables(ladders, swings);
+    }
+
+    /// <summary>
+    /// Wall panel a runner hugs while wall-running across an un-jumpable gap between two roofs.
+    /// Computed from the two roofs' facing edges rather than hardcoded. AXIS-ALIGNMENT ASSUMPTION:
+    /// this pass only supports an E-W crossing (both roofs share ~z); an arbitrary-angle wall is not
+    /// required here. The panel face sits +0.85 in z off the corridor line (both roofs at z≈0), so
+    /// the near face (~z0.65) lands inside CharacterMotor's 0.7m side raycast when the bot runs the
+    /// corridor at z≈0.
+    /// </summary>
+    private static void BuildWallRun(Transform parent, Roof from, Roof to)
+    {
+        Debug.Assert(Mathf.Abs(from.Center.z - to.Center.z) < 0.01f,
+            "WallRun link assumes both roofs share z (E-W crossing).");
+
+        Roof west = from.Center.x <= to.Center.x ? from : to;
+        Roof east = from.Center.x <= to.Center.x ? to : from;
+        // The crossing runs along the empty gap between the roofs' facing edges (east roof's -x edge
+        // and west roof's +x edge). For 15↔22 that's x[-40,-30], length 10, centre x=-35.
+        float eastFacing = east.Center.x - east.SizeX * 0.5f;
+        float westFacing = west.Center.x + west.SizeX * 0.5f;
+        float gapLength = eastFacing - westFacing;
+        float centerX = (eastFacing + westFacing) * 0.5f;
+
+        // Base at the higher roof's surface and extend up: y span ~3..9 keeps a solid wall at the
+        // capsule's side height for a character running along at roof height ~4.
+        const float panelHeight = 6f;
+        float centerY = Mathf.Max(from.Center.y, to.Center.y) + 2f; // h4/h3.5 roofs -> y6, covers y3..9
+        float centerZ = from.Center.z + 0.85f;
+
+        TagArenaMapGeometry.CreateBox("WallRun_Panel", parent,
+            new Vector3(centerX, centerY, centerZ),
+            new Vector3(gapLength, panelHeight, 0.4f),
+            TagArenaMapGeometry.SurfaceRole.WallBody);
     }
 
     private static void BuildRamp(Transform parent, Roof from, Roof to)

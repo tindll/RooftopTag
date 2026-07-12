@@ -54,6 +54,30 @@ public static class RooftopGraphBuilder
                     graph.AddEdge(bottomNode, topNode, ParkourEdgeType.Ladder, 0f, bidirectional: true);
                     graph.AddEdge(topNode, roofNodes[upperRoof], ParkourEdgeType.Run, 0f, bidirectional: true);
                     break;
+
+                case RooftopArena.LinkKind.WallRun:
+                {
+                    // Approach node at the entry roof's lip, exit node at the far roof's lip, each on
+                    // the E-W crossing axis facing the other roof, at that roof's walk height. The
+                    // WallRun edge between them carries the wall's world side as lateralDir so the bot
+                    // hugs the panel. (Axis-aligned E-W crossing — matches RooftopArena.BuildWallRun.)
+                    RooftopArena.Roof wrFrom = RooftopArena.Roofs[link.From];
+                    RooftopArena.Roof wrTo = RooftopArena.Roofs[link.To];
+                    float axisDir = Mathf.Sign(wrTo.Center.x - wrFrom.Center.x);
+                    var approach = new Vector3(wrFrom.Center.x + axisDir * wrFrom.SizeX * 0.5f, wrFrom.Walk.y, wrFrom.Center.z);
+                    var exit = new Vector3(wrTo.Center.x - axisDir * wrTo.SizeX * 0.5f, wrTo.Walk.y, wrTo.Center.z);
+
+                    int approachNode = graph.AddNode(approach);
+                    int exitNode = graph.AddNode(exit);
+
+                    // The wall panel sits at z = corridor + 0.85 (RooftopArena.BuildWallRun) — the +Z
+                    // side of the z≈0 corridor — so the runner hugs +Z (Vector3.forward) to keep the
+                    // wall within CharacterMotor's side raycast.
+                    graph.AddEdge(roofNodes[link.From], approachNode, ParkourEdgeType.Run, 0f, bidirectional: true);
+                    graph.AddEdge(approachNode, exitNode, ParkourEdgeType.WallRun, config.wallRun.minEntrySpeed, bidirectional: true, lateralDir: Vector3.forward);
+                    graph.AddEdge(exitNode, roofNodes[link.To], ParkourEdgeType.Run, 0f, bidirectional: true);
+                    break;
+                }
             }
         }
 

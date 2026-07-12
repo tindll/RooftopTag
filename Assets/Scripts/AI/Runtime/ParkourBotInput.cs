@@ -51,9 +51,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     [SerializeField] private float upwardClearance = 3f;
 
     // Wall-run edges need the bot to hug one side of the corridor for CharacterMotor's short-range
-    // side raycast to catch the wall at all — this offsets the steering target sideways along
-    // world X, which happens to be the Tag Arena's corridor cross-axis. Map-specific coupling,
-    // not a generic solution; fine for this one map, would need per-edge lateral metadata for others.
+    // side raycast to catch the wall at all. When the edge carries per-edge lateral metadata
+    // (edge.LateralDir), the bot offsets toward that KNOWN wall side; otherwise it falls back to a
+    // random-side world-X offset (the Tag Arena's corridor cross-axis, which has no metadata).
     [SerializeField] private float wallRunLateralOffset = 1.1f;
     [SerializeField] private float maxSteeringJitterDegrees = 30f;
 
@@ -260,7 +260,14 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             ParkourEdge edge = _path[_pathIndex];
             Vector3 toNodePos = _graph!.Nodes[edge.ToNode].Position;
             if (edge.Type == ParkourEdgeType.WallRun)
-                toNodePos += Vector3.right * (_wallRunSide * wallRunLateralOffset);
+            {
+                // Metadata present: hug the KNOWN wall side (dropping _wallRunSide — the wall is on a
+                // definite world side, so a random side would miss it). Zero LateralDir: legacy
+                // random-side world-X offset (Tag Arena corridor, which supplies no metadata).
+                toNodePos += edge.LateralDir.sqrMagnitude > 0.0001f
+                    ? edge.LateralDir * wallRunLateralOffset
+                    : Vector3.right * (_wallRunSide * wallRunLateralOffset);
+            }
 
             if (Vector3.Distance(transform.position, toNodePos) > nodeArrivalRadius)
                 return toNodePos;
