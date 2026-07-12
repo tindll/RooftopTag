@@ -23,6 +23,53 @@ public static class SceneStyler
         ApplyEnvironment(theme, sun);
         CreateHazePlanes(theme);
         CreatePostVolume(theme);
+        CreateSilhouettes(theme);
+    }
+
+    /// <summary>Far-city dressing outside the playable bounds (play area spans roughly
+    /// x/z -17..30): a ring of skyline blocks at radius 70+ and two crane silhouettes.
+    /// No colliders anywhere — pure backdrop.</summary>
+    public static void CreateSilhouettes(VisualThemeConfig theme)
+    {
+        var root = new GameObject("SilhouetteDressing");
+        var rng = new System.Random(1234); // fixed seed: identical on every rebuild
+
+        for (int i = 0; i < 14; i++)
+        {
+            float angle = i / 14f * Mathf.PI * 2f;
+            float radius = 70f + (float)rng.NextDouble() * 25f;
+            float height = 8f + (float)rng.NextDouble() * 22f;
+            float width = 6f + (float)rng.NextDouble() * 8f;
+            var center = new Vector3(Mathf.Cos(angle) * radius + 6f, height * 0.5f - 3f, Mathf.Sin(angle) * radius + 13f);
+            SilhouetteBox(root.transform, $"Skyline_{i}", center, new Vector3(width, height, width), theme);
+        }
+
+        CreateCrane(root.transform, new Vector3(45f, 0f, 40f), 28f, theme);
+        CreateCrane(root.transform, new Vector3(-40f, 0f, 55f), 24f, theme);
+    }
+
+    private static void CreateCrane(Transform parent, Vector3 basePos, float height, VisualThemeConfig theme)
+    {
+        var root = new GameObject("Crane");
+        root.transform.SetParent(parent, false);
+        SilhouetteBox(root.transform, "Mast", basePos + Vector3.up * (height * 0.5f), new Vector3(0.9f, height, 0.9f), theme);
+        Vector3 jibCenter = basePos + Vector3.up * height + new Vector3(7f, 0f, 0f);
+        SilhouetteBox(root.transform, "Jib", jibCenter, new Vector3(18f, 0.7f, 0.7f), theme);
+        SilhouetteBox(root.transform, "CounterJib", basePos + Vector3.up * height + new Vector3(-4f, 0f, 0f), new Vector3(6f, 0.7f, 0.7f), theme);
+        Vector3 cableTop = jibCenter + new Vector3(7f, 0f, 0f);
+        SilhouetteBox(root.transform, "Cable", cableTop + Vector3.down * 3f, new Vector3(0.12f, 6f, 0.12f), theme);
+        SilhouetteBox(root.transform, "Hook", cableTop + Vector3.down * 6.3f, new Vector3(0.6f, 0.6f, 0.6f), theme);
+    }
+
+    private static void SilhouetteBox(Transform parent, string name, Vector3 center, Vector3 size, VisualThemeConfig theme)
+    {
+        GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        go.name = name;
+        Object.DestroyImmediate(go.GetComponent<BoxCollider>());
+        go.transform.SetParent(parent, false);
+        go.transform.position = center;
+        go.transform.localScale = size;
+        go.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Silhouette);
     }
 
     /// <summary>Global URP volume: bloom (picks up tagger red / interactable orange / rim trims),
