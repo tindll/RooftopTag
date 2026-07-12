@@ -79,3 +79,12 @@ _*.xml
 Tools/selfplay.log
 Tools/selfplay-results.xml
 .superpowers/
+
+# Ad-hoc verification artifacts (any session)
+Tools/*.log
+Tools/*-results.xml
+Tools/build_*
+Tools/stdout_*
+Tools/*.out
+Tools/wait_and_verify_*
+Tools/regress_verify_summary.txt
