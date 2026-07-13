@@ -87,8 +87,8 @@ public static class PlaygroundBuilder
     // "Chase me" debug mode: 3 agents (player + 2 bot Taggers). The player is always a Runner
     // (see the default forcePlayerAsRunner=true on BuildTagArenaBootstrap below) so a human can
     // quickly playtest being chased without waiting on role RNG. Built on the same branching
-    // RooftopArena topology as BuildRooftopArena — see RooftopAgentCount there for the real
-    // 12-agent ruleset, which is now the main game scene.
+    // RooftopArena topology as BuildRooftopArena — see RooftopAgentCount there for the full
+    // 1v10 "chase me" ruleset, which is now the main game scene.
     private const int TagArenaAgentCount = 3;
 
     [MenuItem("RooftopTag/Build Tag Arena")]
@@ -128,11 +128,11 @@ public static class PlaygroundBuilder
     }
 
     private const string RooftopScenePath = "Assets/Scenes/RooftopArena.unity";
-    // The real 12-agent ruleset (2 Tagger / 10 Runner) per CLAUDE.md, not the "chase me" 3-agent
-    // mode — see TagArenaAgentCount above for that. This is the main game scene. Built on the
-    // branching RooftopArena topology (the old linear corridor had no branching, so a Runner
-    // could only go forward or get caught — self-play measured 0% Runner survival on it).
-    private const int RooftopAgentCount = 12;
+    // "Chase me" mode, scaled up: 1 human Runner + 10 bot Taggers hunting them (forcePlayerAsRunner
+    // below). This is the main game scene. Built on the branching RooftopArena topology (the old
+    // linear corridor had no branching, so a Runner could only go forward or get caught — self-play
+    // measured 0% Runner survival on it).
+    private const int RooftopAgentCount = 11;
 
     [MenuItem("RooftopTag/Build Rooftop Arena")]
     public static void BuildRooftopArena()
@@ -174,10 +174,9 @@ public static class PlaygroundBuilder
         for (int i = 0; i < botRoots.Length; i++)
             botRoots[i] = TagArenaMapGeometry.BuildAgentCapsule($"Bot_{i}", playerLayer, spawns[i + 1], new Color(0.6f, 0.6f, 0.6f));
 
-        // Player is assigned a role like any other agent — no "always-Runner human," matching the
-        // real 12-agent ruleset (unlike TagArena's 3-agent "chase me" debug scene, which keeps
-        // the default true).
-        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, forcePlayerAsRunner: false);
+        // Player is always the Runner, hunted by the 10 bot Taggers — same forced-runner "chase me"
+        // wiring as TagArena's 3-agent debug scene, just scaled up to the full 1v10 ruleset.
+        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, forcePlayerAsRunner: true);
 
         SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>(), sun);
 

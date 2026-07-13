@@ -112,6 +112,9 @@ public sealed class TagAgent : MonoBehaviour
     /// <summary>Raised on the agent that was just converted to Tagger.</summary>
     public event Action<TagAgent>? WasTagged;
 
+    /// <summary>Raised the moment a lunge actually fires (past cooldown/grace) — drives the dive-roll animation.</summary>
+    public event Action? Lunged;
+
     public void Configure(TagRulesConfig config, CharacterMotor motor, Renderer? bodyRenderer, bool isLocalPlayer, bool proceduralBody = true)
     {
         _config = config;
@@ -287,6 +290,7 @@ public sealed class TagAgent : MonoBehaviour
         float impulseMagnitude = _config.lungeBaseImpulse + _motor.CurrentSpeed * _config.lungeVelocityScale;
         _motor.AddImpulse(_motor.transform.forward * impulseMagnitude);
         _lungeCooldownRemaining = _config.lungeCooldown;
+        Lunged?.Invoke(); // drives the dive-roll animation on the model (no-op for the capsule fallback)
 
         // Dive gesture: both arms thrust fully forward and hold out through the lunge before easing
         // back — reads as a committed dive rather than the quick jab of a ranged tag reach. Skipped
@@ -405,7 +409,12 @@ public sealed class TagAgent : MonoBehaviour
 
     private void PerformTag(TagAgent other)
     {
-        other.SetRole(Role.Tagger, startGrace: true);
+        // The local human player is never converted to Tagger on tag — RoundController subscribes to
+        // WasTagged on the local player and ends the round with a "You lose" screen instead (see
+        // RoundController.PlayerCaught). Every other agent (bots, and the headless self-play harness,
+        // which has no local player at all) keeps the normal Runner->Tagger infection model.
+        if (!other._isLocalPlayer)
+            other.SetRole(Role.Tagger, startGrace: true);
         other.WasTagged?.Invoke(other);
         AudioSource.PlayClipAtPoint(GetBoopClip(), other.transform.position);
     }

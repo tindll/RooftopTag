@@ -3,6 +3,35 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## RooftopArena "chase me" mode: 1 human Runner vs 10 bot Taggers (2026-07-13)
+
+**Change:** reconfigured the main RooftopArena scene from the 12-agent (2-Tagger/10-Runner,
+player-assigned-role) ruleset into a 1v10 "chase me" mode. One human Runner is hunted by 10
+pest_control bot Taggers; the player is never infected, never converted.
+
+- **Roster:** `PlaygroundBuilder.RooftopAgentCount 12 -> 11` (1 player + 10 bots),
+  `BuildRooftopArena` bootstrap `forcePlayerAsRunner false -> true`, `TagRulesConfig.taggerCount
+  2 -> 10` (`runnerCount` left at 1, unused in logic). Scene rebuilt headless
+  (`BuildRooftopArena`). Verified: 11 agents = 10 taggers + 1 runner.
+- **Player tagged -> "You lose", no infection:** `TagAgent.PerformTag` skips the
+  `SetRole(Tagger)` conversion when the tagged agent `_isLocalPlayer` (still fires `WasTagged`);
+  `RoundController` subscribes the local player's `WasTagged` to a new `PlayerCaught()` that ends
+  the round with `_playerLost=true` + "You lose"; `DrawEndScreen` forces a LOSS read when
+  `_playerLost`. Reset in `StartRound`.
+- **Player fall -> respawn as Runner:** `RoundController` fall path forces `respawnRole = Runner`
+  for the local player (never converts them; non-local agents still convert = "map tags you").
+- **No tagger red glow:** `TagRulesConfig.taggerEmissiveIntensity 0.5 -> 0f`. Bots are rigged
+  (non-procedural), so `UpdateColor` leaves the pest_control texture untouched with 0 emission.
+- **Self-play safety:** every player rule is `_isLocalPlayer`-gated. Headless SelfPlayTests has no
+  local player, so infection is unchanged — 10-match batch: all "Taggers win! All runners tagged",
+  `runner_avg_survival=0.00`, identical to baseline. Also added a clamp in `AssignRoles`
+  (`effectiveTaggerCount = min(taggerCount, roster-1)` when forcing a Runner) so the shared
+  taggerCount=10 default doesn't sweep up the forced-Runner player on the 3-agent TagArena debug
+  scene — verified TagArena still spawns 2 taggers + 1 runner.
+
+**Status:** 49/49 PlayMode tests green. "You lose" screen + no-glow model are feel-test-pending
+(no automated coverage for IMGUI/visuals).
+
 ## Port: double-jump + tagger speed + rigged-character integration (2026-07-13)
 
 **Change:** ported two features from the `double-jump-roles` line onto main-game's reworked code.

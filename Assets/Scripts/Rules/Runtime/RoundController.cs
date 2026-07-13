@@ -31,6 +31,10 @@ public sealed class RoundController : MonoBehaviour
     private float _roundStartTime;
     private bool _roundOver;
     private string _resultMessage = "";
+    // Set only by PlayerCaught (local player tagged) — TagAgent.PerformTag never converts the local
+    // player to Tagger, so the normal "all runners tagged" win check can't fire for them; this forces
+    // DrawEndScreen to read as a loss regardless of the runnersWon/localWon role-based computation.
+    private bool _playerLost;
 
     public bool IsRoundOver => _roundOver;
     public string ResultMessage => _resultMessage;
@@ -51,6 +55,10 @@ public sealed class RoundController : MonoBehaviour
         if (isLocalPlayer)
         {
             _localPlayerAgent = agent;
+            // The local player is never converted to Tagger on tag (see TagAgent.PerformTag's
+            // _isLocalPlayer guard), so the "all runners tagged" win check in Update never fires for
+            // them — explicitly end the round here instead.
+            agent.WasTagged += PlayerCaught;
             SetupMinimap();
             SetupLungeSpinner();
         }
@@ -126,6 +134,7 @@ public sealed class RoundController : MonoBehaviour
         _roundStartTime = Time.time;
         _roundOver = false;
         _resultMessage = "";
+        _playerLost = false;
         AssignRoles();
     }
 
@@ -150,10 +159,19 @@ public sealed class RoundController : MonoBehaviour
         if (forceTagger) shuffled.Insert(0, _localPlayerAgent!);
         else if (forceRunner) shuffled.Add(_localPlayerAgent!);
 
+        // forceRunner always appends the player at the LAST index, so as long as taggerCount stays
+        // below the roster size the index-based isTagger check below naturally leaves them a Runner.
+        // But config.taggerCount is shared across every scene that builds via TagArenaBootstrap (no
+        // per-scene override) — the 10-tagger "chase me" default is correct for the 11-agent
+        // RooftopArena scene (index 10 falls outside 0..9), but on the 3-agent TagArena debug scene
+        // (index 2) it would blow straight past the roster and tag the "forced runner" player too.
+        // Clamp so a forced Runner is never swept up regardless of scene size.
+        int effectiveTaggerCount = forceRunner ? Mathf.Min(_config.taggerCount, shuffled.Count - 1) : _config.taggerCount;
+
         for (int i = 0; i < shuffled.Count; i++)
         {
             (Vector3 position, Quaternion rotation) = _spawnStates[shuffled[i]];
-            bool isTagger = i < _config.taggerCount;
+            bool isTagger = i < effectiveTaggerCount;
 
             // Found via self-play diagnostics: every single tag in a batch landed within ~8m of
             // spawn, all within a couple seconds of the round-start grace ending. Roles were
@@ -214,6 +232,9 @@ public sealed class RoundController : MonoBehaviour
                 // its role. If this converts the last Runner, the runnersRemaining == 0 check below
                 // ends the round this same frame with the existing "Taggers win" result.
                 Role respawnRole = agent.Role == Role.Runner ? Role.Tagger : agent.Role;
+                // The local player is never converted to Tagger, even by falling off the map —
+                // they just respawn as a Runner and keep playing (same no-infection rule as a tag).
+                if (agent == _localPlayerAgent) respawnRole = Role.Runner;
                 agent.Motor.ResetState(spawn.pos, spawn.rot);
                 // Brief grace on respawn so you don't reappear right into a tagger's reach (and, for a
                 // freshly-converted Runner, so the conversion telegraphs the same way a normal tag does).
@@ -252,6 +273,17 @@ public sealed class RoundController : MonoBehaviour
     {
         _roundOver = true;
         _resultMessage = message;
+    }
+
+    /// <summary>Fired on the local player's WasTagged event (see TagAgent.PerformTag, which never
+    /// converts the local player to Tagger) — ends the round immediately with a loss screen, since
+    /// the normal "all runners tagged" check in Update never fires with the player staying a Runner
+    /// forever.</summary>
+    private void PlayerCaught(TagAgent player)
+    {
+        if (_roundOver) return;
+        _playerLost = true;
+        EndRound("You lose");
     }
 
     // ---------------------------------------------------------------- HUD (IMGUI)
@@ -328,9 +360,11 @@ public sealed class RoundController : MonoBehaviour
     {
         bool runnersWon = _resultMessage.StartsWith("Runners");
         Color accent = runnersWon ? HudHorizon : _config.taggerColor;
-        bool localWon = _localPlayerAgent == null
-            ? runnersWon
-            : runnersWon == (_localPlayerAgent.Role == Role.Runner);
+        bool localWon = _playerLost
+            ? false
+            : _localPlayerAgent == null
+                ? runnersWon
+                : runnersWon == (_localPlayerAgent.Role == Role.Runner);
 
         const float w = 540f, h = 150f;
         var panel = new Rect((Screen.width - w) * 0.5f, Screen.height * 0.5f - 80f, w, h);
