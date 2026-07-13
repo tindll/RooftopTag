@@ -612,6 +612,51 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
+    public IEnumerator Vault_ExplicitPressFromStandstill()
+    {
+        // Feel-test regression: standing right at a low ledge and pressing E did nothing. The forward
+        // probe fired from chest height (~0.9m) and sailed clean over the wall's top, and even a wall
+        // it did see was blocked from a standstill by the 3 m/s auto gate. A deliberate E-press now
+        // vaults from near-stationary: ~0.6m from a 1.0m wall, essentially no speed, press E.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(6f, 1f, 6f));
+
+        const float wallHeight = 1.0f;
+        // Near face at z=0.6 (center z=1.1, thickness 1.0) — within the 1.0m forward reach but with a top
+        // at 1.0m that the knee ray passes under, so detection has to be generous to see it at all.
+        CreateWall(_sceneRoot.transform, new Vector3(0f, wallHeight * 0.5f, 1.1f), new Vector3(6f, wallHeight, 1f));
+        CreateGround(_sceneRoot.transform, new Vector3(0f, wallHeight + 0.5f, 4f), new Vector3(6f, 1f, 6f));
+
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(0f, 1.1f, 0f));
+        yield return WaitUntilGroundedOrTimeout(motor, 2f);
+
+        Assert.Less(motor.CurrentSpeed, 1f, "Precondition: should be essentially stationary at the ledge.");
+
+        // A nudge of forward intent plus the deliberate press — the explicit path clears the low speed
+        // gate. Without the press this stays put (the auto gate needs 3 m/s the standstill never reaches).
+        input.Move = new Vector2(0f, 1f);
+
+        bool sawVaulting = false;
+        float elapsed = 0f;
+        const float timeout = 1.5f;
+        while (elapsed < timeout)
+        {
+            input.PressInteract();
+            yield return new WaitForFixedUpdate();
+            elapsed += Time.fixedDeltaTime;
+
+            if (motor.CurrentState == MotorState.Vaulting) sawVaulting = true;
+            if (sawVaulting && motor.CurrentState == MotorState.Grounded && go.transform.position.z > 1.1f)
+                break;
+        }
+
+        Debug.Log($"METRIC vault_explicit_standstill saw_vaulting={sawVaulting} final_z={go.transform.position.z:0.00} state={motor.CurrentState}");
+        Assert.IsTrue(sawVaulting || go.transform.position.z > 1.1f,
+            "An explicit E-press at a low wall from near-standstill should vault up and over (pass through Vaulting, or end up grounded past the wall).");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
     public IEnumerator WallHook_BufferedInteractGrabsWhileFalling()
     {
         // Regression (reported): falling fast beside a wall, it was unclear when you could still grab

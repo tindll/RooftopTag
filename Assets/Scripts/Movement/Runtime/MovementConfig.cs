@@ -75,7 +75,20 @@ public sealed class MovementConfig : ScriptableObject
         public float mantleMaxHeight;
         public float vaultMaxHeight;
         public float vaultMinApproachSpeed;
+        // A deliberate (buffered E) vault needs only a nudge of speed, not a run-up: an explicit press
+        // at a ledge is clear intent, so it clears at this much lower speed than the automatic gate
+        // above. The automatic path (bots running a wall) keeps vaultMinApproachSpeed so incidental
+        // geometry taken at a jog doesn't auto-vault.
+        public float vaultMinExplicitSpeed;
+        // Explicit (buffered E) vaults reach below mantleMinHeight down to here, so a knee-high lip that
+        // the automatic path and the mantle both ignore still flows into a vault when you actually press
+        // E. The automatic path keeps its mantleMinHeight floor (walking over tiny lips triggers nothing).
+        public float vaultMinExplicitHeight;
         public float forwardCheckDistance;
+        // Height of a second, lower forward probe. The main probe fires from chest height (~0.9m) and
+        // sails clean over a low vault wall whose top sits below it; this knee-high ray catches those,
+        // so any wall from here up is detected. Nearest of the two hits wins.
+        public float lowProbeHeight;
         public float mantleDuration;
         public float vaultDuration;
     }
@@ -202,7 +215,10 @@ public sealed class MovementConfig : ScriptableObject
         mantleMaxHeight = 2.2f,
         vaultMaxHeight = 1.1f,
         vaultMinApproachSpeed = 3f,
-        forwardCheckDistance = 1f, // reach a bit further for the wall so E doesn't need you touching it
+        vaultMinExplicitSpeed = 0.5f,  // deliberate E-press vaults from near-standstill
+        vaultMinExplicitHeight = 0.3f, // ...and reaches down onto knee-high lips below mantle's minimum
+        forwardCheckDistance = 1f,     // reach a bit further for the wall so E doesn't need you touching it
+        lowProbeHeight = 0.25f,        // second forward ray height; catches low walls the chest ray passes over
 
         mantleDuration = 0.35f,
         vaultDuration = 0.22f,

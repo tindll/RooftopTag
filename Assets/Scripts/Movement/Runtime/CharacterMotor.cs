@@ -460,9 +460,20 @@ public sealed class CharacterMotor : MonoBehaviour
         // Project onto the slope so the resulting velocity follows the ramp's incline.
         Vector3 newVelocity = Vector3.ProjectOnPlane(newHorizontal, _ground.normal);
 
-        // Gravity's component along the slope: assists downhill, resists uphill, even when not sliding.
-        Vector3 slopeGravity = Vector3.ProjectOnPlane(Physics.gravity, _ground.normal);
-        newVelocity += slopeGravity * (config.ground.slopeGravityInfluence * dt);
+        // Gravity's component along the slope: assists downhill, resists uphill — but ONLY while
+        // actually moving or steering. Applied at rest it caused a real bug: near a ramp's SIDE
+        // edge the ground probe's spherecast can catch the corner and return a laterally-tilted
+        // normal, so this term gained a sideways component that was re-injected every tick — a
+        // continuous lateral push indistinguishable from a held A/D key ("standing on a ramp,
+        // tapping A/D, and it slides me clean off the side"). Standing still on a walkable slope
+        // (maxSlopeAngleDegrees gate) should hold you, edges included; the term's real job —
+        // downhill assist / uphill drag while running — only matters in motion, so gate it there.
+        bool hasInput = wishDir.sqrMagnitude > 0.0001f;
+        if (hasInput || newHorizontal.magnitude > 0.5f)
+        {
+            Vector3 slopeGravity = Vector3.ProjectOnPlane(Physics.gravity, _ground.normal);
+            newVelocity += slopeGravity * (config.ground.slopeGravityInfluence * dt);
+        }
 
         _rb.linearVelocity = newVelocity;
     }
@@ -683,9 +694,20 @@ public sealed class CharacterMotor : MonoBehaviour
 
         Vector3 feet = transform.position;
         Vector3 chestOrigin = feet + Vector3.up * (_defaultCapsuleHeight * 0.5f);
+        Vector3 kneeOrigin = feet + Vector3.up * config.mantleVault.lowProbeHeight;
 
-        if (!Physics.Raycast(chestOrigin, probeDir, out RaycastHit wallHit, config.mantleVault.forwardCheckDistance, wallMask, QueryTriggerInteraction.Ignore))
+        // Probe forward at two heights and take whichever hits nearest. The chest ray alone sails clean
+        // over a low vault wall whose top sits below it (so an E-press at a knee-high ledge whiffed); the
+        // knee ray catches those, while the chest ray still covers taller mantle/climb walls unchanged.
+        bool chestHit = Physics.Raycast(chestOrigin, probeDir, out RaycastHit chestWallHit, config.mantleVault.forwardCheckDistance, wallMask, QueryTriggerInteraction.Ignore);
+        bool kneeHit = Physics.Raycast(kneeOrigin, probeDir, out RaycastHit kneeWallHit, config.mantleVault.forwardCheckDistance, wallMask, QueryTriggerInteraction.Ignore);
+
+        if (!chestHit && !kneeHit)
             return false;
+
+        RaycastHit wallHit = !kneeHit || (chestHit && chestWallHit.distance <= kneeWallHit.distance)
+            ? chestWallHit
+            : kneeWallHit;
 
         if (CurrentSpeed < 0.1f && !_input.JumpHeld && !InteractBuffered)
             return false;
@@ -709,9 +731,17 @@ public sealed class CharacterMotor : MonoBehaviour
         // interact stranded them in the valley.
         if (cameraYaw != null && !InteractBuffered) return false;
 
-        // Vault takes priority in the overlap band: a low obstacle taken at speed is a vault,
-        // not a mantle. Mantle only wins there when approach speed is too low to vault.
-        if (ledgeHeight > 0f && ledgeHeight <= config.mantleVault.vaultMaxHeight && CurrentSpeed >= config.mantleVault.vaultMinApproachSpeed)
+        // Vault takes priority in the overlap band: a low obstacle taken at speed is a vault, not a
+        // mantle. Mantle only wins there when approach speed is too low to vault. A deliberate buffered
+        // E-press relaxes both gates — it clears at a much lower speed (explicit intent needs no run-up)
+        // and reaches below mantleMinHeight onto knee-high lips — while the automatic path (bots running
+        // a wall) keeps the original speed gate and mantleMinHeight floor, so incidental low geometry
+        // never auto-vaults.
+        bool explicitVault = InteractBuffered;
+        float vaultSpeedGate = explicitVault ? config.mantleVault.vaultMinExplicitSpeed : config.mantleVault.vaultMinApproachSpeed;
+        float vaultFloor = explicitVault ? config.mantleVault.vaultMinExplicitHeight : config.mantleVault.mantleMinHeight;
+
+        if (ledgeHeight >= vaultFloor && ledgeHeight <= config.mantleVault.vaultMaxHeight && CurrentSpeed >= vaultSpeedGate)
         {
             ConsumeInteract();
             StartVault(topHit.point, probeDir);
