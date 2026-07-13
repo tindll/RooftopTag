@@ -220,7 +220,15 @@ public sealed class RoundController : MonoBehaviour
                 agent.SetRole(respawnRole, startGrace: true);
             }
 
-            agent.Motor.ExternalSpeedMultiplier = agent.Role == Role.Tagger ? multiplier : 1f;
+            // Taggers get a flat base speed edge (taggerBaseSpeedMultiplier, ~1.04x) at ALL times, with
+            // the late-game curve (1 -> lateGameMax) multiplying on top — so ~1.04x early, up to
+            // ~1.04x * lateGameMax late. Runners stay 1x.
+            agent.Motor.ExternalSpeedMultiplier = agent.Role == Role.Tagger
+                ? _config.taggerBaseSpeedMultiplier * multiplier
+                : 1f;
+            // Runners get the double-jump; taggers do not. Player-triggered only — bots flee via the
+            // graph and never press jump mid-air, so this is a no-op for them.
+            agent.Motor.CanDoubleJump = agent.Role == Role.Runner;
             if (agent.Role == Role.Runner) runnersRemaining++;
         }
 

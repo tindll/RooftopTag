@@ -43,6 +43,8 @@ public sealed class TagRulesConfig : ScriptableObject
     public float tagReachMoving = 2.0f;
 
     [Header("Late-game tagger speed curve")]
+    /// <summary>Flat base speed edge taggers get at all times (a small pursuit advantage over runners). The late-game curve below multiplies on top of this, so taggers run at this early game and this * lateGameMaxSpeedMultiplier late.</summary>
+    public float taggerBaseSpeedMultiplier = 1.04f;
     public float lateGamePhaseDuration = 75f;
     public float lateGameMaxSpeedMultiplier = 1.10f;
 

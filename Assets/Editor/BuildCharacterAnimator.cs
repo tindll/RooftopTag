@@ -52,7 +52,8 @@ public static class BuildCharacterAnimator
         airTree.AddChild(Clip("Jump"), 3f);
 
         var sliding = Simple(sm, "Sliding", Clip("Running Slide"));
-        var wallRun = Simple(sm, "WallRunning", Clip("Wall Run"));
+        // Wall-run was removed from CharacterMotor on this line, so MotorState has no WallRunning value
+        // and everything from Mantling on shifted down by one — the Any() indices below match the live enum.
         var mantling = Simple(sm, "Mantling", Clip("Climbing Up Wall"));
         var vaulting = Simple(sm, "Vaulting", Clip("Climbing To Top"));
         vaulting.speed = 1.5f; // stand-in for a real vault — sped up so the climb reads as a quick hop
@@ -61,8 +62,8 @@ public static class BuildCharacterAnimator
         var swing = Simple(sm, "OnSwing", Clip("Rope Swinging"));
         var wallHook = Simple(sm, "WallHook", Clip("Rope Swinging")); // reuse hang pose
 
-        // Occasional flourish: a front flip that replaces the normal jump/fall pose while airborne,
-        // chosen at random by the bridge (which holds the Flipping bool for the clip's length).
+        // Front flip: replaces the normal jump/fall pose while airborne. Driven by CharacterAnimatorBridge,
+        // which sets the Flipping bool the moment a runner double-jumps (and holds it for the clip length).
         var frontFlip = Simple(sm, "FrontFlip", Clip("Front Flip"));
 
         sm.defaultState = grounded;
@@ -73,13 +74,12 @@ public static class BuildCharacterAnimator
         // Airborne only when NOT flipping; the flip owns the airborne window when rolled.
         AddAirborne(sm, airborne, flipping: false);
         AddAirborne(sm, frontFlip, flipping: true);
-        Any(sm, wallRun, 3);
-        Any(sm, mantling, 4);
-        Any(sm, vaulting, 5);
-        Any(sm, climbing, 6);
-        Any(sm, ladder, 7);
-        Any(sm, swing, 8);
-        Any(sm, wallHook, 9);
+        Any(sm, mantling, 3);
+        Any(sm, vaulting, 4);
+        Any(sm, climbing, 5);
+        Any(sm, ladder, 6);
+        Any(sm, swing, 7);
+        Any(sm, wallHook, 8);
 
         EditorUtility.SetDirty(ctrl);
         AssetDatabase.SaveAssets();
