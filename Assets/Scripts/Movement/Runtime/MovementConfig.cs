@@ -144,6 +144,16 @@ public sealed class MovementConfig : ScriptableObject
         // Max polar angle (degrees) the bob may reach, measured from straight-down. 90 = horizontal;
         // slightly above allows an aggressive rim without letting the bob pump up over the pivot.
         public float maxSwingAngleDegrees;
+
+        // Anti-exploit: force a momentum-true release once the swinger has hung this long, so a human
+        // can't grab the rope over the chasm and hang forever to the round timer. A chasm crossing is
+        // ~2-3s so this stays a strong escape; bots auto-release well before it (~1-2s).
+        public float maxHangSeconds;
+
+        // Anti-exploit: after any release, the swing branch can't be re-grabbed for this long, so a
+        // force-dropped/bailing player can't instantly re-grab the same rope and re-camp. Ladders are
+        // unaffected. During the cooldown the player falls into the chasm.
+        public float regrabCooldownSeconds;
     }
 
     public GroundSettings ground = new()
@@ -268,5 +278,7 @@ public sealed class MovementConfig : ScriptableObject
         jumpReleaseBonus = 1.5f,
         attachReleaseGraceSeconds = 0.15f,
         maxSwingAngleDegrees = 95f,
+        maxHangSeconds = 8f,
+        regrabCooldownSeconds = 1.5f,
     };
 }

@@ -82,6 +82,10 @@ public sealed class CharacterMotor : MonoBehaviour
     private Vector3 _swingVelocity;
     // Counts down after attach: during it, release input is ignored so the grab press can't instantly bail.
     private float _swingGrace;
+    // Time (s) spent on the current swing. Reset on attach, force-releases at config.swing.maxHangSeconds.
+    private float _swingElapsed;
+    // Time.time before which the swing branch of TryStartLadderOrSwingAttach is skipped (regrab cooldown).
+    private float _swingRegrabUntil;
 
     private float _airborneStartTime = float.NegativeInfinity;
     private float _lastSlideEndTime = float.NegativeInfinity;
@@ -164,6 +168,8 @@ public sealed class CharacterMotor : MonoBehaviour
         _currentSwing = null;
         _swingVelocity = Vector3.zero;
         _swingGrace = 0f;
+        _swingElapsed = 0f;
+        _swingRegrabUntil = 0f;
         _lastWallCollider = null;
 
         _capsule.height = _defaultCapsuleHeight;
@@ -1028,6 +1034,12 @@ public sealed class CharacterMotor : MonoBehaviour
 
         if (_swingGrace > 0f) return;
 
+        // Anti-exploit hang cap: once hung this long, force a momentum-true release (NO jump bonus) so a
+        // human can't grab the rope mid-chasm and hang forever to the round timer. Placed after the grace
+        // return so it can never fire on the attach frame. Bots auto-release well before this (~1-2s).
+        _swingElapsed += dt;
+        bool hangCapReached = _swingElapsed >= config.swing.maxHangSeconds;
+
         // Release: launch velocity is the swing velocity times releaseSpeedMultiplier (momentum-true).
         // E (Interact) = a flat momentum-true bail; Jump adds an upward boost for a higher arc — a
         // deliberate timing-reward distinction. Raw edge on both; the attach press can't double-fire
@@ -1036,15 +1048,17 @@ public sealed class CharacterMotor : MonoBehaviour
         // release, so it auto-releases the moment the swing would fling it toward the exit direction
         // and upward — an up-and-across launch that carries it over the chasm to the far platform.
         Vector3 releaseVel = _swingVelocity * config.swing.releaseSpeedMultiplier;
-        bool jumpRelease = _input.JumpPressed;
+        bool jumpRelease = _input.JumpPressed && !hangCapReached; // forced hang-cap drop is momentum-true
         bool botAutoRelease = cameraYaw == null && Vector3.Dot(releaseVel, _currentSwing.ExitDirection) > 5f && releaseVel.y > 1f;
-        if (jumpRelease || _input.InteractPressed || botAutoRelease)
+        if (jumpRelease || _input.InteractPressed || botAutoRelease || hangCapReached)
         {
             if (jumpRelease) releaseVel += Vector3.up * config.swing.jumpReleaseBonus;
             _rb.linearVelocity = releaseVel;
             _currentSwing.ReleaseClaim(this); // free the rope for the next user before clearing
             _currentSwing = null;
             _state = MotorState.Airborne;
+            // Anti-exploit regrab cooldown: no drop-and-instant-regrab cycling of the same rope.
+            _swingRegrabUntil = Time.time + config.swing.regrabCooldownSeconds;
             SwingReleased?.Invoke();
         }
     }
@@ -1064,10 +1078,12 @@ public sealed class CharacterMotor : MonoBehaviour
                 return true;
             }
 
-            if (_currentSwing is null && col.TryGetComponent(out ChainSwingInteractable swing))
+            if (_currentSwing is null && Time.time >= _swingRegrabUntil
+                && col.TryGetComponent(out ChainSwingInteractable swing))
             {
                 // One user per rope: if someone else holds this swing, skip it and keep scanning the
-                // other overlap results for a free swing/ladder.
+                // other overlap results for a free swing/ladder. Ladders are exempt from the regrab
+                // cooldown above — only the swing branch is gated.
                 if (!swing.TryClaim(this)) continue;
                 AttachToSwing(swing);
                 return true;
@@ -1095,6 +1111,7 @@ public sealed class CharacterMotor : MonoBehaviour
         Vector3 ropeDir = (transform.position - swing.PivotPosition).normalized;
         _swingVelocity = Vector3.ProjectOnPlane(_rb.linearVelocity, ropeDir);
         _swingGrace = config.swing.attachReleaseGraceSeconds;
+        _swingElapsed = 0f;
 
         _state = MotorState.OnSwing;
     }

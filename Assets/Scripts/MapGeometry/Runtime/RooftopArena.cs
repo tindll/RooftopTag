@@ -281,10 +281,15 @@ public static class RooftopArena
         Vector3 exitDir = new Vector3(to.Center.x - from.Center.x, 0f, to.Center.z - from.Center.z).normalized;
 
         // Overhead beam the chain hangs from — visual + a coarse blocker well above the play area.
-        TagArenaMapGeometry.CreateBox("SwingBeam", parent,
+        // Anti-exploit: rolled 60° about its long (z) axis so its top face tilts past ground.maxSlopeAngle
+        // (50°) → GroundDetector rejects it as standable → a pump-and-jump-release onto the beam slides off
+        // instead of granting an unreachable camp spot. The rope pivot/length above is a coordinate, not a
+        // child of this mesh, so rotating the beam does not move the swing.
+        GameObject swingBeam = TagArenaMapGeometry.CreateBox("SwingBeam", parent,
             new Vector3(pivot.x, pivot.y, pivot.z),
             new Vector3(1f, 0.3f, 12f),
             TagArenaMapGeometry.SurfaceRole.WallBody);
+        swingBeam.transform.rotation = Quaternion.Euler(0f, 0f, 60f);
 
         // The chain itself is drawn at runtime by ChainSwingInteractable's LineRenderer (which also
         // follows the swinger), so no static chain visual is emitted here — only the overhead beam.

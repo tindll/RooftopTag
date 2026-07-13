@@ -3,6 +3,51 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Swing exploit kill — hang cap + regrab cooldown + un-standable beam (2026-07-13)
+
+**Problem (owner-reported):** a Runner could grab the chasm swing rope and hang FOREVER (no timeout,
+no stamina, single-occupancy so a tagger can't share the rope, and a mid-air point over a 10m void is
+unreachable) → survive to the round timer → cheap win. Variant: pump + jump-release onto the SwingBeam
+(the rope's y9 anchor platform), which has no graph node (bots never pursue) and no roof edge to climb
+→ another unreachable camp spot.
+
+**Change (3 parts, one shared choke point each):**
+- **Hang cap.** `CharacterMotor.TickSwing`: new `_swingElapsed` accumulates after the `_swingGrace`
+  early-return (so it can never fire on the attach frame), reset to 0 in `AttachToSwing`/`ResetState`.
+  At `_swingElapsed >= config.swing.maxHangSeconds` (**new field, default 8f**) a momentum-true release
+  fires through the *existing* release block (releaseSpeedMultiplier, **no** jump bonus) so the claim
+  free + `SwingReleased` path can't leak. A human hanging forever is now force-dropped mid-chasm →
+  falls → `RoundController` converts them to Tagger → taggers win without ever reaching the rope. Bots
+  auto-release in ~1-2s, far under 8s, so they never hit it.
+- **Regrab cooldown.** New `_swingRegrabUntil` set to `Time.time + config.swing.regrabCooldownSeconds`
+  (**new field, default 1.5f**) on *every* release. `TryStartLadderOrSwingAttach` skips **only** the
+  swing branch while `Time.time < _swingRegrabUntil` (ladders unaffected). During 1.5s the player falls
+  ~11m — can't drop-and-instant-regrab the same rope. Bots unaffected (one grab per unidirectional
+  22→23 Swing edge; can't immediately re-cross anyway).
+- **Un-standable beam.** `RooftopArena.BuildSwing`: SwingBeam rolled 60° about its long (z) axis so its
+  top face tilts past `ground.maxSlopeAngleDegrees` (50°) → `GroundDetector` rejects it → a jump-release
+  onto it slides off. No graph node added (bots can't pump to y9). Rope pivot/length is a coordinate,
+  not a child of the beam mesh, so the rotation doesn't move the swing (verified: all swing tests green).
+
+**New test:** `MovementMetricsTests.Swing_HangCapForcesRelease_ThenRegrabCooldownBlocksReattach` — a
+local config with a 1s cap for speed: attach, press nothing → poll until force-released by the cap;
+then hammer Interact in range → assert NO re-attach inside the cooldown; wait out the cooldown → assert
+grab succeeds again.
+
+**Metrics:**
+- PlayMode: 42/42 passed (was 41/42, the 42nd being this new test).
+- Self-play regression gate (10 matches), before → after:
+  - before: `total_fallen=0 total_edge_attempts=[Jump=551, WallRun=37, Climb=245, Swing=298, Ladder=75]`
+  - after:  `total_fallen=0 total_edge_attempts=[Jump=604, Ladder=164, WallRun=19, Climb=184, Swing=105]`
+  - Gate PASS: Swing attempts still substantial (105, not ~0 — bots still cross swings); `total_fallen`
+    still 0 (no bot force-dropped — they auto-release well under the 8s cap). The Swing drop (298→105)
+    is within the large batch-to-batch stochastic variance seen across every edge type this run (Ladder
+    75→164, Climb 245→184, Run usage 89→54), not a crater.
+
+**Decision:** keep all three. `fallen=0` confirms bots are untouched. **Needs an in-editor feel-test**
+for the human-facing half: that the 8s hang force-drop feels fair (not a surprise yank mid-useful-swing)
+and that a jump-release genuinely slides off the rolled beam rather than catching an edge.
+
 ## M4 loop — runner flee overhaul (path-distance safe-node scoring) (2026-07-13)
 
 **Hypothesis:** the old `FleeGoalNode` was greedy straight-line (largest projection along flee dir)
