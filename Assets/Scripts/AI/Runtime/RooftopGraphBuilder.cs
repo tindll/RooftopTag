@@ -36,9 +36,8 @@ public static class RooftopGraphBuilder
                 {
                     // Only add the Jump edge if the character can actually make it, so pathfinding
                     // never routes a bot through a jump it can't clear (they'd sail into the void).
-                    Vector3 a = RooftopArena.Roofs[link.From].Walk;
-                    Vector3 b = RooftopArena.Roofs[link.To].Walk;
-                    if (JumpMakeable(a, b) && JumpMakeable(b, a))
+                    if (JumpMakeable(RooftopArena.Roofs[link.From], RooftopArena.Roofs[link.To])
+                        && JumpMakeable(RooftopArena.Roofs[link.To], RooftopArena.Roofs[link.From]))
                     {
                         // Con_ScafHi (idx24, x=-30 sizeX=10 -> x[-35,-25]) overlaps both Con_Deck
                         // (idx19, x[-30,-22]) and Con_Alley (idx23, x[-41,-33]) in plan view, so the
@@ -162,22 +161,34 @@ public static class RooftopGraphBuilder
     /// so this only warns; the edges are still emitted.</summary>
     private static void WarnIfRedundant(RooftopArena.LinkKind kind, RooftopArena.Roof from, RooftopArena.Roof to)
     {
-        if (JumpMakeable(from.Walk, to.Walk) && JumpMakeable(to.Walk, from.Walk))
+        if (JumpMakeable(from, to) && JumpMakeable(to, from))
         {
             Debug.LogWarning($"ROOFTOP_LINK_REDUNDANT: {kind} {from.Name}→{to.Name} is flat-jumpable — the special traversal is pointless; widen the gap or drop the link.");
         }
     }
 
-    /// <summary>Can a sprint jump get from <paramref name="from"/> to <paramref name="to"/>? Rough
-    /// model of the ~9.6m max sprint-jump: limited horizontal range, and jumping UP eats range/height
-    /// (you can gain ~2.5m at most), while dropping down buys a little extra range from the air time.</summary>
-    private static bool JumpMakeable(Vector3 from, Vector3 to)
+    /// <summary>Can a sprint jump clear the gap from <paramref name="from"/> to <paramref name="to"/>?
+    /// Measures the TRUE edge-to-edge gap — center distance minus each roof's half-extent projected
+    /// onto the horizontal link direction — NOT center-to-center. The roofs sit ~13m apart but are
+    /// ~8-12m wide, so the real gap a jumper crosses is only ~3-5m; the old center-to-center check
+    /// against a 9m cap wrongly rejected nearly every neighbour link and islanded the whole graph.
+    /// Model of the ~9.5m max sprint jump (jumpSpeed 6.5, sprint 8, fall x1.6 → ~2.15m apex, ~1.19s
+    /// air time): a 6.5m flat cap leaves margin for early takeoff/jitter and keeps the ~10m WallRun/
+    /// Swing chasms out; jumping UP is capped near the 2.2m apex, dropping buys a little extra range.</summary>
+    private static bool JumpMakeable(RooftopArena.Roof from, RooftopArena.Roof to)
     {
-        Vector3 flat = to - from;
+        Vector3 flat = to.Center - from.Center;
         flat.y = 0f;
         float dist = flat.magnitude;
-        float rise = to.y - from.y;
-        if (rise >= 0f) return dist <= 9f && rise <= 2.5f;
-        return dist <= 11f;
+        if (dist < 0.001f) return false;
+        Vector3 dir = flat / dist;
+        // Half-width of each axis-aligned roof box along the link direction (AABB support extent).
+        float extentFrom = 0.5f * (Mathf.Abs(dir.x) * from.SizeX + Mathf.Abs(dir.z) * from.SizeZ);
+        float extentTo = 0.5f * (Mathf.Abs(dir.x) * to.SizeX + Mathf.Abs(dir.z) * to.SizeZ);
+        float gap = dist - extentFrom - extentTo;
+
+        float rise = to.Center.y - from.Center.y;
+        if (rise >= 0f) return gap <= 6.5f && rise <= 2.2f;
+        return gap <= 8f; // a drop buys extra air time / horizontal range
     }
 }

@@ -3,6 +3,46 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## M4 loop — jump reachability / graph connectivity (2026-07-13)
+
+**Hypothesis:** the previous entry found the roof graph was disconnected — `JumpMakeable` measured
+roof *center-to-center* distance (~13m spacing) against its 9m-up / 11m-drop cap, dropping 30 of the
+~34 Jump links even though the true edge-to-edge gap between the 8-12m-wide roofs is only ~3-5m
+(easily sprint-jumpable). Every spawn roof was an island → `FindPath` always empty → beeline →
+`total_edge_usage=[]`. Measuring the TRUE gap should connect neighbours and unblock edge usage.
+
+**Change (`RooftopGraphBuilder.JumpMakeable`):** now takes the two `Roof` structs and measures
+`gap = centerDist − extentFrom − extentTo`, where each roof's facing half-extent is its axis-aligned
+box support width along the horizontal link direction `0.5·(|dir.x|·SizeX + |dir.z|·SizeZ)`. Caps
+calibrated to the motor's real jump (jumpSpeed 6.5, sprint 8, fall ×1.6 → ~2.15m apex, ~1.19s air,
+~9.5m flat range): **gap ≤ 6.5m** flat (margin under the physical max, keeps the ~10m WallRun/Swing
+chasms out), **rise ≤ 2.2m** (near apex), **gap ≤ 8m** for drops (extra air time). Added
+`RooftopGraphTests.Graph_AllRoofsReachableFromSpawn` (asserts every roof node reachable from node 0)
+as the island regression guard.
+
+**Skipped links: 30 → 0.** All neighbour Jump links now emit; graph fully connected (reachability
+test green). No link over-connected — the genuinely-far crossings were already typed WallRun/Swing/
+Ramp/Ladder, not Jump, so `JumpMakeable` never widens them.
+
+**Measured — before = routing-only (graph still disconnected), after = graph connected:**
+- before: `matches=10 runner_win_rate=0.00 runner_avg_survival=0.00 speed_p50=4.22 speed_p90=8.00 total_stuck=1 total_fallen=0 total_edge_usage=[] total_edge_attempts=[] max_distance_from_spawn=33.6`
+- after:  `matches=10 runner_win_rate=0.00 runner_avg_survival=0.00 speed_p50=8.00 speed_p90=8.00 total_stuck=8 total_fallen=0 total_edge_usage=[Jump=7, Run=4] total_edge_attempts=[Jump=586, Climb=152, WallRun=3] max_distance_from_spawn=44.9 jump_land_within_1.75m=0.27 jump_landing_err_avg=3.66`
+
+**Gates:** edge-usage NONZERO ✓ (`[]`→`[Jump=7, Run=4]`, attempts `[]`→`[Jump=586,…]`); no fall
+spike ✓ (`total_fallen=0`); `total_stuck`=0 ✗ (**8**); `runner_avg_survival` off 0.00 ✗ (still 0.00).
+
+**Decision:** graph-connectivity objective achieved — the parkour system is unblocked (586 jump
+attempts vs 0, bots sprint-traverse to the far map edge) and NOT over-connected (zero falls). The
+two remaining misses are downstream of this fix, not caused by it: (1) `total_stuck=8` — bots
+sprint-jump the ~5m gaps and overshoot (only 27% land within 1.75m, avg 3.66m error), wedging on far
+geometry; `ParkourBotInput.IsShortJumpEdge` gates walk-vs-sprint on `TagArenaLayout.PlatformLength`,
+the WRONG map's platform constant, so RooftopArena's gaps never read as "short" → always sprint →
+overshoot. (2) survival still 0.00 — the spawn-cascade / `FleeGoalNode` collapse is unchanged.
+Both are bot-EXECUTION/flee tuning, explicitly separate tasks. Committing the connectivity fix;
+NEXT task should fix jump-power selection for RooftopArena's true gaps (per-roof extent, not
+`TagArenaLayout.PlatformLength`) and the runner flee goal, which together should drop stuck→0 and
+move survival off 0.00.
+
 ## M4 loop — roof-identity routing (2026-07-13)
 
 **Hypothesis:** bots path with `ParkourGraph.NearestNode`, a raw 3D nearest-distance scan. In

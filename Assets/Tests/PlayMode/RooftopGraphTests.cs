@@ -34,6 +34,19 @@ public class RooftopGraphTests
     }
 
     [Test]
+    public void Graph_AllRoofsReachableFromSpawn()
+    {
+        // No island: every roof must be reachable from the spawn roof, or bots stranded on an
+        // islanded roof fall back to raw beeline steering (the disconnected-graph bug that gave
+        // total_edge_usage=[]). Roof index == graph node id by construction (RooftopGraphBuilder
+        // asserts it), so node 0 is Roof_Spawn and nodes 1..N-1 are the other roofs.
+        ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
+        for (int i = 1; i < RooftopArena.Roofs.Length; i++)
+            Assert.That(graph.FindPath(0, i), Is.Not.Null,
+                $"Roof {RooftopArena.Roofs[i].Name} (node {i}) is unreachable from spawn — graph island.");
+    }
+
+    [Test]
     public void Graph_RoutesThroughWallRun()
     {
         ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
