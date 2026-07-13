@@ -3,6 +3,47 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## M4 loop — roof-identity routing (2026-07-13)
+
+**Hypothesis:** bots path with `ParkourGraph.NearestNode`, a raw 3D nearest-distance scan. In
+`ParkourBotInput.Replan` start = NearestNode(self) and goal = NearestNode(predicted), where
+predicted is a noisy (≤12m extrapolation + ≤4m jitter) point. That noisy point snaps to the wrong
+roof (or the agent's own), so `startNode == goalNode` → `FindPath` returns `Array.Empty` → empty
+path → bots beeline straight at the target, fighting cliff-avoidance. Routing by roof IDENTITY
+(which physical roof footprint a position sits over) instead of proximity should give real
+cross-roof paths and produce nonzero edge usage.
+
+**Change:** added `RooftopArena.RoofIndexAt(Vector3)` (XZ-footprint scan over the 26 roofs, height
+tie-break for overlapping roofs; roof index == graph node id by construction, enforced with a new
+`Debug.Assert` in `RooftopGraphBuilder.Build`). `ParkourBotInput.Replan` now uses
+`RoofIndexAt(self)` for the start node and, for taggers, `RoofIndexAt(predicted) → RoofIndexAt(target)
+→ NearestNode(target)` for the goal (NearestNode only as the mid-air fallback). Added instant-repath
+on target roof change (cached `_lastTargetRoof`, one throttle-bypass per reaction window). Runner
+`FleeGoalNode` left as-is (its rewrite is a separate task) but now shares the roof-identity start node.
+
+**Measured (before == after — no delta):**
+- before (main): `matches=10 runner_win_rate=0.00 runner_avg_survival=0.00 total_stuck=0 total_fallen=0 total_edge_usage=[] total_edge_attempts=[]`
+- after (this branch): `matches=10 runner_win_rate=0.00 runner_avg_survival=0.00 total_stuck=1 total_fallen=0 total_edge_usage=[] total_edge_attempts=[]`
+
+**GATE FAILED — but root cause is upstream of routing, not the routing fix.** Instrumented
+`Replan` with a one-shot diagnostic: `RoofIndexAt` returns the correct roof for every agent every
+time (start nodes are right), yet paths are still empty. The reason is the graph itself is
+**disconnected**: `RooftopGraphBuilder` logs **30 `ROOFTOP_LINK_SKIPPED` warnings** — `JumpMakeable`
+measures roof *center-to-center* distance (13m, the roof spacing) against its 9m-up / 11m-drop cap,
+so nearly every Jump link fails and is dropped, even though the actual gap between the 8m-wide roofs
+is only ~5m (trivially sprint-jumpable). Every spawn roof (0,1,3,4,12,13) ends up an isolated island
+with no Jump edges, so `FindPath` returns null/empty regardless of how start/goal are chosen. No bot
+routing change can produce edge usage on a graph with almost no edges. (The lone stuck agent in
+match 6 is noise from a beeline collision, not the routing.)
+
+**Decision:** keep the roof-identity routing (correct, tested, and a prerequisite for edge usage
+once the graph connects) but STOP per LOOP.md — the edge-usage gate is blocked by a structural
+graph-connectivity bug, not tunable numbers. **Next task (out of this task's scope — "do NOT change
+graph node/edge construction"):** fix `RooftopGraphBuilder.JumpMakeable` to measure the true gap
+(center distance minus the two roofs' facing half-extents) instead of center-to-center, OR reduce
+roof spacing / add Ramp/Ladder links where the plan-view gap genuinely exceeds jump range. Until the
+graph connects, self-play edge usage on this map stays empty.
+
 ## Swing polish — follow rope visual, single occupancy, height cap (2026-07-12, same session)
 
 **Feel-test round 2:** rope visual never moves with the swinger (there was none — only an editor

@@ -410,6 +410,34 @@ public static class RooftopArena
         return pts;
     }
 
+    /// <summary>
+    /// Index into <see cref="Roofs"/> whose XZ footprint (Center ± Size/2) contains <paramref name="p"/>,
+    /// or -1 when p is over a chasm / mid-air. Roofs overlap in plan view (Con_ScafHi/Con_Deck/Con_Alley
+    /// — see RooftopGraphBuilder), so among containing roofs pick the highest one at or below the agent's
+    /// height (the roof actually stood on); first containing match if none sit at/below p.y.
+    /// Roof index == its parkour-graph node id by construction (RooftopGraphBuilder.Build adds roofs first).
+    /// </summary>
+    public static int RoofIndexAt(Vector3 p)
+    {
+        const float epsilon = 0.5f;
+        int best = -1;
+        float bestY = float.NegativeInfinity;
+        for (int i = 0; i < Roofs.Length; i++)
+        {
+            Roof r = Roofs[i];
+            if (Mathf.Abs(p.x - r.Center.x) > r.SizeX * 0.5f) continue;
+            if (Mathf.Abs(p.z - r.Center.z) > r.SizeZ * 0.5f) continue;
+
+            if (best == -1) best = i; // first-match fallback if none satisfy the height test
+            if (r.Center.y <= p.y + epsilon && r.Center.y > bestY)
+            {
+                bestY = r.Center.y;
+                best = i;
+            }
+        }
+        return best;
+    }
+
     /// <summary>The ladder link's bottom/top/outward, recomputed for the graph (matches BuildAndGetLadder).</summary>
     public static (Vector3 bottom, Vector3 top, Vector3 outward)? LadderLink()
     {

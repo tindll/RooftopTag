@@ -69,6 +69,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private float _nextDecisionTime;
     private MatchMetrics? _metrics;
 
+    // Tagger chase staleness: the roof the target was on at the last replan, plus a cooldown so a
+    // runner hugging a roof boundary (RoofIndexAt flip-flopping) can't spam throttle-bypass replans.
+    private int _lastTargetRoof = -1;
+    private float _nextBypassAllowedTime;
+
     // Jump-landing telemetry: capture the target node at takeoff, measure horizontal miss on landing.
     private bool _jumpInFlight;
     private Vector3 _jumpTargetPos;
@@ -133,7 +138,22 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             return;
         }
 
-        if (Time.time >= _nextDecisionTime)
+        bool timeToReplan = Time.time >= _nextDecisionTime;
+
+        // Force an immediate repath when the chased target hops to a different roof, rather than
+        // steering toward a stale roof until the reaction throttle next fires. Capped to one bypass
+        // per reaction window so a runner flip-flopping across a roof boundary can't spam replans.
+        if (!timeToReplan && _agent.Role == Role.Tagger && _target != null && Time.time >= _nextBypassAllowedTime)
+        {
+            int targetRoof = RooftopArena.RoofIndexAt(_target.transform.position);
+            if (targetRoof >= 0 && targetRoof != _lastTargetRoof)
+            {
+                timeToReplan = true;
+                _nextBypassAllowedTime = Time.time + Mathf.Max(_tuning.reactionTime, 0.05f);
+            }
+        }
+
+        if (timeToReplan)
         {
             _nextDecisionTime = Time.time + Mathf.Max(_tuning.reactionTime, 0.05f);
             Replan();
@@ -187,6 +207,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
         Vector3 predicted = PredictPosition(target);
         LastPredictedPoint = predicted;
+        _lastTargetRoof = RooftopArena.RoofIndexAt(target.transform.position);
 
         if (_graph == null)
         {
@@ -194,10 +215,25 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             return;
         }
 
-        int startNode = _graph.NearestNode(transform.position);
-        int goalNode = isTagger
-            ? _graph.NearestNode(predicted)
-            : FleeGoalNode(predicted, startNode);
+        // Route by roof IDENTITY, not raw 3D proximity: NearestNode snaps a noisy predicted point to
+        // the wrong roof (or the agent's own), yielding an empty path and a cross-roof beeline that
+        // fights cliff-avoidance. RoofIndexAt picks WHICH roof to path to; NearestNode is the mid-air
+        // fallback. The raw predicted point still drives the final-approach steer target unchanged.
+        int selfRoof = RooftopArena.RoofIndexAt(transform.position);
+        int startNode = selfRoof >= 0 ? selfRoof : _graph.NearestNode(transform.position);
+
+        int goalNode;
+        if (isTagger)
+        {
+            int goalRoof = RooftopArena.RoofIndexAt(predicted);
+            if (goalRoof < 0) goalRoof = RooftopArena.RoofIndexAt(target.transform.position);
+            goalNode = goalRoof >= 0 ? goalRoof : _graph.NearestNode(target.transform.position);
+        }
+        else
+        {
+            goalNode = FleeGoalNode(predicted, startNode);
+        }
+
         _path = _graph.FindPath(startNode, goalNode);
         _pathIndex = 0;
     }

@@ -20,7 +20,13 @@ public static class RooftopGraphBuilder
 
         var roofNodes = new int[RooftopArena.Roofs.Length];
         for (int i = 0; i < roofNodes.Length; i++)
+        {
             roofNodes[i] = graph.AddNode(RooftopArena.Roofs[i].Walk);
+            // Contract: roofs are added FIRST and AddNode assigns sequential ids, so a roof's index
+            // equals its graph node id. RooftopArena.RoofIndexAt returns that index directly as a node
+            // id — keep roofs first in Build or that mapping breaks.
+            Debug.Assert(roofNodes[i] == i, "Roof node id must equal roof index (RoofIndexAt depends on it).");
+        }
 
         foreach (RooftopArena.Link link in RooftopArena.Links)
         {
