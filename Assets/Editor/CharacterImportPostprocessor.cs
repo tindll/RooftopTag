@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -13,13 +12,6 @@ using UnityEngine;
 public sealed class CharacterImportPostprocessor : AssetPostprocessor
 {
     const string CharacterFolder = "Assets/Art/Characters";
-
-    // One canonical Humanoid avatar for the whole character set. The Tripo meshes author an A-pose,
-    // so letting each FBX build its own avatar (CreateFromThisModel) gave 17 disagreeing T-pose
-    // references and the Mixamo clips retargeted into flailing arms/legs. Instead: raccoon owns the
-    // avatar; every other model + every animation clip copies it, so all share one T-pose and
-    // retarget offset is zero. See FixCharacterRetarget for the one-shot menu that applies this.
-    const string CanonicalModel = CharacterFolder + "/Resources/raccoon.fbx";
 
     // Clips that should loop (continuous motion). Everything else stays one-shot (jump, landing,
     // mantle, vault). Keyed by FBX file name without extension.
@@ -48,31 +40,14 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
 
         var importer = (ModelImporter)assetImporter;
         importer.animationType = ModelImporterAnimationType.Human;
-
-        if (assetPath == CanonicalModel)
-        {
-            importer.avatarSetup = ModelImporterAvatarSetup.CreateFromThisModel;
-        }
-        else
-        {
-            // Copy the shared raccoon avatar so this FBX's clips retarget through one consistent
-            // T-pose. Fall back to CreateFromThisModel only if raccoon hasn't imported yet (a clean
-            // full reimport where order isn't guaranteed) — run Tools/RooftopTag/Fix Character Rig
-            // Retarget once afterwards to unify everything in the right order.
-            var source = AssetDatabase
-                .LoadAllAssetsAtPath(CanonicalModel)
-                .OfType<Avatar>()
-                .FirstOrDefault();
-            if (source != null)
-            {
-                importer.avatarSetup = ModelImporterAvatarSetup.CopyFromOther;
-                importer.sourceAvatar = source;
-            }
-            else
-            {
-                importer.avatarSetup = ModelImporterAvatarSetup.CreateFromThisModel;
-            }
-        }
+        // Each FBX builds its own Humanoid avatar. Copy-From-Other-Avatar is NOT usable here: the
+        // Tripo models and the Mixamo clips have different transform hierarchies (model root under
+        // 'Armature', each clip root under its own '<ClipName>' node), and copy requires an exact
+        // hierarchy match. Humanoid retarget bridges the difference through muscle space instead —
+        // provided each avatar's T-pose is correct. The flail comes from the Tripo MODELS importing
+        // in an A-pose; fix that per-model with Rig > Configure Avatar > Enforce T-Pose (the clips'
+        // Mixamo T-poses are already correct).
+        importer.avatarSetup = ModelImporterAvatarSetup.CreateFromThisModel;
 
         // Tripo embeds textures/materials inside the FBX; import them in-place (Unity 6 references the
         // embedded textures directly — "External" material location was removed). Extract via the
