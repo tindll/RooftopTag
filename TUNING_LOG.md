@@ -3,6 +3,51 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Tagger-proximity cue: quickening heartbeat + red vignette (2026-07-13)
+
+**Change:** a "danger closing in" cue for the LOCAL player while they're a Runner, all in
+`RoundController` (it already owns the local player, the agent list, and OnGUI). Nothing new touches
+bot AI, the graph, or swing rules.
+
+- **Distance → intensity.** New `UpdateProximityCue()` (called once at the end of `Update`) reuses the
+  existing `FindNearestOpposingAgent(_localPlayerAgent)` (a Runner's opposing role is Tagger) and maps
+  the distance to that nearest Tagger with `Mathf.InverseLerp(18f, 5f, dist)` → `_proximityIntensity`:
+  0 at/beyond 18m, ramping to 1 at/within 5m.
+- **Heartbeat (discrete, no loop).** New static-cached `GetHeartbeatClip()` synthesizes a two-beat
+  "lub-dub" — two short low pulses (~55Hz then ~40Hz) via the same phase-accumulated sine + `Pow(1-t,2)`
+  fast-decay envelope as `TagAgent.GetLandingThumpClip`, summed by a small `AddHeartPulse` helper.
+  Played by `AudioSource.PlayClipAtPoint` on a timer whose interval lerps `1.2s` (far) → `0.45s` (close);
+  skipped entirely at intensity 0. No synthesized loop (documented dead end) — one discrete clip
+  retriggered per beat.
+- **Vignette (IMGUI).** New `BuildVignetteTexture()` builds ONCE (lazily, inside the graphics-guarded
+  draw path) an inverted radial — transparent center ramping to opaque toward the edges, squared falloff
+  — via the same `SetPixels` approach as `BuildCircularMaskTexture`. `DrawProximityVignette()` (called
+  from `OnGUI`) draws it full-screen tinted red at `alpha = VignetteMaxAlpha(0.5) × intensity × pulse`,
+  where `pulse` peaks at 1 on each heartbeat and decays to a 0.3 floor over `0.45s` so the frame breathes
+  with the beat.
+
+**Gating (never fires in headless self-play):** `UpdateProximityCue` sets `_proximityIntensity = 0` then
+returns unless `_localPlayerAgent != null && Role == Runner && !IsInGrace` AND
+`SystemInfo.graphicsDeviceType != GraphicsDeviceType.Null` — the same local-player + graphics gate the
+minimap and tag-juice use. The vignette only draws when `_proximityIntensity > 0`, which that gate is the
+sole way to set, so the texture is never even built headless. All timers use `Time.unscaledTime` (like the
+tag flash) so the tag slow-mo doesn't distort the beat. `EndRound` resets intensity so the vignette can't
+bleed over the round-result screen.
+
+**Verification:** headless `BuildRooftopArena` — 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`. Full PlayMode
+suite: 42/42 green (unchanged). `Tools/selfplay.sh` —
+`METRIC selfplay_batch matches=10 runner_win_rate=0.00 runner_avg_survival=0.00 speed_p50=8.00
+speed_p90=8.07 total_stuck=1 total_fallen=0 ...` — matches=10 and total_fallen=0 confirm no headless
+leak; SelfPlayTests never registers a local player, so `UpdateProximityCue`/`DrawProximityVignette` are
+pure no-ops there. (`total_stuck=1` is a single stochastic bot-stuck event in one of the 10 matches, bot-AI
+noise — this change touches zero sim/bot code paths.)
+
+**Feel-test pending:** heartbeat cadence + volume (1.2s→0.45s interval, 0.6 volume), the two pulse
+frequencies (55/40Hz); vignette color (`(0.8, 0, 0)`) + alpha (max 0.5, 0.3 pulse floor); and the
+18m→5m intensity range — needs a live chased-Runner session to confirm it reads as tension without being
+obnoxious. Can't be screenshotted from a static scene load (no local player / no OnGUI HUD there), so
+verify by hand next editor session.
+
 ## Arm pose for OnSwing / OnLadder motor states (2026-07-13)
 
 **Change:** `TagAgent.Update`'s state-transition block (`Assets/Scripts/Rules/Runtime/TagAgent.cs` ~:206)

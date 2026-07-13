@@ -44,6 +44,25 @@ public sealed class RoundController : MonoBehaviour
     private const float TagFlashMaxAlpha = 0.6f;
     private float _tagFlashEndUnscaled = -1f;
 
+    // Tagger-proximity cue: a quickening heartbeat + a red IMGUI vignette that pulses as the nearest
+    // Tagger closes on the LOCAL player while they're a Runner. Every piece sits behind the same gate
+    // in UpdateProximityCue/DrawProximityVignette — local player exists, is a Runner, not in grace, and
+    // a real graphics device — so it never ticks in the bot-only headless self-play harness (the same
+    // _localPlayerAgent + graphics gate the minimap and tag-juice already use). All timers run on
+    // unscaled time (like the tag flash) so the tag slow-mo doesn't distort the beat.
+    private const float ProximityFarDistance = 18f;   // intensity 0 at/beyond this
+    private const float ProximityNearDistance = 5f;    // intensity 1 at/within this
+    private const float HeartbeatIntervalFar = 1.2f;   // seconds between beats at intensity → 0
+    private const float HeartbeatIntervalNear = 0.45f; // seconds between beats at intensity → 1
+    private const float HeartbeatPulseDecay = 0.45f;   // vignette alpha decays from a beat over this
+    private const float VignetteMaxAlpha = 0.5f;
+    private const int VignetteTextureSize = 256;
+    private float _proximityIntensity;
+    private float _nextHeartbeatUnscaled;
+    private float _lastHeartbeatUnscaled = -1f;
+    private Texture2D? _vignetteTexture;
+    private static AudioClip? _heartbeatClip;
+
     // Per-player tag counts for the summary screen. Incremented for every tag including
     // bot-on-bot in headless self-play — a plain dictionary increment is metric-neutral, so it
     // always runs rather than being gated on a local player.
@@ -320,19 +339,53 @@ public sealed class RoundController : MonoBehaviour
             // top of the map (matched by the -playerYaw offset rotation in DrawMinimap below).
             _minimapCamera.transform.rotation = Quaternion.Euler(90f, _localPlayerAgent.transform.eulerAngles.y, 0f);
         }
+
+        UpdateProximityCue();
     }
 
     private void EndRound(string message)
     {
         _roundOver = true;
         _resultMessage = message;
+        _proximityIntensity = 0f; // stop the vignette drawing over the round-result screen
+        _lastHeartbeatUnscaled = -1f;
         _autoRestartRemaining = AutoRestartDuration;
         _finalRoundLength = _config.roundDuration - Mathf.Max(_timeRemaining, 0f);
+    }
+
+    /// <summary>Local-player Runner proximity cue, ticked each frame from Update: maps the distance to
+    /// the nearest Tagger to a 0..1 intensity and plays a quickening two-beat heartbeat on a timer.
+    /// Fully gated — local player exists, is a Runner, not in grace, and a real graphics device — so it
+    /// never runs in the bot-only headless self-play harness (same gate the minimap uses). Sets
+    /// _proximityIntensity for DrawProximityVignette to read in OnGUI.</summary>
+    private void UpdateProximityCue()
+    {
+        _proximityIntensity = 0f;
+        if (_localPlayerAgent == null || _localPlayerAgent.Role != Role.Runner || _localPlayerAgent.IsInGrace) return;
+        if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return;
+
+        TagAgent? nearestTagger = FindNearestOpposingAgent(_localPlayerAgent); // Runner → nearest Tagger
+        if (nearestTagger == null) return;
+
+        float dist = Vector3.Distance(_localPlayerAgent.transform.position, nearestTagger.transform.position);
+        _proximityIntensity = Mathf.InverseLerp(ProximityFarDistance, ProximityNearDistance, dist); // 0 @18m → 1 @5m
+        if (_proximityIntensity <= 0f) return; // out of range — no beat, no vignette
+
+        // Heartbeat on a quickening timer: interval lerps 1.2s (far) → 0.45s (close). Discrete clip
+        // retriggered per beat — no looping (synthesized loops are a documented dead end here).
+        float now = Time.unscaledTime;
+        if (now >= _nextHeartbeatUnscaled)
+        {
+            AudioSource.PlayClipAtPoint(GetHeartbeatClip(), _localPlayerAgent.transform.position, 0.6f);
+            _lastHeartbeatUnscaled = now;
+            _nextHeartbeatUnscaled = now + Mathf.Lerp(HeartbeatIntervalFar, HeartbeatIntervalNear, _proximityIntensity);
+        }
     }
 
     private void OnGUI()
     {
         DrawTagConversionFlash();
+        DrawProximityVignette();
 
         const int pad = 12;
         var style = new GUIStyle(GUI.skin.label) { fontSize = 20, normal = { textColor = Color.white } };
@@ -417,6 +470,91 @@ public sealed class RoundController : MonoBehaviour
             normal = { textColor = new Color(1f, 1f, 1f, t) },
         };
         GUI.Label(new Rect(0, Screen.height / 2f - 120, Screen.width, 80), "YOU'RE IT", itStyle);
+    }
+
+    /// <summary>Red danger vignette drawn full-screen behind the HUD when a Tagger is closing on the
+    /// local Runner. Alpha = intensity × a pulse synced to the heartbeat (peaks on each beat, decays to
+    /// a floor between). _proximityIntensity is only ever &gt; 0 when UpdateProximityCue's local-player +
+    /// graphics gate passed this frame, so this never draws in headless self-play; the texture is built
+    /// lazily here, inside that guaranteed-graphics path (like the minimap's SetupMinimap textures).</summary>
+    private void DrawProximityVignette()
+    {
+        if (_proximityIntensity <= 0f) return;
+        _vignetteTexture ??= BuildVignetteTexture(VignetteTextureSize);
+
+        // Pulse: 1 right on a beat, decaying to a 0.3 floor over HeartbeatPulseDecay so the vignette
+        // breathes with the heartbeat rather than sitting flat.
+        float pulse = 0.3f;
+        if (_lastHeartbeatUnscaled >= 0f)
+            pulse = Mathf.Max(0.3f, 1f - (Time.unscaledTime - _lastHeartbeatUnscaled) / HeartbeatPulseDecay);
+
+        Color prev = GUI.color;
+        GUI.color = new Color(0.8f, 0f, 0f, VignetteMaxAlpha * _proximityIntensity * pulse);
+        GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), _vignetteTexture);
+        GUI.color = prev;
+    }
+
+    /// <summary>Inverted radial: transparent center ramping to opaque toward the edges (corners fully
+    /// opaque) with a squared falloff for a soft feathered ring — white, tinted red via GUI.color when
+    /// drawn. Same SetPixels approach as BuildCircularMaskTexture, built once and cached.</summary>
+    private static Texture2D BuildVignetteTexture(int size)
+    {
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        float radius = size * 0.5f;
+        const float innerFrac = 0.45f; // fully transparent within this fraction of the radius
+        Vector2 center = new(radius, radius);
+        var pixels = new Color[size * size];
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                float distNorm = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center) / radius;
+                float a = Mathf.Clamp01((distNorm - innerFrac) / (1f - innerFrac));
+                pixels[y * size + x] = new Color(1f, 1f, 1f, a * a); // squared → softer falloff toward the rim
+            }
+        }
+        tex.SetPixels(pixels);
+        tex.Apply();
+        return tex;
+    }
+
+    // ---------------------------------------------------------------- Heartbeat sound
+
+    /// <summary>Two-beat "lub-dub": two short low-frequency pulses (~55Hz then a lower ~40Hz), reusing
+    /// TagAgent's landing-thump synthesis shape (phase-accumulated sine, Pow(1-t,2) sharp-attack decay).
+    /// Static-cached like the other procedural clips; retriggered per beat by UpdateProximityCue — a
+    /// discrete clip, never a loop.</summary>
+    private static AudioClip GetHeartbeatClip()
+    {
+        if (_heartbeatClip != null) return _heartbeatClip;
+
+        const int sampleRate = 44100;
+        const float duration = 0.5f;
+        int sampleCount = Mathf.CeilToInt(sampleRate * duration);
+        var samples = new float[sampleCount];
+        AddHeartPulse(samples, sampleRate, startSec: 0f, lenSec: 0.14f, frequency: 55f, amplitude: 0.6f);   // "lub"
+        AddHeartPulse(samples, sampleRate, startSec: 0.16f, lenSec: 0.14f, frequency: 40f, amplitude: 0.45f); // "dub"
+
+        _heartbeatClip = AudioClip.Create("Heartbeat", sampleCount, 1, sampleRate, false);
+        _heartbeatClip.SetData(samples, 0);
+        return _heartbeatClip;
+    }
+
+    /// <summary>Mixes one low thump pulse into <paramref name="samples"/> at the given offset — same
+    /// phase-accumulated sine + fast-decay envelope as TagAgent.GetLandingThumpClip, summed in so the
+    /// two pulses can overlap cleanly.</summary>
+    private static void AddHeartPulse(float[] samples, int sampleRate, float startSec, float lenSec, float frequency, float amplitude)
+    {
+        int start = Mathf.RoundToInt(startSec * sampleRate);
+        int count = Mathf.RoundToInt(lenSec * sampleRate);
+        float phase = 0f;
+        for (int i = 0; i < count && start + i < samples.Length; i++)
+        {
+            float t = i / (float)count;
+            float envelope = Mathf.Pow(1f - t, 2f); // sharp attack, fast decay
+            phase += frequency / sampleRate;
+            samples[start + i] += Mathf.Sin(2f * Mathf.PI * phase) * envelope * amplitude;
+        }
     }
 
     // ---------------------------------------------------------------- Minimap
