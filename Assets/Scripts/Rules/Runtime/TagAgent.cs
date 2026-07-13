@@ -264,10 +264,11 @@ public sealed class TagAgent : MonoBehaviour
     {
         if (IsInGrace || _lungeCooldownRemaining > 0f)
         {
-            // Cooldown-only denial for an active Tagger — record it so the HUD spinner can flash.
-            // A Runner's dash has no cooldown gate to speak of here (see class summary), and a
-            // grace-window denial isn't "waiting on cooldown", so neither should trigger the spinner.
-            if (Role == Role.Tagger && !IsInGrace && _lungeCooldownRemaining > 0f)
+            // Cooldown-only denial — record it so the HUD spinner can flash. BOTH roles lunge now
+            // (Tagger = tag dive, Runner = escape dash) and both share the same cooldown gate above,
+            // so both deserve the feedback. A grace-window denial isn't "waiting on cooldown", so it
+            // stays silent.
+            if (!IsInGrace && _lungeCooldownRemaining > 0f)
                 LastDeniedLungeTime = Time.time;
             return;
         }

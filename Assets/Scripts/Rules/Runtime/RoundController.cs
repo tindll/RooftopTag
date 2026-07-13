@@ -630,11 +630,11 @@ public sealed class RoundController : MonoBehaviour
     // isLocalPlayer branch — bot-only self-play never has a local player, so it skips this entirely,
     // same as SetupMinimap.
 
-    private const int SpinnerFrameCount = 33; // frame i sweeps (i / 32) * 360° clockwise from 12 o'clock
+    private const int SpinnerFrameCount = 65; // frame i sweeps (i / 64) * 360° clockwise — 5.6° steps read as a smooth wipe
     private const int SpinnerTextureSize = 64;
     private const float SpinnerOuterRadius = 30f;
     private const float SpinnerInnerRadius = 22f;
-    private const float SpinnerOnScreenSize = 44f;
+    private const float SpinnerOnScreenSize = 34f; // sized down per feel-test — subtle, not a crosshair takeover
     private const float SpinnerDeniedWindow = 0.75f; // how long a single denied press stays visible
     private const float SpinnerFadeWindow = 0.25f;   // trailing portion of the window that eases out
 
@@ -662,7 +662,8 @@ public sealed class RoundController : MonoBehaviour
     private void DrawLungeSpinner()
     {
         if (_lungeSpinnerFrames == null || _localPlayerAgent == null) return;
-        if (_localPlayerAgent.Role != Role.Tagger) return;
+        // No role gate: both roles lunge now (Tagger tag-dive / Runner escape dash) on the same
+        // cooldown, so both get the denied-press spinner.
 
         float elapsed = Time.time - _localPlayerAgent.LastDeniedLungeTime;
         if (elapsed < 0f || elapsed >= SpinnerDeniedWindow) return;
@@ -684,9 +685,10 @@ public sealed class RoundController : MonoBehaviour
         GUI.color = new Color(1f, 1f, 1f, 0.18f * alphaFade);
         GUI.DrawTexture(rect, _lungeSpinnerFrames[SpinnerFrameCount - 1]);
 
-        // "Ready" flourish: cooldown finished inside the still-open denied window — full ring,
-        // brighter/greener, as an instant "go" cue instead of the amber wipe.
-        Color tint = ready ? new Color(0.55f, 1f, 0.55f, alphaFade) : new Color(1f, 0.85f, 0.4f, alphaFade);
+        // "Ready" flourish: cooldown finished inside the still-open denied window — full ring pops
+        // to bright white as the "go" cue; the progress wipe itself is a neutral grey (feel-test:
+        // the amber read as too loud against the golden-hour palette).
+        Color tint = ready ? new Color(1f, 1f, 1f, alphaFade) : new Color(0.85f, 0.85f, 0.85f, 0.9f * alphaFade);
         int frameIndex = Mathf.Clamp(Mathf.RoundToInt(fill * (SpinnerFrameCount - 1)), 0, SpinnerFrameCount - 1);
         GUI.color = tint;
         GUI.DrawTexture(rect, _lungeSpinnerFrames[frameIndex]);
@@ -696,8 +698,9 @@ public sealed class RoundController : MonoBehaviour
 
     /// <summary>Ring-shaped pie-wipe frame: filled between <paramref name="innerRadius"/> and
     /// <paramref name="outerRadius"/>, swept clockwise from 12 o'clock (0°) by <paramref
-    /// name="sweepDegrees"/>, both the angular edge and the radial band antialiased. Called 33 times
-    /// by <see cref="SetupLungeSpinner"/> to build the cached frame array, never per-OnGUI-call.</summary>
+    /// name="sweepDegrees"/>, both the angular edge and the radial band antialiased. Called
+    /// SpinnerFrameCount times by <see cref="SetupLungeSpinner"/> to build the cached frame array,
+    /// never per-OnGUI-call.</summary>
     private static Texture2D BuildSpinnerArcTexture(int size, float outerRadius, float innerRadius, float sweepDegrees)
     {
         var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
