@@ -110,6 +110,8 @@ public static class RooftopArena
         new(0, 12, LinkKind.Jump),
         new(1, 5, LinkKind.Jump),
         new(2, 6, LinkKind.Ramp),   // 3m up
+        new(0, 3, LinkKind.Ramp),   // 2m up, parallel to the existing 0<->3 Jump — Spawn's 12x12
+                                    // footprint gives the ramp foot 1.95m of margin past the gap
         new(3, 7, LinkKind.Jump),
         new(4, 5, LinkKind.Jump),
         new(5, 6, LinkKind.Jump),
@@ -141,6 +143,10 @@ public static class RooftopArena
         new(23, 24, LinkKind.Jump),
         new(17, 18, LinkKind.Ramp),  // Gate h4 -> Yard h1.5
         new(18, 21, LinkKind.Ramp),  // Yard h1.5 -> Crane h4.8, crane-access
+        new(20, 21, LinkKind.Ramp),  // Ramps h2.5 -> Crane h4.8: brand-new route, Ramps/Crane had
+                                     // no direct link before (only via Yard); 3.5m margin past the gap
+        new(23, 24, LinkKind.Ramp),  // Alley h2 -> ScafHi h4, parallel to the existing 23<->24 Jump —
+                                     // the 8x20 Alley gives the ramp foot 4.2m of margin past the gap
 
         // Jump across the ~4m E-W gap between W2 (x[-30,-22]) and Con_West (x[-42,-34]) at z0. Con_West
         // was pulled east (x-44 -> x-38) so this crossing is a plain sprint jump (rise -0.5, edge gap 4m)
@@ -195,12 +201,13 @@ public static class RooftopArena
 
         var ladders = new List<(Vector3, Vector3, Vector3)>();
         var swings = new List<(Vector3, float, Vector3)>();
+        var ramps = new List<(Vector3 foot, Vector3 top)>();
         foreach (Link link in Links)
         {
             switch (link.Kind)
             {
                 case LinkKind.Ramp:
-                    BuildRamp(root.transform, Roofs[link.From], Roofs[link.To]);
+                    ramps.Add(BuildRamp(root.transform, Roofs[link.From], Roofs[link.To]));
                     break;
                 case LinkKind.Ladder:
                     ladders.Add(LadderAnchors(Roofs[link.From], Roofs[link.To]));
@@ -219,6 +226,8 @@ public static class RooftopArena
                 // Jump links need no geometry — the gap between roofs IS the jump.
             }
         }
+
+        ValidateLadderRampClearance(ladders, ramps);
 
         // Physical props (AC units, vents) plus visual-only dressing — placement gated by the
         // nav-clearance rule so link corridors, graph anchors and spawn points stay free (see
@@ -301,7 +310,10 @@ public static class RooftopArena
             TagArenaMapGeometry.SurfaceRole.Interactable);
     }
 
-    private static void BuildRamp(Transform parent, Roof from, Roof to)
+    /// <summary>Builds the ramp geometry and returns its (foot, top) centre-line endpoints (XZ +
+    /// surface height) so <see cref="ValidateLadderRampClearance"/> can check it against ladder
+    /// lines without re-deriving the ramp math.</summary>
+    private static (Vector3 foot, Vector3 top) BuildRamp(Transform parent, Roof from, Roof to)
     {
         // The ramp's top face lands FLUSH at the upper roof's edge and starts FLUSH on the lower
         // roof's surface, extending back over the lower roof as far as a fixed comfortable slope
@@ -323,10 +335,14 @@ public static class RooftopArena
         Vector3 upperEdge = RectEdgePoint(upper, -dir);
         Vector3 top = new(upperEdge.x, upper.Center.y, upperEdge.z);
 
-        // Fixed ~30° grade: run = rise / tan(30°) ≈ rise * 1.73. Clamp so the ramp's foot stays
-        // over the lower roof (margin inside its far edge) — steeper than 30° only if the lower
-        // roof is too small to host the full run, which none of the current ramps hit.
-        const float maxSlopeRun = 1.732f; // 1/tan(30°)
+        // Fixed ~22° grade: run = rise / tan(22°) ≈ rise * 2.475. Shallower than the previous 30°
+        // (feel-test: 30° was noticeably harder to sprint up than the movement playground's ~22°
+        // corridor ramps, which walk up fine) — this is a geometry-only fix, no motor/slope-limit
+        // changes. Clamp so the ramp's foot stays over the lower roof (margin inside its far edge)
+        // — steeper than 22° only if the lower roof is too small to host the full run. Checked
+        // against every current ramp (2↔6, 17↔18, 18↔21, plus the new 0↔3, 20↔21, 23↔24 below):
+        // none hit the clamp, all six get the full 22° grade.
+        const float maxSlopeRun = 2.475f; // 1/tan(22°)
         float run = rise * maxSlopeRun;
         Vector3 footFlat = new Vector3(top.x, 0f, top.z) - dir * run;
         Vector3 lowerEdge = RectEdgePoint(lower, dir);
@@ -349,6 +365,52 @@ public static class RooftopArena
         box.transform.rotation = rot;
         box.transform.localScale = new Vector3(3f, thickness, span.magnitude);
         box.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Ramp);
+
+        return (foot, top);
+    }
+
+    /// <summary>Build-time sanity check: warns if any ramp's centre-line passes too close to a
+    /// ladder's climb line, so future map edits (new ramps, moved ladders) get caught here instead
+    /// of discovered as visible clipping in-editor. Ladder anchors share the same X/Z for bottom and
+    /// top (the ladder runs straight up a wall face — see <see cref="LadderAnchors"/>), so the
+    /// "ladder line" collapses to a single XZ point; the check is that point's distance to each
+    /// ramp's foot-to-top segment (also compared in XZ only, matching how both structures actually
+    /// occupy plan-view space). 1.5m is comfortably wider than a ramp's 3m-wide box's half-width
+    /// (1.5m) plus the ladder's own footprint, so anything under threshold is a real visual clip risk,
+    /// not a false positive from the check being overly strict.</summary>
+    private static void ValidateLadderRampClearance(
+        List<(Vector3 bottom, Vector3 top, Vector3 outward)> ladders,
+        List<(Vector3 foot, Vector3 top)> ramps)
+    {
+        const float minClearance = 1.5f;
+        foreach (var ladder in ladders)
+        {
+            foreach (var ramp in ramps)
+            {
+                float dist = DistancePointToSegmentXZ(ladder.bottom, ramp.foot, ramp.top);
+                if (dist < minClearance)
+                {
+                    Debug.LogWarning($"ROOFTOP_LADDER_RAMP_CLIP: ladder at ({ladder.bottom.x:F1}, " +
+                        $"{ladder.bottom.z:F1}) is {dist:F2}m from a ramp centre-line " +
+                        $"({ramp.foot} -> {ramp.top}) — under the {minClearance:F1}m clearance margin.");
+                }
+            }
+        }
+    }
+
+    /// <summary>XZ-plane distance from a point to a line segment (Y ignored). Local helper rather
+    /// than reusing RoofPropDresser.DistanceXZ to avoid a cross-class dependency for one small
+    /// geometry check.</summary>
+    private static float DistancePointToSegmentXZ(Vector3 point, Vector3 segA, Vector3 segB)
+    {
+        Vector2 p = new(point.x, point.z);
+        Vector2 a = new(segA.x, segA.z);
+        Vector2 b = new(segB.x, segB.z);
+        Vector2 ab = b - a;
+        float lenSq = ab.sqrMagnitude;
+        float t = lenSq > 1e-6f ? Mathf.Clamp01(Vector2.Dot(p - a, ab) / lenSq) : 0f;
+        Vector2 closest = a + ab * t;
+        return Vector2.Distance(p, closest);
     }
 
     /// <summary>Point where a ray from the roof's centre along <paramref name="dirFlat"/> (horizontal,
