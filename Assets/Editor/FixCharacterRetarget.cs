@@ -67,7 +67,7 @@ namespace Game.EditorTools
             {
                 if (AssetImporter.GetAtPath(path) is not ModelImporter mi) continue;
                 mi.animationType = ModelImporterAnimationType.Human;
-                mi.avatarSetup = ModelImporterAvatarSetup.CopyFromOtherAvatar;
+                mi.avatarSetup = ModelImporterAvatarSetup.CopyFromOther;
                 mi.sourceAvatar = sourceAvatar;
                 mi.SaveAndReimport();
                 fixedCount++;

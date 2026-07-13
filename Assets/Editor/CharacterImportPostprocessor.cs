@@ -65,7 +65,7 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
                 .FirstOrDefault();
             if (source != null)
             {
-                importer.avatarSetup = ModelImporterAvatarSetup.CopyFromOtherAvatar;
+                importer.avatarSetup = ModelImporterAvatarSetup.CopyFromOther;
                 importer.sourceAvatar = source;
             }
             else
