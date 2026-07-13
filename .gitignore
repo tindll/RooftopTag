@@ -88,3 +88,6 @@ Tools/stdout_*
 Tools/*.out
 Tools/wait_and_verify_*
 Tools/regress_verify_summary.txt
+
+# Unity test-framework scene artifacts (leak from interrupted PlayMode runs)
+Assets/InitTestScene*
