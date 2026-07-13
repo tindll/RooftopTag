@@ -3,6 +3,39 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Minimap: rotate-to-facing + edge-clamp off-range icons (2026-07-13)
+
+**Change:** `RoundController`'s minimap (`Update`'s minimap block ~:315-322, `DrawMinimap` ~:502-557,
+`DrawMinimapIcon` ~:568-582) turns with the local player instead of staying north-up, and off-range
+agents now clamp to the rim instead of disappearing:
+
+- **Rotate-to-facing.** Player yaw is read from `_localPlayerAgent.transform.eulerAngles.y` — the
+  same field already driving the local player's own triangle icon, and kept in sync with camera-look
+  by `CharacterMotor.UpdateFacing` (`faceDir = Vector3.ProjectOnPlane(cameraYaw.forward, Vector3.up)`
+  for the player branch), so it's the existing single source of truth for player facing, not a new
+  read path. `Update` now also sets `_minimapCamera.transform.rotation =
+  Quaternion.Euler(90f, playerYaw, 0f)` each frame the local player exists. `DrawMinimap` rotates each
+  agent's world XZ offset by `Quaternion.Euler(0f, -playerYaw, 0f)` before scaling to map space, so icon
+  positions match the rotated camera render; other-agent triangles draw at `agentYaw - playerYaw`; the
+  local player's own triangle is now a fixed `0f` (always points map-up, since the frame itself rotates).
+- **Edge-clamp.** The old `if (mapOffset.magnitude > MinimapSize * 0.5f) continue;` (culled off-range
+  agents entirely) is now a clamp: same threshold decides in-range vs. out, but an out-of-range icon's
+  `mapOffset` is renormalized to `clampRadius` (map radius minus one icon half-width, so a rim-pinned
+  blip stays fully inside the circle) and drawn at alpha 0.5 via a new optional `alpha` parameter on
+  `DrawMinimapIcon` (fades both the fill and its dark outline). In-range icons are unaffected.
+
+**Verification:** headless `BuildRooftopArena` — 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`. Full PlayMode
+suite: 42/42 green (unchanged). `Tools/selfplay.sh` —
+`METRIC selfplay_batch matches=10 runner_win_rate=0.00 runner_avg_survival=0.00 speed_p50=8.00
+speed_p90=8.00 total_stuck=0 total_fallen=0 ...` — both the camera-rotation set in `Update` and the
+`DrawMinimap` icon loop are gated on `_localPlayerAgent != null`, which SelfPlayTests' bot-only harness
+never sets, so this change touches zero headless code paths; the metric line is unaffected by the edit.
+
+**Feel-test pending:** run toward a landmark in-editor — it should stay pinned to the top of the map as
+you turn — and get an agent far enough away to clamp — its blip should sit dimmed at the rim rather than
+vanishing. `ScreenshotTool` only opens scenes in edit mode (no local player registered, no OnGUI HUD), so
+it can't render the minimap at all — skipped rather than a screenshot proving nothing.
+
 ## Tag-moment juice: slow-mo beat + conversion flash + audio stingers (2026-07-13)
 
 **Change:** three tag-moment feedback effects, ALL gated on local-player-involvement + graphics

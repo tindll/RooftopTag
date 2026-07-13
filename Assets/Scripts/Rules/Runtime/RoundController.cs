@@ -316,6 +316,9 @@ public sealed class RoundController : MonoBehaviour
         {
             Vector3 playerPos = _localPlayerAgent.transform.position;
             _minimapCamera.transform.position = new Vector3(playerPos.x, playerPos.y + MinimapCameraHeight, playerPos.z);
+            // Rotate-to-facing: the render turns with the player so their forward always faces the
+            // top of the map (matched by the -playerYaw offset rotation in DrawMinimap below).
+            _minimapCamera.transform.rotation = Quaternion.Euler(90f, _localPlayerAgent.transform.eulerAngles.y, 0f);
         }
     }
 
@@ -424,9 +427,10 @@ public sealed class RoundController : MonoBehaviour
     // circular clip, so a procedurally-generated circular mask is combined with the square render
     // via Graphics.Blit + MinimapCircleMask.shader into a genuinely alpha-transparent-cornered
     // composite texture before GUI.DrawTexture draws it — the corners blend into the 3D scene
-    // behind the HUD instead of showing a flat-colored square backdrop. North-up (fixed world
-    // rotation) in this pass — doesn't rotate to match player facing; a reasonable future
-    // refinement, not required here.
+    // behind the HUD instead of showing a flat-colored square backdrop. Rotate-to-facing: the
+    // camera (and each icon's map offset) turns with the local player, so their forward is always
+    // "up" on the map instead of a fixed north — see the rotation set in Update() and the
+    // -playerYaw offset rotation in DrawMinimap below.
     //
     // Built lazily here in RegisterAgent's isLocalPlayer branch rather than unconditionally in
     // Awake/Start: the self-play harness (SelfPlayTests.cs) runs full headless matches with only
@@ -472,7 +476,7 @@ public sealed class RoundController : MonoBehaviour
         _minimapCamera.targetTexture = _minimapRenderTexture;
         _minimapCamera.clearFlags = CameraClearFlags.SolidColor;
         _minimapCamera.backgroundColor = new Color(0.05f, 0.05f, 0.05f);
-        camGo.transform.rotation = Quaternion.Euler(90f, 0f, 0f); // straight down, north-up (no yaw)
+        camGo.transform.rotation = Quaternion.Euler(90f, 0f, 0f); // straight down; yaw is re-set every frame in Update() to match the local player's facing
 
         // Cached once — OnGUI runs at least twice per frame (Layout + Repaint), so regenerating
         // these via SetPixels/Apply on every call would be a real, avoidable cost.
@@ -516,27 +520,41 @@ public sealed class RoundController : MonoBehaviour
         }
 
         Vector3 playerPos = _localPlayerAgent.transform.position;
+        float playerYaw = _localPlayerAgent.transform.eulerAngles.y;
         float worldToMinimapScale = (MinimapSize * 0.5f) / MinimapOrthographicSize;
         Vector2 mapCenter = new(mapRect.x + mapRect.width * 0.5f, mapRect.y + mapRect.height * 0.5f);
+        // Icons half in/out of the circle read as cut off — clamp target radius stays one icon-radius
+        // inside the map's true edge so a rim-pinned blip stays fully visible.
+        float clampRadius = MinimapSize * 0.5f - MinimapIconSize * 0.5f;
 
-        // Local player marker — white triangle, oriented to facing, always at the map's center.
-        DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, mapCenter, _localPlayerAgent.transform.eulerAngles.y, Color.white);
+        // Local player marker — white triangle, always pointing map-up (the map itself rotates to
+        // match facing, per rotate-to-facing above), centered.
+        DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, mapCenter, 0f, Color.white);
 
         foreach (TagAgent agent in _agents)
         {
             if (agent == _localPlayerAgent) continue;
 
-            Vector3 offset = agent.transform.position - playerPos;
+            // Rotate the world-space offset into map space by -playerYaw so it matches the
+            // rotated camera render: with the player facing world yaw θ, an agent directly ahead
+            // of them should land at the top of the map regardless of θ.
+            Vector3 offset = Quaternion.Euler(0f, -playerYaw, 0f) * (agent.transform.position - playerPos);
             Vector2 mapOffset = new(offset.x * worldToMinimapScale, -offset.z * worldToMinimapScale);
-            if (mapOffset.magnitude > MinimapSize * 0.5f) continue; // outside visible range — no edge-clamp in this pass
+
+            // Edge-clamp: an off-range agent (outside the map's true radius, same threshold the old
+            // culling `continue` used) still shows as a blip pinned to the rim — at reduced alpha —
+            // instead of vanishing outright. In-range icons are untouched.
+            bool outOfRange = mapOffset.magnitude > MinimapSize * 0.5f;
+            if (outOfRange) mapOffset = mapOffset.normalized * clampRadius;
+            float iconAlpha = outOfRange ? 0.5f : 1f;
 
             Vector2 iconPos = mapCenter + mapOffset;
             bool isFriendly = agent.Role == _localPlayerAgent.Role;
 
             if (isFriendly)
-                DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, iconPos, agent.transform.eulerAngles.y, new Color(0.3f, 0.6f, 1f));
+                DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, iconPos, agent.transform.eulerAngles.y - playerYaw, new Color(0.3f, 0.6f, 1f), iconAlpha);
             else
-                DrawMinimapIcon(_minimapDotTexture!, _minimapDotOutlineTexture!, iconPos, 0f, new Color(1f, 0.25f, 0.2f));
+                DrawMinimapIcon(_minimapDotTexture!, _minimapDotOutlineTexture!, iconPos, 0f, new Color(1f, 0.25f, 0.2f), iconAlpha);
         }
 
         // Border ring drawn last, on top of everything — gives the map a clean frame instead of
@@ -546,16 +564,16 @@ public sealed class RoundController : MonoBehaviour
         GUI.color = Color.white;
     }
 
-    /// <summary>Draws a small dark outline copy underneath the colored icon so it stays legible against any background color the top-down render happens to show there.</summary>
-    private static void DrawMinimapIcon(Texture2D fillTexture, Texture2D outlineTexture, Vector2 center, float yawDegrees, Color color)
+    /// <summary>Draws a small dark outline copy underneath the colored icon so it stays legible against any background color the top-down render happens to show there. <paramref name="alpha"/> additionally fades the whole icon (outline included) — used to mark an edge-clamped, out-of-range blip as distinct from a normal in-range one.</summary>
+    private static void DrawMinimapIcon(Texture2D fillTexture, Texture2D outlineTexture, Vector2 center, float yawDegrees, Color color, float alpha = 1f)
     {
         Rect rect = new(center.x - MinimapIconSize * 0.5f, center.y - MinimapIconSize * 0.5f, MinimapIconSize, MinimapIconSize);
         Matrix4x4 savedMatrix = GUI.matrix;
         GUIUtility.RotateAroundPivot(yawDegrees, center);
 
-        GUI.color = new Color(0f, 0f, 0f, 0.85f);
+        GUI.color = new Color(0f, 0f, 0f, 0.85f * alpha);
         GUI.DrawTexture(rect, outlineTexture);
-        GUI.color = color;
+        GUI.color = new Color(color.r, color.g, color.b, color.a * alpha);
         GUI.DrawTexture(rect, fillTexture);
 
         GUI.matrix = savedMatrix;
