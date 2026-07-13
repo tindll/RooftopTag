@@ -3,6 +3,28 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Pause menu on Esc (2026-07-13)
+
+**Change:** `SettingsMenu` (already the F1 rebind/sensitivity overlay, attached live by both
+bootstraps) now also owns Escape as a pause menu: Resume / Restart round / Settings / Quit, backed
+by `Time.timeScale = 0/1`. Esc was previously read directly by `ThirdPersonCameraRig.LateUpdate` to
+free the cursor; that's removed — the rig now exposes `CursorUnlocked`/`SuppressAutoRelock` and
+`SettingsMenu` drives both while paused, so Escape is read in exactly one place and a click on a
+pause-menu button can't re-lock the cursor mid-click. `RoundController.StartRound()` made public
+for the Restart button; `PlaygroundBootstrap` (no round in that scene) passes a null
+`RoundController` through the new `SettingsMenu.Configure` parameter and Restart is disabled there.
+`Time.timeScale` is also force-restored to 1 in `SettingsMenu.OnDestroy` so a scene unload can never
+leave gameplay frozen.
+
+**Verification:** headless `BuildRooftopArena` — 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`. Full
+PlayMode suite green (see run below). `Tools/selfplay.sh` re-run to confirm SettingsMenu's absence
+from the bot-only self-play harness still holds (it never attaches there, so this change touches no
+metric).
+
+**Feel-test pending:** Esc-pause / cursor-stays-free-through-menu-clicks / resume-relocks-and-
+mouse-look-resumes is IMGUI mouse/cursor interaction — needs a manual in-editor check, can't be
+driven from a headless PlayMode test.
+
 ## Swing exploit kill — hang cap + regrab cooldown + un-standable beam (2026-07-13)
 
 **Problem (owner-reported):** a Runner could grab the chasm swing rope and hang FOREVER (no timeout,

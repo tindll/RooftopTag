@@ -55,7 +55,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         rig.Configure(playerMotor, mainCamera, cameraYawPivot, groundMask);
         roundController.SetCameraRig(rig);
 
-        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig);
+        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig, roundController);
 
         var bots = new System.Collections.Generic.List<ParkourBotInput>(botRoots.Length);
         foreach (GameObject botRoot in botRoots)

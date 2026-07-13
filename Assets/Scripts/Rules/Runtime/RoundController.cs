@@ -119,7 +119,7 @@ public sealed class RoundController : MonoBehaviour
 
     private void Start() => StartRound();
 
-    private void StartRound()
+    public void StartRound()
     {
         _timeRemaining = _config.roundDuration;
         _roundStartTime = Time.time;

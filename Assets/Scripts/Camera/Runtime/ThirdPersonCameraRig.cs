@@ -31,6 +31,19 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
 
     public Transform YawPivot => yawPivot!;
 
+    /// <summary>External cursor-unlock control. Escape used to be read directly in <see cref="LateUpdate"/>
+    /// to drive this; that's now owned exclusively by <c>SettingsMenu</c> (Esc = pause), which sets this
+    /// instead — so Escape is only ever read in one place.</summary>
+    public bool CursorUnlocked
+    {
+        get => _cursorUnlocked;
+        set => _cursorUnlocked = value;
+    }
+
+    /// <summary>Set true by the pause menu while it's open: blocks the auto-relock-on-click below so
+    /// clicking a pause-menu button doesn't yank the cursor back to locked mid-click.</summary>
+    public bool SuppressAutoRelock { get; set; }
+
     /// <summary>Live mouse-look sensitivity on this rig's own <see cref="CameraConfig"/> instance (each rig owns a fresh
     /// runtime instance, not a shared asset — see <see cref="Awake"/> — so mutating this is safe and takes effect immediately).</summary>
     public float MouseSensitivity
@@ -86,7 +99,8 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
         _yaw = transform.eulerAngles.y;
 
         // Lock the cursor to the game window so mouse-look doesn't drift the pointer off-screen (and
-        // start clicking Unity behind the game). Esc toggles it back out.
+        // start clicking Unity behind the game). SettingsMenu's pause menu (Esc) toggles it back out
+        // via CursorUnlocked.
         LockCursor(true);
     }
 
@@ -120,12 +134,11 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
 
     private void LateUpdate()
     {
-        // Esc frees the cursor; clicking back in re-locks it. We ENFORCE the desired state every frame
-        // — Unity can silently drop CursorLockMode on focus changes/recompiles, which let the pointer
-        // hit the screen edge and the mouse-delta stall out (the "can't turn past a wall" symptom).
-        if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
-            _cursorUnlocked = true;
-        if (_cursorUnlocked && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+        // Cursor free/locked is driven externally now (SettingsMenu owns Escape / pause). We ENFORCE
+        // the desired state every frame regardless — Unity can silently drop CursorLockMode on focus
+        // changes/recompiles, which let the pointer hit the screen edge and the mouse-delta stall out
+        // (the "can't turn past a wall" symptom).
+        if (_cursorUnlocked && !SuppressAutoRelock && Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
             _cursorUnlocked = false;
         LockCursor(!_cursorUnlocked);
 
