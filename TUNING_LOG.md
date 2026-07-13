@@ -3,6 +3,40 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Tag-moment juice: slow-mo beat + conversion flash + audio stingers (2026-07-13)
+
+**Change:** three tag-moment feedback effects, ALL gated on local-player-involvement + graphics
+present so none of them ever fire in the bot-only headless self-play harness:
+
+- **Slow-mo beat.** `TagAgent.PerformTag` now, when `_isLocalPlayer || other._isLocalPlayer` AND
+  `SystemInfo.graphicsDeviceType != Null`, calls new `RoundController.TriggerTagSlowMo()`: sets
+  `Time.timeScale = 0.35f` and records `Time.unscaledTime + 0.25s`. `RoundController.Update` restores
+  to `1f` on UNSCALED time (so it self-restores even at 0.35x). **Coexists with the pause menu's
+  timeScale ownership** (`SettingsMenu` sets `Time.timeScale = 0` while paused, 1 on resume):
+  `TriggerTagSlowMo` is a no-op when `Time.timeScale == 0` (won't fight a pause), and the Update
+  restore drops its claim without stomping if the pause menu froze timeScale mid-slow-mo — pausing wins.
+- **Conversion flash + "YOU'RE IT".** `RegisterAgent`'s isLocalPlayer branch subscribes to the local
+  agent's `WasTagged`; the handler arms a flash drawn in OnGUI (`DrawTagConversionFlash`): full-screen
+  `Texture2D.whiteTexture` tinted `conversionGraceColor`, alpha 0.6→0 over 0.4s unscaled, plus a big
+  centered "YOU'RE IT" that pops large and shrinks/fades. Subscription is local-only, so it never draws
+  in headless.
+- **Audio stingers (discrete clips, NO loops).** New static-cached clips built with the same
+  `AudioClip.Create` pattern as `GetBoopClip`: `GetConvertedClip` (two-tone DESCENDING blip, played in
+  `PerformTag` when `other._isLocalPlayer`) and `GetLungeWhooshClip` (rising pitch-SWEEP sine, played in
+  `TryLunge` when `_isLocalPlayer`). Both `PlayClipAtPoint` behind the exact `graphicsDeviceType != Null`
+  guard used by `OnLanded` (~:171).
+
+**Verification:** headless `BuildRooftopArena` — 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`. PlayMode suite
+42/42 green (unchanged). `Tools/selfplay.sh` — `METRIC selfplay_batch matches=10 ... speed_p50=8.00
+speed_p90=8.00 total_stuck=2 total_fallen=0 ...` — `matches=10`, `total_fallen=0`, and `speed_p50=8.00`
+(full movement speed, not a 0.35x-scaled value) confirm the juice is fully gated to the local player and
+never touches timeScale/audio/GUI in the bot-only harness — a headless timeScale leak would run matches
+at 0.35x and drop the speed percentiles / change the batch character.
+
+**Feel-test pending:** the slow-mo dip duration/scale, the flash color/alpha/"YOU'RE IT" pop, and the
+two synthesized stingers (converted blip + lunge whoosh) are all pure feel — need a manual in-editor
+human-played round to confirm they read well and are timed right.
+
 ## Round-end flow: auto-restart + per-player tag counts + summary screen (2026-07-13)
 
 **Change:** `RoundController` now closes the loop on a finished round:
