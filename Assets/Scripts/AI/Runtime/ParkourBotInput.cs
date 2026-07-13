@@ -38,10 +38,14 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     // with the old 1.3m; tightened so the bot commits nearer the edge and keeps its reach.
     [SerializeField] private float edgeLookahead = 0.6f;
 
-    // Below this empty-gap distance a sprint jump (~8.5m of range) overshoots the far platform into
-    // the next pit, so the bot approaches at walk speed (~4.4m range) instead — the M4 loop's
-    // "fails the first jump" (the 3m opening gap) was this fixed-power overshoot. Above it, sprint.
-    [SerializeField] private float shortJumpGapThreshold = 4.5f;
+    // Below this TRUE edge-to-edge gap a sprint jump (~9.5m range) would sail clean over the far
+    // roof into the next pit, so the bot approaches at walk speed (~4.4m range) instead. Above it,
+    // sprint — RooftopArena's gaps are ~3-5m with the far-roof CENTRE 7-9m out, which sprint reaches
+    // near-centre while walk falls short toward the near edge. (Was 4.5m against a bogus gap estimate
+    // that used TagArenaLayout.PlatformLength, the wrong map's constant, so every roof jump read as a
+    // 9m gap; now measured with the real per-roof gap. 1.5m ≈ where sprint range exceeds gap + an 8m
+    // roof, i.e. would overshoot the far edge.)
+    [SerializeField] private float shortJumpGapThreshold = 1.5f;
 
     // Cliff-avoidance tuning — see ChaseFleeBotInput's original fix notes: the raycast must cover
     // a band both above and below the bot's current height (ramps rise above a shallow check),
@@ -324,23 +328,28 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         Vector3 flat = new(toPoint.x, 0f, toPoint.z);
         Vector3 dir = flat.sqrMagnitude > 0.0001f ? flat.normalized : transform.forward;
 
-        float jitterDeg = (1f - _tuning.executionPrecision) * maxSteeringJitterDegrees;
+        // Difficulty jitter models imperfect PURSUIT (a bot that doesn't track you perfectly), but
+        // applying it while committing a jump/vault/swing just throws the takeoff/air-steer off and
+        // makes the bot miss the platform and wedge — self-sabotage, not skill. Commit gap crossings
+        // cleanly; the chase stays jittered on Run edges. This is what lifted landing accuracy.
+        float jitterDeg = IsCrossingGapEdge() ? 0f : (1f - _tuning.executionPrecision) * maxSteeringJitterDegrees;
         if (jitterDeg > 0.01f)
             dir = Quaternion.Euler(0f, Random.Range(-jitterDeg, jitterDeg), 0f) * dir;
 
         return dir;
     }
 
-    /// <summary>Cliff-avoidance is only wanted where solid ground is actually expected — suppress it while executing an edge that's a deliberate gap-crossing, or it would prevent the very jump the route calls for.</summary>
-    private Vector3 ApplySteeringSafety(Vector3 dir)
-    {
-        bool crossingGapIsExpected = _path != null && _pathIndex < _path.Count && _path[_pathIndex].Type
+    /// <summary>True while the current edge is a deliberate gap-crossing (jump/vault/wall-run/swing/
+    /// drop) — cliff-avoidance and steering jitter are both suppressed for these so the bot commits
+    /// the crossing cleanly instead of veering off or refusing the very jump the route calls for.</summary>
+    private bool IsCrossingGapEdge() =>
+        _path != null && _pathIndex < _path.Count && _path[_pathIndex].Type
             is ParkourEdgeType.Jump or ParkourEdgeType.SlideHop or ParkourEdgeType.WallRun
                or ParkourEdgeType.Vault or ParkourEdgeType.Mantle or ParkourEdgeType.Drop
                or ParkourEdgeType.Swing;
 
-        return crossingGapIsExpected ? dir : FindSafeDirection(dir);
-    }
+    /// <summary>Cliff-avoidance is only wanted where solid ground is actually expected — suppress it while executing an edge that's a deliberate gap-crossing, or it would prevent the very jump the route calls for.</summary>
+    private Vector3 ApplySteeringSafety(Vector3 dir) => IsCrossingGapEdge() ? dir : FindSafeDirection(dir);
 
     private void ExecuteEdgeButtons(Vector3 steeringDir)
     {
@@ -430,9 +439,10 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         ParkourEdge edge = _path[index];
         if (edge.Type != ParkourEdgeType.Jump) return false;
 
-        float centerDist = Vector3.Distance(_graph!.Nodes[edge.FromNode].Position, _graph.Nodes[edge.ToNode].Position);
-        float emptyGap = centerDist - TagArenaLayout.PlatformLength;
-        return emptyGap <= shortJumpGapThreshold;
+        // A Jump edge is always roof→roof, and roof node id == roof index by construction (see
+        // RooftopGraphBuilder's assert), so the edge's node ids index RooftopArena.Roofs directly.
+        float gap = RooftopArena.EdgeGap(RooftopArena.Roofs[edge.FromNode], RooftopArena.Roofs[edge.ToNode]);
+        return gap <= shortJumpGapThreshold;
     }
 
     /// <summary>Jump if the bot has effectively stopped while grounded — used at ledges to break a

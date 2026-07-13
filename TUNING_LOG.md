@@ -3,6 +3,57 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## M4 loop — jump power selection (real gap, not foreign platform constant) (2026-07-13)
+
+**Hypothesis:** `ParkourBotInput.IsShortJumpEdge` estimated the gap as `centerDist −
+TagArenaLayout.PlatformLength` (=4m, the WRONG map's platform length), so every roof jump read as a
+~9m gap → always sprint → overshoot the ~5m roof gaps (only 27% landed within 1.75m, avg err 3.66m,
+8 stuck). Fixing it to the real per-roof gap should let the bot walk-jump short gaps and land clean.
+
+**Change:** extracted `RooftopArena.EdgeGap(from,to)` (center distance minus each roof's facing
+half-extent along the link direction — the same true-gap the connectivity fix uses; `JumpMakeable`
+now reuses it too, de-duping). `IsShortJumpEdge` now uses `EdgeGap(Roofs[edge.FromNode],
+Roofs[edge.ToNode])` (a Jump edge is always roof→roof, node id == roof index by construction; the
+live TagArena scene also builds the RooftopArena graph — TagArenaBootstrap:40 — so this indexing is
+always valid). Threshold 4.5→1.5m (≈ where sprint range exceeds an 8m roof, i.e. would overshoot the
+far edge). Also suppressed steering jitter while committing a gap-crossing edge (extracted
+`IsCrossingGapEdge`, reused by cliff-avoidance too) — jitter models imperfect pursuit, not a reason
+to sabotage a committed jump.
+
+**Measured (before = connectivity fix; after = this):**
+- before: `total_stuck=8 total_fallen=0 total_edge_usage=[Jump=7, Run=4] jump_land_within_1.75m=0.27 jump_landing_err_avg=3.66`
+- after:  `total_stuck=4 total_fallen=0 total_edge_usage=[Jump=6, Run=32] total_edge_attempts=[Jump=612, Climb=97, WallRun=11, Swing=142] jump_land_within_1.75m=0.28 jump_landing_err_avg=3.52 max_distance_from_spawn=45.8`
+
+**Gates:** `total_fallen` low ✓ (0); edge usage nonzero/broadened ✓ (Run 4→32, attempts now span
+Jump/Climb/WallRun/Swing); `total_stuck` down 8→4 (noisy, not 0); `jump_land_within_1.75m` >0.6 ✗
+(0.28); `jump_landing_err_avg` <2.0 ✗ (3.52).
+
+**Diagnosed (instrumented, then reverted) — the accuracy gate is NOT reachable by jump-execution
+tuning:**
+- Takeoff telemetry: median takeoff angle **0°** at full sprint (8.0) — bots take off perfectly
+  aligned. Neither power selection nor jitter moved landing accuracy (0.27→0.31→0.30→0.28 across the
+  variants) because takeoffs were already clean.
+- The residual node-miss is (1) the frequent spawn-roof **3m-gap jumps whose far-roof centre is only
+  ~7.5m out** — sprint's ~9.5m range overshoots the node ~2m, and a walk jump (~4.4m) undershoots ~3m;
+  a **binary walk/sprint can't hit a 7.5m target** (needs ~6.3 m/s), so hitting node-centre would
+  require continuous takeoff-speed control (out of scope); (2) air-control 0.9 lets bots **air-steer
+  toward the moving runner** after clearing the gap, landing off-node **by design**; (3) it's all
+  measured in a 12-agent close-quarters cascade that collapses in ~13s with targets churning every
+  0.3s. Crucially `total_fallen=0` — jumps functionally land on roofs; node-distance is a poor skill
+  proxy in a chase scrum.
+- Stuck wedge locations (instrumented): 2 of 3 stuck bots were in **`Mantling`** state on roofs 1 & 3,
+  one a `Grounded` close-quarters stall on roof 4. The mantle stalls are bots looping against roof
+  **rims (`AddTopRim`) / props (`RoofPropDresser`)**, not a jump problem — a separate geometry/mantle-
+  execution snag.
+
+**Decision:** kept the power-selection fix (correct, requested, removes the cross-map constant bug,
+de-dups the gap math, broadened edge usage) and the jump-commit jitter suppression (correct behavior,
+harmless, will matter once runners spread). But the landing-accuracy / err gates are **blocked
+upstream**, not by jump execution: they need the flee/cascade fix (task A3, so bots do clean solo
+traversals instead of scrum jumps) and, for true node-centring, continuous takeoff-speed control.
+The remaining stuck is a mantle-vs-rim/prop geometry snag (separate fix), not jump power. STOPPING
+here per LOOP.md rather than tuning blind against a scrum-bound metric.
+
 ## M4 loop — jump reachability / graph connectivity (2026-07-13)
 
 **Hypothesis:** the previous entry found the roof graph was disconnected — `JumpMakeable` measured

@@ -177,16 +177,7 @@ public static class RooftopGraphBuilder
     /// Swing chasms out; jumping UP is capped near the 2.2m apex, dropping buys a little extra range.</summary>
     private static bool JumpMakeable(RooftopArena.Roof from, RooftopArena.Roof to)
     {
-        Vector3 flat = to.Center - from.Center;
-        flat.y = 0f;
-        float dist = flat.magnitude;
-        if (dist < 0.001f) return false;
-        Vector3 dir = flat / dist;
-        // Half-width of each axis-aligned roof box along the link direction (AABB support extent).
-        float extentFrom = 0.5f * (Mathf.Abs(dir.x) * from.SizeX + Mathf.Abs(dir.z) * from.SizeZ);
-        float extentTo = 0.5f * (Mathf.Abs(dir.x) * to.SizeX + Mathf.Abs(dir.z) * to.SizeZ);
-        float gap = dist - extentFrom - extentTo;
-
+        float gap = RooftopArena.EdgeGap(from, to);
         float rise = to.Center.y - from.Center.y;
         if (rise >= 0f) return gap <= 6.5f && rise <= 2.2f;
         return gap <= 8f; // a drop buys extra air time / horizontal range

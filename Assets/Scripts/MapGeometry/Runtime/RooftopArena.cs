@@ -438,6 +438,24 @@ public static class RooftopArena
         return best;
     }
 
+    /// <summary>Horizontal edge-to-edge gap between two roofs along their connecting line: center
+    /// distance minus each roof's half-extent projected onto the link direction (AABB support width
+    /// 0.5·(|dir.x|·SizeX + |dir.z|·SizeZ)). This is the actual empty space a jumper crosses — the
+    /// ~13m-spaced but ~8-12m-wide roofs leave only ~3-5m. Shared by the graph's JumpMakeable check
+    /// and the bot's walk-vs-sprint jump-power selection so both use the same true gap, not
+    /// center-to-center (which double-counts the roofs) nor a foreign map's platform constant.</summary>
+    public static float EdgeGap(Roof from, Roof to)
+    {
+        Vector3 flat = to.Center - from.Center;
+        flat.y = 0f;
+        float dist = flat.magnitude;
+        if (dist < 0.001f) return 0f;
+        Vector3 dir = flat / dist;
+        float extentFrom = 0.5f * (Mathf.Abs(dir.x) * from.SizeX + Mathf.Abs(dir.z) * from.SizeZ);
+        float extentTo = 0.5f * (Mathf.Abs(dir.x) * to.SizeX + Mathf.Abs(dir.z) * to.SizeZ);
+        return dist - extentFrom - extentTo;
+    }
+
     /// <summary>The ladder link's bottom/top/outward, recomputed for the graph (matches BuildAndGetLadder).</summary>
     public static (Vector3 bottom, Vector3 top, Vector3 outward)? LadderLink()
     {
