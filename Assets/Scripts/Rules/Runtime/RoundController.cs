@@ -283,7 +283,9 @@ public sealed class RoundController : MonoBehaviour
     {
         if (_roundOver) return;
         _playerLost = true;
-        EndRound("You lose");
+        // Headline already reads "YOU LOSE" (via _playerLost); give the banner a flavour subline
+        // instead of repeating the same words twice on the end screen.
+        EndRound("The chasers caught you");
     }
 
     // ---------------------------------------------------------------- HUD (IMGUI)
