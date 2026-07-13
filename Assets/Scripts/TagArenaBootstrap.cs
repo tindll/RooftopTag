@@ -74,8 +74,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         CharacterMotor playerMotor = playerRoot.AddComponent<CharacterMotor>();
         playerMotor.Configure(groundMask, wallMask, cameraYawPivot);
         TagAgent playerAgent = playerRoot.AddComponent<TagAgent>();
-        var (playerRenderer, playerProcedural) = AttachCharacterModel(playerRoot, "raccoon", playerMotor, animController);
+        var (playerRenderer, playerProcedural, playerBridge) = AttachCharacterModel(playerRoot, "raccoon", playerMotor, animController);
         playerAgent.Configure(tagConfig, playerMotor, playerRenderer, isLocalPlayer: true, proceduralBody: playerProcedural);
+        if (playerBridge != null) playerAgent.Lunged += playerBridge.TriggerDiveRoll;
         playerAgent.SetRoundController(roundController);
         roundController.RegisterAgent(playerAgent, isLocalPlayer: true);
 
@@ -92,8 +93,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
             CharacterMotor botMotor = botRoot.AddComponent<CharacterMotor>();
             botMotor.Configure(groundMask, wallMask, null);
             TagAgent botAgent = botRoot.AddComponent<TagAgent>();
-            var (botRenderer, botProcedural) = AttachCharacterModel(botRoot, "pest_control", botMotor, animController);
+            var (botRenderer, botProcedural, botBridge) = AttachCharacterModel(botRoot, "pest_control", botMotor, animController);
             botAgent.Configure(tagConfig, botMotor, botRenderer, isLocalPlayer: false, proceduralBody: botProcedural);
+            if (botBridge != null) botAgent.Lunged += botBridge.TriggerDiveRoll;
             botAgent.SetRoundController(roundController);
             botInput.Configure(botAgent, roundController, graph, botConfig, difficulty);
             roundController.RegisterAgent(botAgent, isLocalPlayer: false);
@@ -130,14 +132,14 @@ public sealed class TagArenaBootstrap : MonoBehaviour
     /// telling it to skip its procedural capsule presentation. Falls back to the existing capsule
     /// (procedural = true) if the model or controller assets are missing, so the game still runs.
     /// </summary>
-    private (Renderer? renderer, bool procedural) AttachCharacterModel(
+    private (Renderer? renderer, bool procedural, CharacterAnimatorBridge? bridge) AttachCharacterModel(
         GameObject root, string resourceName, CharacterMotor motor, RuntimeAnimatorController? controller)
     {
         var prefab = Resources.Load<GameObject>(resourceName);
         if (prefab == null || controller == null)
         {
             Debug.LogWarning($"Character model '{resourceName}' or CharacterAnimator not found in Resources — using capsule.");
-            return (root.GetComponentInChildren<Renderer>(), true);
+            return (root.GetComponentInChildren<Renderer>(), true, null);
         }
 
         GameObject model = Instantiate(prefab, root.transform);
@@ -162,8 +164,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         Animator animator = model.GetComponentInChildren<Animator>();
         animator.runtimeAnimatorController = controller;
         animator.applyRootMotion = false;
-        root.AddComponent<CharacterAnimatorBridge>().Configure(motor, animator);
+        var bridge = root.AddComponent<CharacterAnimatorBridge>();
+        bridge.Configure(motor, animator);
 
-        return (model.GetComponentInChildren<SkinnedMeshRenderer>(), false);
+        return (model.GetComponentInChildren<SkinnedMeshRenderer>(), false, bridge);
     }
 }

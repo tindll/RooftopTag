@@ -17,16 +17,21 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     private static readonly int MotorStateId = Animator.StringToHash("MotorState");
     private static readonly int AirDivingId = Animator.StringToHash("AirDiving");
     private static readonly int FlippingId = Animator.StringToHash("Flipping");
+    private static readonly int DivingId = Animator.StringToHash("Diving");
 
     // How long to hold the Flipping bool once a double-jump fires (a touch under the clip length so
     // it clears before landing). The flip now means exactly "double-jumped", not a random roll.
     private const float FlipHoldSeconds = 0.8f;
+    // How long to hold the Diving bool after a lunge, so the dive-roll clip plays through.
+    private const float DiveHoldSeconds = 0.7f;
 
     private CharacterMotor _motor = null!;
     private Animator _animator = null!;
 
     private bool _flipping;
     private float _flipTimer;
+    private bool _diving;
+    private float _diveTimer;
 
     public void Configure(CharacterMotor motor, Animator animator)
     {
@@ -49,6 +54,13 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         _flipTimer = FlipHoldSeconds;
     }
 
+    /// <summary>Play the dive-roll clip; called by TagAgent the moment a lunge fires.</summary>
+    public void TriggerDiveRoll()
+    {
+        _diving = true;
+        _diveTimer = DiveHoldSeconds;
+    }
+
     private void Update()
     {
         if (_motor == null || _animator == null) return;
@@ -61,11 +73,17 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
             if (_flipTimer <= 0f || state == MotorState.Grounded)
                 _flipping = false;
         }
+        if (_diving)
+        {
+            _diveTimer -= Time.deltaTime;
+            if (_diveTimer <= 0f) _diving = false;
+        }
 
         _animator.SetFloat(SpeedId, _motor.CurrentSpeed);
         _animator.SetFloat(VerticalSpeedId, _motor.Velocity.y);
         _animator.SetInteger(MotorStateId, (int)state);
         _animator.SetBool(AirDivingId, _motor.AirDiving);
         _animator.SetBool(FlippingId, _flipping);
+        _animator.SetBool(DivingId, _diving);
     }
 }

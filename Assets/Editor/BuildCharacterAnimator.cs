@@ -33,6 +33,7 @@ public static class BuildCharacterAnimator
         ctrl.AddParameter("MotorState", AnimatorControllerParameterType.Int);
         ctrl.AddParameter("AirDiving", AnimatorControllerParameterType.Bool);
         ctrl.AddParameter("Flipping", AnimatorControllerParameterType.Bool);
+        ctrl.AddParameter("Diving", AnimatorControllerParameterType.Bool);
 
         var sm = ctrl.layers[0].stateMachine;
 
@@ -66,10 +67,28 @@ public static class BuildCharacterAnimator
         // which sets the Flipping bool the moment a runner double-jumps (and holds it for the clip length).
         var frontFlip = Simple(sm, "FrontFlip", Clip("Front Flip"));
 
+        // Dive roll: a tagger's committed lunge. Driven by the bridge's Diving bool (held for the clip
+        // length) so the grounded/airborne AnyState transitions can't yank it back mid-roll.
+        var diveRoll = Simple(sm, "DiveRoll", Clip("Dive Roll"));
+
         sm.defaultState = grounded;
 
+        // Dive roll owns the moment whenever Diving is set, over any locomotion state.
+        var diveT = sm.AddAnyStateTransition(diveRoll);
+        diveT.hasExitTime = false;
+        diveT.duration = 0.05f;
+        diveT.canTransitionToSelf = false;
+        diveT.AddCondition(AnimatorConditionMode.If, 0, "Diving");
+
         // AnyState → each state, selected by the MotorState int (see MotorState enum order).
-        Any(sm, grounded, 0);
+        // Grounded also requires NOT diving so the dive roll isn't interrupted while on the ground.
+        var groundT = sm.AddAnyStateTransition(grounded);
+        groundT.hasExitTime = false;
+        groundT.duration = 0.08f;
+        groundT.canTransitionToSelf = false;
+        groundT.AddCondition(AnimatorConditionMode.Equals, 0, "MotorState");
+        groundT.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
+
         Any(sm, sliding, 1);
         // Airborne only when NOT flipping; the flip owns the airborne window when rolled.
         AddAirborne(sm, airborne, flipping: false);
