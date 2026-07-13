@@ -33,6 +33,7 @@ public sealed class CharacterMotor : MonoBehaviour
     private float _lastGroundedTime = float.NegativeInfinity;
     private float _jumpBufferDeadline = float.NegativeInfinity;
     private bool _airDiveUsed; // one air-dive per airborne period (reset on the ground)
+    private bool _doubleJumpUsed; // one mid-air double-jump per airborne period (reset on the ground)
 
     // Separate from _lastGroundedTime, which refreshes every grounded tick (so gating a bunny-hop
     // window on it would be true almost always while standing still) — this is set once, exactly
@@ -101,6 +102,7 @@ public sealed class CharacterMotor : MonoBehaviour
 
     public event Action? Landed;
     public event Action? Jumped;
+    public event Action? DoubleJumped;
     public event Action<Vector3>? WallRunStarted;
     public event Action? WallRunEnded;
     public event Action? MantleStarted;
@@ -119,6 +121,9 @@ public sealed class CharacterMotor : MonoBehaviour
     /// knowing anything about tagging. Defaults to 1 (no effect).
     /// </summary>
     public float ExternalSpeedMultiplier { get; set; } = 1f;
+
+    /// <summary>When true, a mid-air jump press triggers one double-jump per airborne period (runners only; Game.Rules sets this per role). Role-agnostic here — the motor knows nothing about tagging.</summary>
+    public bool CanDoubleJump { get; set; } = false;
 
     /// <summary>Generic world-space velocity impulse — a hook for systems outside movement (e.g. a tag lunge) to affect the Rigidbody without reaching into its internals.</summary>
     public void AddImpulse(Vector3 worldImpulse) => _rb.linearVelocity += worldImpulse;
@@ -251,6 +256,7 @@ public sealed class CharacterMotor : MonoBehaviour
 
         _lastGroundedTime = Time.time;
         _airDiveUsed = false; // back on the ground — air-dive is available again next time you're airborne
+        _doubleJumpUsed = false; // ...and the double-jump recharges on the ground too
 
         if (TryStartLadderOrSwingAttach()) return;
         if (TryMantleOrVaultOrClimb()) return;
@@ -268,7 +274,7 @@ public sealed class CharacterMotor : MonoBehaviour
 
         if (ConsumeBufferedJump())
         {
-            PerformJump(1f);
+            PerformJump(1f, config.jump.jumpSpeed);
             return;
         }
 
@@ -338,7 +344,7 @@ public sealed class CharacterMotor : MonoBehaviour
         if (ConsumeBufferedJump())
         {
             ExitSliding();
-            PerformJump(config.slide.slideHopRetention);
+            PerformJump(config.slide.slideHopRetention, config.jump.jumpSpeed);
             return;
         }
 
@@ -506,9 +512,25 @@ public sealed class CharacterMotor : MonoBehaviour
         if (TryStartWallHook()) return;
         if (TryStartWallRun()) return;
 
-        if (ConsumeBufferedJump() && (Time.time - _lastGroundedTime) <= config.jump.coyoteTime)
+        // Coyote-time check FIRST so ConsumeBufferedJump only consumes the buffered press inside the
+        // coyote window — outside it, the press survives for the double-jump branch below (or, for a
+        // non-double-jumper, for the landing jump-buffer). Order matters: the old `Consume() && window`
+        // form ate the buffer even when the window had expired.
+        if ((Time.time - _lastGroundedTime) <= config.jump.coyoteTime && ConsumeBufferedJump())
         {
-            PerformJump(1f);
+            PerformJump(1f, config.jump.jumpSpeed);
+            return;
+        }
+
+        // Double-jump (runner-only, one per airborne period). AFTER the coyote check so a still-valid
+        // coyote jump wins first. ConsumeBufferedJump requires a fresh in-air press: the ground/coyote
+        // jump above clears _jumpBufferDeadline (PerformJump), so the initial jump's buffer can't leak
+        // into an instant double-jump, and _doubleJumpUsed (reset only on the ground) blocks a 3rd.
+        if (CanDoubleJump && !_doubleJumpUsed && ConsumeBufferedJump())
+        {
+            PerformJump(1f, config.jump.doubleJumpSpeed);
+            _doubleJumpUsed = true;
+            DoubleJumped?.Invoke();
             return;
         }
 
@@ -573,7 +595,7 @@ public sealed class CharacterMotor : MonoBehaviour
         _rb.linearVelocity += Physics.gravity * multiplier * dt;
     }
 
-    private void PerformJump(float horizontalRetention)
+    private void PerformJump(float horizontalRetention, float upSpeed)
     {
         _jumpBufferDeadline = float.NegativeInfinity;
         Vector3 horizontal = HorizontalVelocity * horizontalRetention;
@@ -585,7 +607,7 @@ public sealed class CharacterMotor : MonoBehaviour
         if (Time.time - _lastLandingTime <= config.jump.bunnyHopWindow)
             horizontal *= config.jump.bunnyHopSpeedBonus;
 
-        _rb.linearVelocity = new Vector3(horizontal.x, config.jump.jumpSpeed, horizontal.z);
+        _rb.linearVelocity = new Vector3(horizontal.x, upSpeed, horizontal.z);
         _state = MotorState.Airborne;
         Jumped?.Invoke();
     }

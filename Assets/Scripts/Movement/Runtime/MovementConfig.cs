@@ -31,6 +31,7 @@ public sealed class MovementConfig : ScriptableObject
     public struct JumpSettings
     {
         public float jumpSpeed;
+        public float doubleJumpSpeed; // mid-air second jump (runner-only); weaker than the ground jump
         public float coyoteTime;
         public float jumpBufferTime;
         public float fallGravityMultiplier;
@@ -179,6 +180,7 @@ public sealed class MovementConfig : ScriptableObject
     public JumpSettings jump = new()
     {
         jumpSpeed = 6.5f,
+        doubleJumpSpeed = 5f,
         coyoteTime = 0.1f,
         jumpBufferTime = 0.15f,
         fallGravityMultiplier = 1.6f,

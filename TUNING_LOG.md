@@ -3,6 +3,49 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Double-jump for runners + tagger speed edge (2026-07-13)
+
+**Change:** a cohesive role-asymmetry feature — Runners get a mid-air double-jump (the 2nd jump
+plays the existing FrontFlip anim), Taggers move a flat 4% faster at all times. Player-triggered
+only; runner bots are unchanged (they flee via the graph and never press jump mid-air).
+
+**Balance numbers (user-approved):**
+- Tagger base speed multiplier: **1.04×** (`TagRulesConfig.taggerBaseSpeedMultiplier`) — applied at
+  all times; the existing late-game curve (1→`lateGameMaxSpeedMultiplier`) now multiplies on top, so
+  taggers run ~1.04× early game up to ~1.04×1.10 late.
+- Double-jump up-velocity: **5.0f** (`MovementConfig.jump.doubleJumpSpeed`) — deliberately weaker
+  than the 6.5 ground jump.
+- FrontFlip hold: 0.8s (unchanged), now driven by the `DoubleJumped` event instead of a random roll.
+
+**Implementation:**
+- `CharacterMotor`: new `CanDoubleJump` flag + `DoubleJumped` event + `_doubleJumpUsed` one-shot
+  (resets on the ground next to `_airDiveUsed`). `PerformJump` now takes an `upSpeed` arg. New
+  double-jump branch in `TickAirborne` placed *after* the coyote check (a valid coyote jump wins
+  first). Also reordered the coyote check to `window && ConsumeBufferedJump()` so the buffered press
+  isn't eaten when the coyote window has expired — that press now flows to the double-jump branch.
+- `RoundController` per-role loop: `CanDoubleJump = Role==Runner`; tagger `ExternalSpeedMultiplier`
+  = `taggerBaseSpeedMultiplier × lateGameCurve`, runners stay 1×.
+- `CharacterAnimatorBridge`: subscribes to `DoubleJumped` (unsub in `OnDestroy`); removed the random
+  `FlipChance` roll — the flip now means exactly "double-jumped".
+
+**Ordering safety:** ground/coyote `PerformJump` clears `_jumpBufferDeadline`, so the initial jump's
+buffer can't leak into an instant double-jump; `_doubleJumpUsed` (ground-reset only) blocks a 3rd
+jump; taggers (`CanDoubleJump=false`) get none.
+
+**Verification:** headless build clean (`ROOFTOP_ARENA_BUILD_OK`, 0 `error CS`). PlayMode suite
+45/45 (was 42/42 + 3 new `DoubleJumpTests`): double-jump metric = 5.00 m/s exactly, tagger mid-air
+press = no kick. Self-play: matches=10 complete, total_stuck=1, total_fallen=0, survival=0.00
+(infection mode, expected), `speed_p90=8.32` (= 8.0 sprint × 1.04, confirming the tagger edge is
+live; runner bots don't double-jump so their behavior is unchanged).
+
+**Skipped:** optional TagAgent procedural capsule-flip fallback — the rigged FrontFlip path is live,
+so it's fallback-only, and a 0→360 pitch ramp would add meaningful complexity to TagAgent's existing
+divePitch/slideLean composition.
+
+**Feel-test pending (manual):** double-jump height/timing feel (5.0f up-velocity), the FrontFlip
+anim reading cleanly on the 2nd jump, and whether the 1.04× tagger pressure feels right in a live
+human-played round.
+
 ## Tagger-proximity cue: quickening heartbeat + red vignette (2026-07-13)
 
 **Change:** a "danger closing in" cue for the LOCAL player while they're a Runner, all in
