@@ -227,6 +227,11 @@ public sealed class TagAgent : MonoBehaviour
                 // Bot-only auto-climb over a low wall: the same "catch a surface" reach, but it is a
                 // brief per-edge scramble like a mantle, so use the short mantle timing.
                 PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.35f);
+            else if (state == MotorState.OnSwing || state == MotorState.OnLadder)
+                // Rope swing / ladder: arms reach up and grip overhead, sustained for as long as the
+                // state lasts — same held-hang timing as WallHook (quick reach up, long hold near the
+                // grip instead of snapping back to rest).
+                PlayArmAnimation(ArmMantleRaisedDeg, ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.9f);
         }
         _previousMotorState = state;
 

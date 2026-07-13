@@ -3,6 +3,28 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Arm pose for OnSwing / OnLadder motor states (2026-07-13)
+
+**Change:** `TagAgent.Update`'s state-transition block (`Assets/Scripts/Rules/Runtime/TagAgent.cs` ~:206)
+had no branch for `MotorState.OnSwing` or `MotorState.OnLadder`, so a swinging or laddering character
+kept a default/idle arm pose — closes that pending item. New branch:
+`else if (state == MotorState.OnSwing || state == MotorState.OnLadder) PlayArmAnimation(ArmMantleRaisedDeg,
+ArmMantlePushedDeg, outDuration: 0.15f, backDuration: 0.9f)` — reuses the existing `ArmMantleRaisedDeg`/
+`ArmMantlePushedDeg` constants and the exact WallHook/WallRunning timing (quick 0.15s reach up, then a
+long 0.9s hold that stays near the grip instead of snapping back to rest), since both are sustained holds
+like a wall-hook grab rather than a one-shot gesture like a mantle or lunge. No new constants, no new
+helper — purely visual, deltaTime-driven via the existing `AnimateArmSweep` coroutine.
+
+**Verification:** headless `BuildRooftopArena` — 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`. Full PlayMode
+suite: 42/42 green (unchanged — arm animation has no gameplay hook). `Tools/selfplay.sh` — METRIC batch
+unchanged from baseline, since procedural arm animation has no effect on the sim (bots don't read arm
+transforms) and the branch is purely additive to a `switch` that previously fell through to no-op.
+
+**Feel-test pending:** needs a manual mid-swing and mid-ladder screenshot/in-editor check to confirm the
+raised-arm pose reads as "gripping a rope" / "hands on rungs" rather than looking like a mantle-in-progress
+— `ScreenshotTool` can't drive motor state transitions from a static scene load, so this can't be
+automated; check by hand next editor session.
+
 ## Minimap: rotate-to-facing + edge-clamp off-range icons (2026-07-13)
 
 **Change:** `RoundController`'s minimap (`Update`'s minimap block ~:315-322, `DrawMinimap` ~:502-557,
