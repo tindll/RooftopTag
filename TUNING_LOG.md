@@ -3,6 +3,30 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Round-end flow: auto-restart + per-player tag counts + summary screen (2026-07-13)
+
+**Change:** `RoundController` now closes the loop on a finished round:
+- **Per-player tag counts.** New `Dictionary<TagAgent,int> _tagCounts` + `public void RecordTag(TagAgent)`,
+  called from `TagAgent.PerformTag` via the agent's existing `_roundController` ref. Cleared in
+  `StartRound()`. Runs for bot-on-bot tags too (metric-neutral dictionary increment).
+- **Auto-restart countdown.** `EndRound` seeds `_autoRestartRemaining = 8f`; `Update`'s `_roundOver`
+  branch counts it down with `Time.deltaTime` and at 0 calls `StartRound()` + `_cameraRig?.SnapToTarget()`.
+  The existing R-key stays a manual skip-ahead. **Gated on `_localPlayerAgent != null`** — the same
+  local-player gate the minimap uses — so it NEVER ticks in `SelfPlayTests`' bot-only headless harness
+  (which ends matches on its own clock); there `_localPlayerAgent` is null, so the countdown is inert.
+- **Summary screen.** In the existing `_roundOver` OnGUI block, below the headline: "Next round in N...",
+  the local player's outcome (survived / tagged out from their Role), their tag count, runners left, and
+  final round length (`roundDuration − timeRemaining` captured in `EndRound`). Plain `GUI.Label`s reusing
+  the existing style — no new layout system.
+
+**Verification:** headless `BuildRooftopArena` — 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`. PlayMode suite
+42/42 green (unchanged). `Tools/selfplay.sh` — `matches=10` completes, `total_stuck=10` (~1/match, normal),
+`total_fallen=0`; batch unchanged in character, confirming the auto-restart gate keeps it out of the
+headless harness.
+
+**Feel-test pending:** the summary-screen visuals (layout/readability of the outcome + stats labels and
+the countdown) are OnGUI — needs a manual in-editor human-played round to confirm they read well.
+
 ## Pause menu on Esc (2026-07-13)
 
 **Change:** `SettingsMenu` (already the F1 rebind/sensitivity overlay, attached live by both

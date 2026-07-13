@@ -357,6 +357,7 @@ public sealed class TagAgent : MonoBehaviour
         other.SetRole(Role.Tagger, startGrace: true);
         other.WasTagged?.Invoke(other);
         AudioSource.PlayClipAtPoint(GetBoopClip(), other.transform.position);
+        _roundController?.RecordTag(this);
     }
 
     /// <summary>
