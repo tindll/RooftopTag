@@ -447,9 +447,21 @@ public sealed class CharacterMotor : MonoBehaviour
             // your speed through it, and the magnitude eases toward the target speed separately.
             float speed = horizontal.magnitude;
             Vector3 dir = speed > 0.1f ? horizontal.normalized : wishDir;
-            Vector3 steeredDir = Vector3.RotateTowards(dir, wishDir, config.ground.steerRateDegrees * Mathf.Deg2Rad * dt, 0f).normalized;
-            float newSpeed = Mathf.MoveTowards(speed, targetSpeed, config.ground.acceleration * dt);
-            newHorizontal = steeredDir * newSpeed;
+            if (speed > 0.1f && Vector3.Dot(dir, wishDir) < -0.95f)
+            {
+                // Near-exact REVERSAL (quick A→D or W→S): RotateTowards on antiparallel vectors has
+                // no defined rotation axis — Unity picks an arbitrary perpendicular one, so velocity
+                // swung through an effectively random arc ("pressing opposite keys moves me in random
+                // directions"). A reversal isn't a turn: decelerate straight through zero along the
+                // input line and re-accelerate the other way — crisp and deterministic.
+                newHorizontal = Vector3.MoveTowards(horizontal, wishDir * targetSpeed, config.ground.deceleration * dt);
+            }
+            else
+            {
+                Vector3 steeredDir = Vector3.RotateTowards(dir, wishDir, config.ground.steerRateDegrees * Mathf.Deg2Rad * dt, 0f).normalized;
+                float newSpeed = Mathf.MoveTowards(speed, targetSpeed, config.ground.acceleration * dt);
+                newHorizontal = steeredDir * newSpeed;
+            }
         }
         else
         {
