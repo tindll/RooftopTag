@@ -67,6 +67,43 @@ public sealed class ParkourGraph
     }
 
     /// <summary>
+    /// Single-source shortest-path COST to every node (Dijkstra), indexed by node id: self = 0,
+    /// unreachable = <see cref="float.PositiveInfinity"/>. Same relaxation as <see cref="FindPath"/>
+    /// without the path reconstruction — one call replaces N FindPath calls when a caller needs
+    /// distances to many nodes at once (flee scoring). Node ids are contiguous 0..Nodes.Count-1.
+    /// </summary>
+    public float[] DistancesFrom(int startNode)
+    {
+        var dist = new float[_nodes.Count];
+        for (int i = 0; i < dist.Length; i++) dist[i] = float.PositiveInfinity;
+        if (startNode < 0 || startNode >= dist.Length) return dist;
+
+        var visited = new HashSet<int>();
+        var frontier = new List<int> { startNode };
+        dist[startNode] = 0f;
+
+        while (frontier.Count > 0)
+        {
+            int current = frontier[0];
+            for (int i = 1; i < frontier.Count; i++)
+                if (dist[frontier[i]] < dist[current]) current = frontier[i];
+            frontier.Remove(current);
+            if (!visited.Add(current)) continue;
+
+            foreach (ParkourEdge edge in OutgoingEdges(current))
+            {
+                float candidate = dist[current] + edge.Cost;
+                if (candidate < dist[edge.ToNode])
+                {
+                    dist[edge.ToNode] = candidate;
+                    if (!frontier.Contains(edge.ToNode)) frontier.Add(edge.ToNode);
+                }
+            }
+        }
+        return dist;
+    }
+
+    /// <summary>
     /// Dijkstra shortest path by edge cost. A linear-scan "priority queue" is intentional — these
     /// maps top out at a few dozen nodes, so a binary heap would only add complexity with no
     /// measurable benefit. Returns null if no path exists.

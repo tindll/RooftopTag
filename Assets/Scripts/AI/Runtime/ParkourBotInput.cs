@@ -77,6 +77,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     // runner hugging a roof boundary (RoofIndexAt flip-flopping) can't spam throttle-bypass replans.
     private int _lastTargetRoof = -1;
     private float _nextBypassAllowedTime;
+    // Last-ditch flee steer point when a runner has no reachable roof to flee to — a perpendicular
+    // juke, used only while the path is empty so the runner never beelines back at its pursuer.
+    private Vector3? _fleeSteerOverride;
 
     // Jump-landing telemetry: capture the target node at takeoff, measure horizontal miss on landing.
     private bool _jumpInFlight;
@@ -201,6 +204,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             : _roundController.FindNearestOpposingAgent(_agent);
 
         _target = target;
+        _fleeSteerOverride = null;
         if (target == null)
         {
             _path = null;
@@ -236,6 +240,10 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         else
         {
             goalNode = FleeGoalNode(predicted, startNode);
+            // A runner's empty/walked-path fallback must steer to its FLEE GOAL, never at _target —
+            // _target is the tagger, so the old `return _target.position` fallback turned the runner
+            // back toward its pursuer. (FleeGoalNode may already have set a perpendicular juke.)
+            _fleeSteerOverride ??= _graph.Nodes[goalNode].Position;
         }
 
         _path = _graph.FindPath(startNode, goalNode);
@@ -255,45 +263,67 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     }
 
     /// <summary>
-    /// Runners flee toward the graph node lying farthest in the away-from-threat direction, so they
-    /// escape INTO the parkour arena (traversing its jump/wall-run/climb edges) instead of steering
-    /// to a raw radial point that lands off the small spawn pad — NearestNode would snap that point
-    /// to a platform-edge node and march the runner over the edge. This was the M4-loop root cause
-    /// of the spawn-scrum collapse: radial flee dumped runners off the pad (high fall count) before
-    /// they ever reached the arena, so the infection cascade cleared everyone in &lt;10s.
-    /// Falls back to the start node (→ empty path → direct steering) when no node lies away from the
-    /// threat, e.g. a runner already cornered at the arena's far end.
+    /// Runners flee to the ROOF the runner can reach with the biggest lead over the nearest tagger,
+    /// scored on graph path-distance (not straight-line): safe = the runner arrives before any tagger
+    /// (<c>selfDist &lt; minTaggerDist</c>), and among safe roofs pick the max lead
+    /// <c>minTaggerDist − selfDist</c> — a path-distance differential that implicitly avoids fleeing
+    /// toward a roof whose only approach a tagger already controls. One <see cref="ParkourGraph.DistancesFrom"/>
+    /// per agent (self + ≤2 taggers) replaces the old greedy straight-line pick with its hidden
+    /// per-candidate FindPath loop. Cornered (no safe roof): flee to the reachable roof FARTHEST from
+    /// the taggers anyway. Only if nothing is reachable at all does it juke perpendicular to the
+    /// threat — it never beelines back at its pursuer (the old cornered failure).
     /// </summary>
     private int FleeGoalNode(Vector3 threatPredictedPos, int startNode)
     {
-        Vector3 self = transform.position;
-        Vector3 fleeDir = self - threatPredictedPos;
-        fleeDir.y = 0f;
-        fleeDir = fleeDir.sqrMagnitude > 0.0001f ? fleeDir.normalized : transform.forward;
+        float[] selfDist = _graph!.DistancesFrom(startNode);
 
-        IReadOnlyList<ParkourNode> nodes = _graph!.Nodes;
-        int best = startNode;
-        float bestScore = 0f; // strictly-positive projection required, so a node must lie away from the threat
-        for (int i = 0; i < nodes.Count; i++)
+        // Path-distance from the NEAREST tagger to each node (min over the taggers).
+        float[]? minTaggerDist = null;
+        foreach (TagAgent a in _roundController.Agents)
         {
-            if (i == startNode) continue;
-            Vector3 toNode = nodes[i].Position - self;
-            toNode.y = 0f;
-            float alongFlee = Vector3.Dot(toNode, fleeDir);
-            if (alongFlee <= bestScore) continue;
-            // Only flee somewhere actually reachable — an unreachable farthest node yields a null
-            // path, whose fallback steers the runner straight at its threat (see ComputeSteerPoint).
-            if (_graph.FindPath(startNode, i) == null) continue;
-            bestScore = alongFlee;
-            best = i;
+            if (a == _agent || a.Role != Role.Tagger) continue;
+            int tNode = RooftopArena.RoofIndexAt(a.transform.position);
+            if (tNode < 0) tNode = _graph.NearestNode(a.transform.position);
+            float[] d = _graph.DistancesFrom(tNode);
+            if (minTaggerDist == null) minTaggerDist = d;
+            else for (int i = 0; i < minTaggerDist.Length; i++) if (d[i] < minTaggerDist[i]) minTaggerDist[i] = d[i];
         }
-        return best;
+
+        // Goals are real ROOFS only (node ids 0..Roofs.Length-1); intermediate ladder/wall-run/swing
+        // nodes aren't standable destinations.
+        int roofCount = RooftopArena.Roofs.Length;
+        int bestSafe = -1; float bestSafeScore = float.NegativeInfinity;
+        int bestReach = -1; float bestReachTaggerDist = float.NegativeInfinity;
+        for (int i = 0; i < roofCount; i++)
+        {
+            if (i == startNode || float.IsPositiveInfinity(selfDist[i])) continue;
+            float tagDist = minTaggerDist?[i] ?? float.PositiveInfinity;
+            if (tagDist > bestReachTaggerDist) { bestReachTaggerDist = tagDist; bestReach = i; }
+            if (selfDist[i] < tagDist)
+            {
+                float score = tagDist - selfDist[i];
+                if (score > bestSafeScore) { bestSafeScore = score; bestSafe = i; }
+            }
+        }
+
+        if (bestSafe >= 0) return bestSafe;
+        if (bestReach >= 0) return bestReach;
+
+        // Nothing reachable (isolated node — shouldn't happen on the connected roof graph). Juke
+        // PERPENDICULAR to the threat instead of beelining at it.
+        Vector3 self = transform.position;
+        Vector3 fleeDir = self - threatPredictedPos; fleeDir.y = 0f;
+        fleeDir = fleeDir.sqrMagnitude > 0.0001f ? fleeDir.normalized : transform.forward;
+        Vector3 perp = Vector3.Cross(fleeDir, Vector3.up);
+        if (!IsSafe(perp)) perp = -perp;
+        _fleeSteerOverride = self + perp * 5f;
+        return startNode;
     }
 
     private Vector3 ComputeSteerPoint()
     {
         if (_path == null || _path.Count == 0)
-            return _target!.transform.position;
+            return _fleeSteerOverride ?? _target!.transform.position;
 
         while (_pathIndex < _path.Count)
         {
@@ -316,8 +346,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             _pathIndex++;
         }
 
-        // Path fully walked — home in on the actual (possibly-moved) target directly.
-        return _target!.transform.position;
+        // Path fully walked — a tagger homes in on the (possibly-moved) target; a runner keeps
+        // steering to its flee goal via the override, never back at its pursuer.
+        return _fleeSteerOverride ?? _target!.transform.position;
     }
 
     // ---------------------------------------------------------------- Steering / execution

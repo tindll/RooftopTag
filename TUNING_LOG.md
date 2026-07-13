@@ -3,6 +3,60 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## M4 loop — runner flee overhaul (path-distance safe-node scoring) (2026-07-13)
+
+**Hypothesis:** the old `FleeGoalNode` was greedy straight-line (largest projection along flee dir)
+with a hidden per-candidate `FindPath` loop, and when cornered fell back to `startNode` → empty path
+→ the runner BEELINED at its pursuer. Runners never really spread → 12-agent scrum →
+`runner_avg_survival=0.00`. Scoring flee goals by graph path-distance lead over the taggers should
+spread runners into the arena and move survival off 0.00.
+
+**Change:**
+- Added `ParkourGraph.DistancesFrom(start) → float[]` (single-source Dijkstra to all nodes; self=0,
+  unreachable=+inf) — reuses the FindPath relaxation, kills the old O(nodes × Dijkstra) per replan.
+- Rewrote `FleeGoalNode`: `selfDist = DistancesFrom(startNode)`; `minTaggerDist` = min over taggers
+  (`RoundController.Agents` filtered to Role.Tagger) of `DistancesFrom(taggerRoof)`. Over ROOF nodes
+  only (ids 0..Roofs.Length-1): safe = `selfDist[i] < minTaggerDist[i]`, score = max lead
+  `minTaggerDist[i] − selfDist[i]`. Cornered (no safe): farthest-from-taggers reachable roof. Nothing
+  reachable (never on the connected graph): perpendicular juke — NEVER beeline at the pursuer.
+- Fixed the runner empty/walked-path fallback: it returned `_target.position` (= the tagger!), so a
+  runner that walked its flee path turned back toward its pursuer. Now steers to its flee goal
+  (`_fleeSteerOverride`), cleared each replan so a converted runner→tagger can't inherit a stale one.
+- Added `RooftopGraphTests.DistancesFrom_MatchesFindPathAndMarksUnreachable`.
+
+**Measured — before = jump-power batch; after = flee overhaul:**
+- before: `total_stuck=4 total_fallen=0 total_edge_usage=[Jump=6, Run=32] jump_land_within_1.75m=0.28 runner_avg_survival=0.00` (matches ~8-13s)
+- after:  `total_stuck=3 total_fallen=0 total_edge_usage=[Run=89, Jump=6, Vault=2] total_edge_attempts=[Jump=551, WallRun=37, Climb=245, Swing=298, Ladder=75] jump_land_within_1.75m=0.42 runner_avg_survival=0.00` (matches ~10-19s; a prior flee batch showed Ladder=2 in USAGE)
+
+**Gates:** `total_fallen` low ✓ (0); `total_stuck` DROPS ✓ (8→3 across the loop, scrum resolving as
+predicted); edge usage broadens with real USAGE ✓ (Ladder/Vault now used, not just attempted; Run
+32→89); match duration lengthens ✓ (runners survive longer). **PRIMARY gate `runner_avg_survival`
+off 0.00 ✗ — stays exactly 0.00.**
+
+**Dug in (instrumented FleeGoalNode, then reverted) — the flee is SOUND; the 0.00 is structural,
+upstream of flee:**
+- `DistancesFrom` values are sane (13.0 = one jump-edge cost, 26 = two, etc.). Safe candidates ARE
+  found for almost every runner with large leads (safeScore 13-39); runners route to sensible far
+  safe roofs (3→15, 4→11 tower, 8→9) and DO spread (edge usage/accuracy/max-distance up, stuck down).
+- Survival can't move because the round ends the instant `runnersRemaining == 0` (RoundController:226
+  "Taggers win, all runners tagged"), which fires at ~13-19s — always before the 60s timer that would
+  score survivors (RoundController:232). Three structural forces, all outside flee, guarantee it:
+  (1) **infection** — every tagged/fallen runner becomes a tagger, so the pool grows 2→~10;
+  (2) **equal base speed** — a runner can't outrun a tagger already within reach (and the late-game
+  multiplier at RoundController:200-222 makes taggers *faster* still); (3) **spawn adjacency** —
+  `time_to_first_tag`≈2.9s (grace ~2s + <1s) means co-spawned tagger+runner pairs are tagged at
+  grace-lift, seeding the cascade before flee can separate them. Perfect flee only DELAYS the
+  collapse (8-13s → 10-19s); it cannot keep any runner alive to 60s against a cascading, eventually-
+  faster tagger pool on a finite 26-roof map.
+
+**Decision:** kept the flee overhaul — it is correct, tested, meets every SECONDARY gate (stuck↓,
+edges USED broadly, matches lengthen, per-candidate FindPath loop removed) and fixes the runner
+beeline-at-pursuer bug. But the PRIMARY survival gate is blocked by RULES/SPAWN, not flee, so per the
+"stop if pinned at 0.00" instruction I'm STOPPING rather than tuning flee blind. To move survival off
+0.00 the next task must change the cascade dynamics — one of: make a tagged runner OUT instead of
+infected, cap tagger count, separate spawns so no tagger starts in tag-range at grace-lift, drop the
+late-game tagger speed boost, or shorten the round so the timer can fire with survivors.
+
 ## M4 loop — jump power selection (real gap, not foreign platform constant) (2026-07-13)
 
 **Hypothesis:** `ParkourBotInput.IsShortJumpEdge` estimated the gap as `centerDist −

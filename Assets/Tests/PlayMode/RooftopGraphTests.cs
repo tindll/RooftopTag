@@ -47,6 +47,28 @@ public class RooftopGraphTests
     }
 
     [Test]
+    public void DistancesFrom_MatchesFindPathAndMarksUnreachable()
+    {
+        // Isolated-node graph: self = 0, no edge => unreachable = +inf.
+        var g = new ParkourGraph();
+        g.AddNode(Vector3.zero);
+        g.AddNode(Vector3.right);
+        float[] d0 = g.DistancesFrom(0);
+        Assert.That(d0[0], Is.EqualTo(0f));
+        Assert.That(float.IsPositiveInfinity(d0[1]), Is.True);
+
+        // Real graph: DistancesFrom cost == summed FindPath edge cost for a reachable pair.
+        ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
+        float[] d = graph.DistancesFrom(0);
+        Assert.That(d[0], Is.EqualTo(0f));
+        IReadOnlyList<ParkourEdge>? path = graph.FindPath(0, 8);
+        Assert.That(path, Is.Not.Null);
+        float cost = 0f;
+        foreach (ParkourEdge e in path!) cost += e.Cost;
+        Assert.That(d[8], Is.EqualTo(cost).Within(0.01f));
+    }
+
+    [Test]
     public void Graph_RoutesThroughWallRun()
     {
         ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
