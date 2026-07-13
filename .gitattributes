@@ -1,0 +1,4 @@
+# Git LFS — large binary character assets under Assets/Art.
+# Scoped so already-tracked PNGs elsewhere (Tools/screenshots) stay regular git.
+*.fbx filter=lfs diff=lfs merge=lfs -text
+Assets/Art/**/*.png filter=lfs diff=lfs merge=lfs -text

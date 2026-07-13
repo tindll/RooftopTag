@@ -59,6 +59,11 @@ public sealed class TagAgent : MonoBehaviour
     private RoundController? _roundController;
     private Renderer? _bodyRenderer;
     private Material? _materialInstance;
+    private Material[] _bodyMaterials = System.Array.Empty<Material>();
+    // False when the body is a rigged, animated model (Animator-driven): the procedural capsule
+    // presentation — swept arm capsules, landing squash, dive/slide body-pitch — is skipped so it
+    // doesn't fight the animation, and the role telegraph is emission-only to keep the model's texture.
+    private bool _proceduralBody = true;
     private bool _isLocalPlayer;
 
     private InputAction? _lungeAction;
@@ -100,17 +105,19 @@ public sealed class TagAgent : MonoBehaviour
     /// <summary>Raised on the agent that was just converted to Tagger.</summary>
     public event Action<TagAgent>? WasTagged;
 
-    public void Configure(TagRulesConfig config, CharacterMotor motor, Renderer? bodyRenderer, bool isLocalPlayer)
+    public void Configure(TagRulesConfig config, CharacterMotor motor, Renderer? bodyRenderer, bool isLocalPlayer, bool proceduralBody = true)
     {
         _config = config;
         _motor = motor;
         _bodyRenderer = bodyRenderer;
         _isLocalPlayer = isLocalPlayer;
+        _proceduralBody = proceduralBody;
 
         if (_bodyRenderer != null)
         {
-            _materialInstance = _bodyRenderer.material;
-            _materialInstance.EnableKeyword("_EMISSION");
+            _bodyMaterials = _bodyRenderer.materials; // per-agent instances; may be several on a model
+            _materialInstance = _bodyMaterials.Length > 0 ? _bodyMaterials[0] : null;
+            foreach (Material m in _bodyMaterials) m.EnableKeyword("_EMISSION");
             _bodyBaseScale = _bodyRenderer.transform.localScale;
         }
 
@@ -133,8 +140,11 @@ public sealed class TagAgent : MonoBehaviour
             _tagAction.Enable();
         }
 
-        _leftArmPivot = CreateArm(-ArmXOffset);
-        _rightArmPivot = CreateArm(ArmXOffset);
+        if (_proceduralBody)
+        {
+            _leftArmPivot = CreateArm(-ArmXOffset);
+            _rightArmPivot = CreateArm(ArmXOffset);
+        }
         _previousMotorState = _motor.CurrentState;
 
         if (_isLocalPlayer)
@@ -182,11 +192,11 @@ public sealed class TagAgent : MonoBehaviour
             if (_graceRemaining <= 0f) UpdateColor();
         }
 
-        if (IsInGrace && _materialInstance != null)
+        if (IsInGrace && _bodyMaterials.Length > 0)
         {
             float pulse = 0.5f + 0.5f * Mathf.Sin(Time.time * _config.gracePulseHz * 2f * Mathf.PI);
-            _materialInstance.SetColor(EmissionColorId,
-                _config.conversionGraceColor * (_config.graceEmissiveIntensity * (0.4f + 0.6f * pulse)));
+            Color emission = _config.conversionGraceColor * (_config.graceEmissiveIntensity * (0.4f + 0.6f * pulse));
+            foreach (Material m in _bodyMaterials) m.SetColor(EmissionColorId, emission);
         }
 
         if (_lungeCooldownRemaining > 0f)
@@ -201,6 +211,9 @@ public sealed class TagAgent : MonoBehaviour
             _reachRing.enabled = showRing;
             if (showRing) UpdateReachRing();
         }
+
+        // Procedural capsule arm gestures — skipped for animated models (the Animator poses the arms).
+        if (!_proceduralBody) return;
 
         MotorState state = _motor.CurrentState;
         if (state != _previousMotorState)
@@ -286,6 +299,10 @@ public sealed class TagAgent : MonoBehaviour
 
     private void LateUpdate()
     {
+        // Animated models pose themselves — the procedural body-pitch and landing squash below would
+        // fight the Animator, so skip them entirely.
+        if (!_proceduralBody) return;
+
         // Lunge dive: a one-shot forward pitch pulse. sin(0..pi) → 0 at start, 1 at mid-dive, 0 at end.
         float divePitch = 0f;
         if (_diveElapsed >= 0f)
@@ -392,15 +409,20 @@ public sealed class TagAgent : MonoBehaviour
 
     private void UpdateColor()
     {
-        if (_materialInstance == null) return;
+        if (_bodyMaterials.Length == 0) return;
         Color color = IsInGrace
             ? _config.conversionGraceColor
             : Role == Role.Tagger ? _config.taggerColor : _config.runnerColor;
         float emissive = IsInGrace
             ? _config.graceEmissiveIntensity
             : Role == Role.Tagger ? _config.taggerEmissiveIntensity : _config.runnerEmissiveIntensity;
-        _materialInstance.color = color;
-        _materialInstance.SetColor(EmissionColorId, color * emissive);
+        Color emission = color * emissive;
+        foreach (Material m in _bodyMaterials)
+        {
+            // Capsule: full recolor. Model: emission-only glow so the character's texture survives.
+            if (_proceduralBody) m.color = color;
+            m.SetColor(EmissionColorId, emission);
+        }
     }
 
     // ---------------------------------------------------------------- Arms (tag reach + mantle push)
