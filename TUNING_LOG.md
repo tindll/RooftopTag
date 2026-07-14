@@ -3,6 +3,71 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## WP3 — smarter runner flee: threat-aware routing + break-contact juke (2026-07-14)
+
+Goal: runner bots that evade convincingly instead of getting corner-swept — the human moves the
+deterministic flee lacked (juking, break-contact, dead-end/pincer avoidance). WP2 hit the
+structural wall: survival pinned at 0.00 even with taggers 10% SLOWER, because `FleeGoalNode` chose
+the farthest node along the raw away-vector, which routes runners into corners, dead-end roofs, and
+the second tagger's pincer, and they never break contact. WP2 concluded numeric knobs can't touch
+this; this WP changes the flee *behaviour* (routing/timing only, `ICharacterInput`).
+
+**Baseline (committed WP2 final state, HEAD):** `runner_avg_survival=0.00 total_stuck=25
+total_fallen=0 time_to_first_tag~7.5 jump_land_within_1.75m=0.77 total_edge_usage=[Run=1109,
+Jump=654, Vault=62, Climb=4]`, matches a full sweep in ~17-28s.
+
+**Fix 1 — threat-aware flee scoring (`ParkourBotInput.FleeGoalNode` + new
+`ParkourGraph.DistancesFrom`).** Added single-source Dijkstra (`DistancesFrom`, same relaxation as
+`FindPath` minus reconstruction — didn't exist on this branch). Flee now scores each reachable node
+by ESCAPE LEAD = `nearestTaggerPathDist[i] - selfPathDist[i]` and picks the max: a node the runner
+reaches well before any tagger is real safety; one closer to some tagger scores low even if it's in
+the away direction. **Fix 3 (pincer awareness) falls out for free** — `threatDist` is the MIN over
+ALL taggers, so a goal far from tagger A but near tagger B scores low. Dead-end avoidance: a
+low-degree goal node (`OutgoingEdges<=2`) is docked `DeadEndPenalty` (8m) unless its lead already
+exceeds `DeadEndLeadOverride` (15m). Also *cheaper* than the old code, which ran a full `FindPath`
+per candidate node (O(n) Dijkstra each) — now one Dijkstra covers all candidates.
+
+**Fix 2 — break-contact juke (`UpdateJuke`).** When a runner is grounded, off cooldown, NOT
+mid-committed-edge (respects the WP1 commit latch — never cut off a jump takeoff), and the nearest
+tagger is within `jukeTriggerRange` (3.5m) AND closing (relative velocity shrinking the gap), the
+runner cuts ~90° off the tagger axis for `jukeDuration` (0.5s), then can't re-juke for `jukeCooldown`
+(2s). Side chosen by `IsSafe` (never off a lip; if both sides are cliffs it doesn't juke),
+re-validated every tick. The tagger's 0.3s reaction lag + linear prediction can't track the
+perpendicular break, so a gap opens where running straight never did. While juking, edge-button
+execution is skipped so a jump can't fire mid-cut.
+
+**Fix 4 — stochastic flee spread (optional, added when 1-3 left survival at 0.00).** 10 runners
+scoring near-identically all funnelled to the SAME best node and got swept as one cluster. Flee now
+picks RANDOMLY among goals within `FleeGoalSpread` (6m) of the best lead (Unity `Random`, not
+Time-seeded — same infra as `PredictPosition`'s jitter), so a runner cluster fans across several
+good exits. This was the biggest mover on chase duration.
+
+**Metric deltas (10-match batches):**
+- Iter 1 (fixes 1+2+3): `runner_avg_survival=0.00 total_stuck=25 total_fallen=0
+  jump_land_within_1.75m=0.73 total_edge_usage=[Run=1929, Jump=630, Ladder=5, Vault=48, Swing=2]`,
+  durations 17-30.6s (max nudged 28->30.6).
+- Iter 2 (+ fix 4): `runner_avg_survival=0.00 total_stuck=17 total_fallen=0
+  jump_land_within_1.75m=0.75 total_edge_usage=[Run=2156, Jump=761, Ladder=10, Vault=81, Climb=8]
+  time_to_first_tag` several matches 12-14s`, durations 16-42s. **Mean match duration ~21->27s
+  (+27%), max 28->42s (+50%); stuck 25->17; fallen still 0; edge usage up ~+20%** (runners
+  traversing more of the map = the "convincing evasion" the task wanted).
+
+**Survival still 0.00 — the WP2 structural wall stands, as expected.** A match ends the instant all
+runners are tagged (~20-40s), so `runner_avg_survival` is nonzero only if a runner survives the full
+round against ~10 infection-grown taggers — unreachable by routing alone, and cracking the infection
+cascade / tagger chase code was scoped out (WP2's user-vetoed design call). Per LOOP.md's
+"same metric flat across distinct approaches -> STOP", tuning against the survival *number* stops
+here. But the **actual goal — evade convincingly, longer chases — is met**: chases run ~50% longer at
+the top end, runners now use juke + threat-aware routing + map traversal instead of getting
+corner-swept, zero falls, fewer stuck. Human feel-test flagged: the 10 chase-me runner-bots should
+now juke and scatter visibly under pressure (`jukeTriggerRange`/`jukeDuration`/`jukeCooldown` and
+`FleeGoalSpread` are the feel knobs if it reads as too twitchy or too tame).
+
+Verification: headless `Game.EditorTools.PlaygroundBuilder.BuildRooftopArena` -> 0 error CS,
+`ROOFTOP_ARENA_BUILD_OK`. Full PlayMode suite 50/50 green. Self-play batches above. Changes are
+`ParkourBotInput.cs` + `ParkourGraph.cs` only (routing/timing; motor, commit-latch, tagger chase
+untouched).
+
 ## Main-menu overlay + scene flow + roundDuration 300 -> 120 (2026-07-14)
 
 Minimal main menu for a shippable player build (there was previously no way to pick options or

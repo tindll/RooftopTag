@@ -59,6 +59,24 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
     [SerializeField] private float maxSteeringJitterDegrees = 30f;
 
+    // Break-contact juke (runners only). When the nearest tagger is within jukeTriggerRange AND closing,
+    // the runner cuts ~90° off the tagger axis for jukeDuration, then can't juke again for jukeCooldown.
+    // This is the human "juke" the deterministic flee lacks: taggers predict linearly with a reaction
+    // lag, so a sharp perpendicular cut breaks their intercept where running straight never opens a gap.
+    [SerializeField] private float jukeTriggerRange = 3.5f;
+    [SerializeField] private float jukeDuration = 0.5f;
+    [SerializeField] private float jukeCooldown = 2f;
+
+    // Flee dead-end avoidance: a low-degree goal node (corner/spur/ladder stub) is a trap the runner
+    // gets swept into, so its escape-lead is docked DeadEndPenalty metres — unless the lead there is
+    // already huge (DeadEndLeadOverride), in which case the distance is worth the risk. The lead
+    // differential itself does the heavy lifting; this only breaks ties away from obvious traps.
+    private const float DeadEndPenalty = 8f;
+    private const float DeadEndLeadOverride = 15f;
+    // Runners flee to a RANDOM goal within this many metres of the best escape-lead, so a cluster of
+    // runners fans across several exits instead of funneling into one easily-swept node.
+    private const float FleeGoalSpread = 6f;
+
     private TagAgent _agent = null!;
     private RoundController _roundController = null!;
     private ParkourGraph? _graph;
@@ -89,6 +107,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private bool _committed;
     private float _commitDeadline;
     private ParkourEdge? _committedEdge;
+
+    // Juke state: while Time.time < _jukeEndTime the runner holds _jukeDir; can't re-juke until _jukeCooldownEnd.
+    private float _jukeEndTime;
+    private float _jukeCooldownEnd;
+    private Vector3 _jukeDir;
 
     public Vector2 Move { get; private set; }
     public Vector2 Look => Vector2.zero;
@@ -186,6 +209,17 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
         Vector3 steerPoint = ComputeSteerPoint();
         _approachShortGap = IsShortJumpAhead();
+
+        // Break-contact juke wins over normal path steering when it fires: cut sideways and skip
+        // edge-button execution (no committing a jump mid-cut — that launches sideways into the void).
+        Vector3 jukeDir = UpdateJuke();
+        if (jukeDir != Vector3.zero)
+        {
+            _approachShortGap = false; // cut at sprint, not the short-jump walk
+            Move = new Vector2(jukeDir.x, jukeDir.z);
+            return;
+        }
+
         Vector3 rawDir = RawDirectionTo(steerPoint);
         Vector3 finalDir = ApplySteeringSafety(rawDir);
 
@@ -243,7 +277,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         int startNode = _graph.NearestNode(transform.position);
         int goalNode = isTagger
             ? _graph.NearestNode(predicted)
-            : FleeGoalNode(predicted, startNode);
+            : FleeGoalNode(startNode);
         _path = _graph.FindPath(startNode, goalNode);
         _pathIndex = 0;
     }
@@ -261,39 +295,60 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     }
 
     /// <summary>
-    /// Runners flee toward the graph node lying farthest in the away-from-threat direction, so they
-    /// escape INTO the parkour arena (traversing its jump/climb/swing edges) instead of steering
-    /// to a raw radial point that lands off the small spawn pad — NearestNode would snap that point
-    /// to a platform-edge node and march the runner over the edge. This was the M4-loop root cause
-    /// of the spawn-scrum collapse: radial flee dumped runners off the pad (high fall count) before
-    /// they ever reached the arena, so the infection cascade cleared everyone in &lt;10s.
-    /// Falls back to the start node (→ empty path → direct steering) when no node lies away from the
-    /// threat, e.g. a runner already cornered at the arena's far end.
+    /// Threat-aware flee: pick the reachable graph node that maximizes the runner's ESCAPE LEAD —
+    /// its own path-distance to the node minus the nearest tagger's path-distance to that same node.
+    /// A node the runner reaches well before any tagger (large positive lead) is real safety; a node
+    /// closer to some tagger (a pincer, or one the runner would arrive at second) scores low even if
+    /// it lies in the away-from-threat direction. Using MIN over ALL taggers folds pincer-awareness in
+    /// for free. Replaces the old "farthest node in the away-vector direction" heuristic that routed
+    /// runners straight into corners, dead-end roofs, and the second tagger's arms — the diagnosed
+    /// reason survival was pinned at 0.00. Falls back to the start node (→ empty path → direct
+    /// steering) only if nothing is reachable.
     /// </summary>
-    private int FleeGoalNode(Vector3 threatPredictedPos, int startNode)
+    private int FleeGoalNode(int startNode)
     {
-        Vector3 self = transform.position;
-        Vector3 fleeDir = self - threatPredictedPos;
-        fleeDir.y = 0f;
-        fleeDir = fleeDir.sqrMagnitude > 0.0001f ? fleeDir.normalized : transform.forward;
+        float[] selfDist = _graph!.DistancesFrom(startNode);
 
-        IReadOnlyList<ParkourNode> nodes = _graph!.Nodes;
-        int best = startNode;
-        float bestScore = 0f; // strictly-positive projection required, so a node must lie away from the threat
-        for (int i = 0; i < nodes.Count; i++)
+        // Nearest-tagger path-distance to each node (min over all taggers = pincer awareness).
+        float[] threatDist = new float[selfDist.Length];
+        for (int i = 0; i < threatDist.Length; i++) threatDist[i] = float.MaxValue;
+        foreach (TagAgent agent in _roundController.Agents)
         {
-            if (i == startNode) continue;
-            Vector3 toNode = nodes[i].Position - self;
-            toNode.y = 0f;
-            float alongFlee = Vector3.Dot(toNode, fleeDir);
-            if (alongFlee <= bestScore) continue;
-            // Only flee somewhere actually reachable — an unreachable farthest node yields a null
-            // path, whose fallback steers the runner straight at its threat (see ComputeSteerPoint).
-            if (_graph.FindPath(startNode, i) == null) continue;
-            bestScore = alongFlee;
-            best = i;
+            if (agent.Role != Role.Tagger) continue;
+            float[] td = _graph.DistancesFrom(_graph.NearestNode(agent.transform.position));
+            for (int i = 0; i < td.Length; i++)
+                if (td[i] < threatDist[i]) threatDist[i] = td[i];
         }
-        return best;
+
+        int best = startNode;
+        float bestScore = float.NegativeInfinity;
+        var scores = new float[selfDist.Length];
+        for (int i = 0; i < selfDist.Length; i++)
+        {
+            if (i == startNode || selfDist[i] == float.MaxValue)
+            {
+                scores[i] = float.NegativeInfinity; // skip self + unreachable
+                continue;
+            }
+            float lead = threatDist[i] - selfDist[i]; // how far ahead of the nearest tagger the runner arrives
+            if (_graph.OutgoingEdges(i).Count <= 2 && lead < DeadEndLeadOverride) lead -= DeadEndPenalty;
+            scores[i] = lead;
+            if (lead > bestScore)
+            {
+                bestScore = lead;
+                best = i;
+            }
+        }
+
+        // Spread the flee: 10 runners scoring near-identically all funnel to the SAME best node and get
+        // swept as one cluster. Pick RANDOMLY among goals within FleeGoalSpread metres of the best lead,
+        // so runners fan out across several good exits — deterministic flee is trivial for a pincer to
+        // corner. Unity Random (not Time-seeded), matching PredictPosition's existing jitter.
+        if (bestScore == float.NegativeInfinity) return best;
+        var pool = new List<int>();
+        for (int i = 0; i < scores.Length; i++)
+            if (scores[i] >= bestScore - FleeGoalSpread) pool.Add(i);
+        return pool.Count > 0 ? pool[Random.Range(0, pool.Count)] : best;
     }
 
     private Vector3 ComputeSteerPoint()
@@ -323,6 +378,62 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     }
 
     // ---------------------------------------------------------------- Steering / execution
+
+    /// <summary>
+    /// Break-contact juke for runners. Returns the sideways cut direction while a juke is active (or
+    /// starts one this tick), else Vector3.zero. Starts a juke only when grounded, off cooldown, NOT
+    /// mid-committed-edge (a cut off a jump takeoff = the chasm — respects the WP1 commit latch), and
+    /// the nearest tagger is within jukeTriggerRange AND closing (relative velocity shrinking the gap).
+    /// Cuts ~90° off the tagger→runner axis toward whichever side is safe (never off a lip); if both
+    /// sides are cliffs, doesn't juke. Human juke: the tagger's reaction lag + linear prediction can't
+    /// track the perpendicular break, so a gap opens where running straight never did.
+    /// </summary>
+    private Vector3 UpdateJuke()
+    {
+        if (_agent.Role != Role.Runner || _target == null) return Vector3.zero;
+
+        // Hold an in-progress juke (re-validating safety each tick — the world moved under us).
+        if (Time.time < _jukeEndTime)
+        {
+            Vector3 held = FindSafeDirection(_jukeDir);
+            if (held != Vector3.zero) return held;
+            _jukeEndTime = 0f; // nowhere safe to cut — bail out of the juke rather than run off a roof
+            return Vector3.zero;
+        }
+
+        if (_committed || _jumpInFlight) return Vector3.zero;
+        if (_agent.Motor.CurrentState != MotorState.Grounded) return Vector3.zero;
+        if (Time.time < _jukeCooldownEnd) return Vector3.zero;
+
+        Vector3 toTagger = _target.transform.position - transform.position;
+        toTagger.y = 0f;
+        float dist = toTagger.magnitude;
+        if (dist > jukeTriggerRange || dist < 0.1f) return Vector3.zero;
+
+        Vector3 toTaggerDir = toTagger / dist;
+        Vector3 relVel = _target.Motor.HorizontalVelocity - _agent.Motor.HorizontalVelocity;
+        if (Vector3.Dot(relVel, toTaggerDir) >= 0f) return Vector3.zero; // gap not shrinking — no need to juke
+
+        // ~90° off the flee axis; pick the safe side, tie-broken toward current momentum.
+        Vector3 fleeAxis = -toTaggerDir;
+        Vector3 right = Quaternion.Euler(0f, 90f, 0f) * fleeAxis;
+        Vector3 left = Quaternion.Euler(0f, -90f, 0f) * fleeAxis;
+        bool rightSafe = IsSafe(right), leftSafe = IsSafe(left);
+        Vector3 chosen;
+        if (rightSafe && leftSafe)
+        {
+            Vector3 vel = _agent.Motor.HorizontalVelocity;
+            chosen = Vector3.Dot(right, vel) >= Vector3.Dot(left, vel) ? right : left;
+        }
+        else if (rightSafe) chosen = right;
+        else if (leftSafe) chosen = left;
+        else return Vector3.zero; // both sides are cliffs — hold the path route
+
+        _jukeDir = chosen;
+        _jukeEndTime = Time.time + jukeDuration;
+        _jukeCooldownEnd = _jukeEndTime + jukeCooldown;
+        return chosen;
+    }
 
     private Vector3 RawDirectionTo(Vector3 point)
     {

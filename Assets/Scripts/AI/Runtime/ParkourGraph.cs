@@ -65,6 +65,53 @@ public sealed class ParkourGraph
     }
 
     /// <summary>
+    /// Single-source Dijkstra: least-cost distance from <paramref name="startNode"/> to every node,
+    /// indexed by node id (ids are dense 0..Count-1). Unreachable nodes stay <see cref="float.MaxValue"/>.
+    /// Same relaxation as <see cref="FindPath"/> minus path reconstruction — one call gives the flee
+    /// scorer both reachability and path-distance for all candidate goals at once (cheaper than a
+    /// FindPath per candidate). Linear-scan frontier, same rationale as FindPath's.
+    /// </summary>
+    public float[] DistancesFrom(int startNode)
+    {
+        var dist = new float[_nodes.Count];
+        for (int i = 0; i < dist.Length; i++) dist[i] = float.MaxValue;
+        if (startNode < 0 || startNode >= dist.Length) return dist;
+
+        dist[startNode] = 0f;
+        var visited = new HashSet<int>();
+        var frontier = new List<int> { startNode };
+
+        while (frontier.Count > 0)
+        {
+            int current = frontier[0];
+            float best = dist[current];
+            for (int i = 1; i < frontier.Count; i++)
+            {
+                if (dist[frontier[i]] < best)
+                {
+                    best = dist[frontier[i]];
+                    current = frontier[i];
+                }
+            }
+            frontier.Remove(current);
+
+            if (!visited.Add(current)) continue;
+
+            foreach (ParkourEdge edge in OutgoingEdges(current))
+            {
+                float candidate = dist[current] + edge.Cost;
+                if (candidate < dist[edge.ToNode])
+                {
+                    dist[edge.ToNode] = candidate;
+                    if (!frontier.Contains(edge.ToNode)) frontier.Add(edge.ToNode);
+                }
+            }
+        }
+
+        return dist;
+    }
+
+    /// <summary>
     /// Dijkstra shortest path by edge cost. A linear-scan "priority queue" is intentional — these
     /// maps top out at a few dozen nodes, so a binary heap would only add complexity with no
     /// measurable benefit. Returns null if no path exists.
