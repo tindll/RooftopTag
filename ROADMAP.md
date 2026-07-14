@@ -66,6 +66,19 @@ per-event counts, `runner_avg_survival` 0.00→>0 (any movement counts).
 
 ## WP2 — Balance iteration to `runner_avg_survival` 0.50-0.70 (M3 sign-off)
 
+**Status: STOPPED at a structural wall (2026-07-14; see TUNING_LOG top entry). Band NOT reached —
+`runner_avg_survival` stayed 0.00 across 5 iterations spanning every authorized numeric knob**
+(grace head-start, conversion-grace dampening, converted-tagger slowdown, and the base tagger speed
+edge swept 1.04x -> 1.0x -> 0.9x). Root cause is not the speed edge: it's the infection cascade +
+non-juking bot flee — a converted tagger appears zero-gap on the runner cluster and bot runners
+can't evade like a human, so even *slower* taggers sweep 100%. Same class as the resolved
+`runner_win_rate` wall. Moving survival off 0.00 needs a smarter flee AI (knob #5, a bigger change)
+or a self-play mode/metric redesign (user-vetoed) — neither a numeric knob. **Kept:** the grace-flee
+bug fix (runners now flee during grace instead of freezing) — `time_to_first_tag` 2.9->7.5s,
+`total_stuck` 80->25, PlayMode 50/50. M3 sign-off remains blocked on bot evasion quality, not
+balance numbers. **Decision needed from user:** invest in flee-AI (WP-scale), redefine the
+self-play success metric, or accept the band as a human-playtest-only target.
+
 Only after WP1: sweep one knob-set per self-play run — `BotConfig` Skilled (reactionTime,
 predictionHorizon, executionPrecision), `TagRulesConfig` (tagReach 1.2/2.0, lungeCooldown 1.5,
 roundStartGrace 3, taggerCount, lateGamePhaseDuration). Sonnet iterates with the LOOP.md protocol

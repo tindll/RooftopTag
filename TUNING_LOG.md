@@ -3,6 +3,77 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## WP2 — balance sweep for runner_avg_survival 0.50-0.70: hit a structural wall at 0.00 (2026-07-14)
+
+Goal (ROADMAP WP2 / M3 sign-off): move `runner_avg_survival` from 0.00 into 0.50-0.70 in the
+bot-only self-play proxy (12 agents, 2 taggers / 10 runners, 60s round, infection mode). Followed
+LOOP.md: ONE knob per run, diagnose before turning, stop on the 3-iterations-flat wall.
+
+**Fresh post-double-jump baseline (10 matches):**
+`runner_win_rate=0.00 runner_avg_survival=0.00 speed_p50=7.00 speed_p90=7.28 total_stuck=80
+total_fallen=0 total_edge_usage=[Run=1075, Jump=648, Vault=20, Climb=1] jump_takeoff_speed_avg=6.47
+jump_land_within_1.75m=0.77 time_to_first_tag~2.88 bot_double_jumps=6` — every match a full sweep
+in 15-28s; first tag pinned at ~2.88s (the 3s grace boundary).
+
+**The knobs, in LOOP.md leverage order — survival stayed 0.00 through ALL of them:**
+
+- **Iter 1 — round-start grace actually creates a head start (KEPT).** Diagnosis: `time_to_first_tag`
+  pinned at the grace boundary because the grace gate in `ParkourBotInput.Tick` froze *every* bot,
+  runners included — so the 3s "head start" gave runners zero separation and adjacent taggers tagged
+  the instant grace lifted. Its own comment even claimed "taggers unleashed only after the runner's
+  head start", but runners never moved. Fix: only TAGGERS freeze during grace; runners flee.
+  Result: `time_to_first_tag` 2.88 -> ~7.5s avg (real ~24m head start), `total_stuck` **80 -> 25**,
+  fallen still 0, edges healthy. **`runner_avg_survival` unchanged at 0.00** — the head start delays
+  the first tag but the cascade still sweeps everyone by ~20s. Kept anyway: it's a genuine
+  behaviour-correctness fix (makes grace work as designed) and fixes a real stuck regression (the
+  fresh baseline's 80 is above the ~45 guard; this brings it to ~25).
+
+- **Iter 2 — conversionGraceDuration 2.5 -> 6 (REVERTED).** Hypothesis: a longer grace sidelines each
+  freshly-converted mid-field hunter so the runners it spawned next to can open distance. Result:
+  `total_stuck` 25 -> 13 (noisy), **survival still 0.00**. Reverted — a just-converted tagger keeps
+  pace with the fleeing cluster *during* grace (equal-ish speed) and tags the moment it lifts, so a
+  longer grace changes nothing; no payoff to justify a human-facing conversion-grace change.
+
+- **Iter 3 — convertedTaggerSlowdown 0.8x during grace (REVERTED).** Hypothesis (LOOP knob #3's "slow
+  converted taggers briefly"): slow a tagger below runner speed while it's in conversion grace so it
+  falls behind the cluster instead of gluing to it. New `TagRulesConfig.convertedTaggerSlowdown` +
+  a `RoundController` gate on `Role==Tagger && IsInGrace`. Result: durations crept up (max 33s),
+  **survival still 0.00**. Reverted — the slowed hunter re-closes the small gap after grace (base
+  1.04x edge), and originals keep sweeping; unused mechanic + human-feel change with no payoff.
+
+- **Iter 4 — tagger base speed edge 1.04x -> 1.0x, self-play-only (REVERTED).** Knob #4, the last
+  resort. Set on SelfPlayTests' own config so the shared 1.04 human-feel default is untouched.
+  Hypothesis: an equal-speed pursuer can't run down a fleeing runner. Result: **survival still
+  0.00**. The reason is structural — at the instant of conversion the new tagger is *touching* the
+  runner (gap≈0); at ≥1.0x that gap never grows, so it re-tags after grace, and the 2 taggers
+  pincer.
+
+- **Iter 5 — tagger base speed edge 0.9x, self-play-only (REVERTED).** Taggers 10% SLOWER than
+  runners. **survival STILL 0.00** — full sweep every match in 17-28s.
+
+**Wall (STOP per LOOP.md — metric flat across 5 iterations spanning every authorized numeric knob).**
+Root cause is not the speed edge at all: it's the **infection cascade + non-juking bot flee**. A
+converted tagger appears in-reach of the runner cluster (zero-gap), and bot runners flee
+deterministically to `FleeGoalNode`'s "farthest away-node", which on the finite 26-roof map routes
+them into corners, dead-end roofs (Tower / construction spurs), or the other tagger's pincer — they
+cannot break contact the way a juking human would. Even taggers *slower* than runners (0.9x) sweep
+100%, because escape needs evasion the flee AI doesn't have, not just a speed deficit. This is the
+same structural finding as the resolved `runner_win_rate` wall (2026-07-12): the target band is a
+human-runner property that equal/deterministic bot self-play can't reproduce. Moving survival off
+0.00 would need either a much smarter flee (LOOP knob #5, a "bigger change" the task scoped out) or a
+metric/mode redesign (removing infection for self-play — a user-vetoed design call). Neither is a
+numeric knob, so tuning stops here rather than thrashing.
+
+**Final state (committed): iter-1 grace-flee fix only; all balance experiments reverted.**
+Self-play (= the iter-1 batch, since the final code is exactly that state):
+`runner_win_rate=0.00 runner_avg_survival=0.00 total_stuck=25 total_fallen=0
+total_edge_usage=[Run=1109, Jump=654, Vault=62, Climb=4] time_to_first_tag~7.5
+jump_takeoff_speed_avg=6.30 jump_land_within_1.75m=0.77 bot_double_jumps=5`. Survival band NOT
+reached (0.00, structural wall); `total_stuck` improved 80 -> 25 (guard: <=45, held); fallen 0.
+PlayMode suite re-confirmed 50/50 after the final state. Human 1v10 chase-me config untouched
+(shared TagRulesConfig defaults unchanged; the grace-flee fix makes bot Runners scatter during grace
+in that mode too — a strict improvement, feel-test-pending).
+
 ## Bot double-jump: jump-shortfall recovery (2026-07-14)
 
 Runner bots now spend their double-jump (already player-proven; RoundController grants

@@ -158,9 +158,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             _jumpInFlight = false;
         }
 
-        // Hold still until the round-start grace lifts — the taggers are "unleashed" only after the
-        // runner's head start, rather than chasing from t=0.
-        if (_roundController != null && !_roundController.IsPastStartGrace)
+        // Round-start grace: only TAGGERS hold still — they're "unleashed" once the grace lifts.
+        // Runners keep fleeing during grace so the window actually builds a head start; freezing
+        // everyone (the old behaviour) gave runners zero separation, so taggers spawning adjacent
+        // tagged the instant grace lifted (time_to_first_tag pinned at the grace boundary).
+        if (_roundController != null && !_roundController.IsPastStartGrace && _agent.Role == Role.Tagger)
         {
             Move = Vector2.zero;
             return;
