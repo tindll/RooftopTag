@@ -3,6 +3,43 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Animator clip stopgap audit (2026-07-14)
+
+Checked `Assets/Art/Characters/Animations/` against the three known ANIMATOR_CLIP_STOPGAP
+warnings (Idle→Walking, Running Slide→Stand To Roll, Vault→sped-up Braced Hang To Crouch) plus
+the unused `X Bot@Landing.fbx`. Full clip inventory on disk: `Fast Run`, `Walking`,
+`X Bot@Braced Hang To Crouch`, `X Bot@Climbing Ladder`, `X Bot@Falling Idle`,
+`X Bot@Freehang Climb`, `X Bot@Front Flip`, `X Bot@Jumping`, `X Bot@Landing`, `X Bot@Left Strafe`,
+`X Bot@Right Strafe`, `X Bot@Rope Swinging`, `X Bot@Stand To Roll`, `X Bot@Walking Backwards`.
+
+**No dedicated Idle / Running Slide / Vault clip exists in that set** — none were unwired, they
+were just never downloaded. All three stopgaps stay as-is:
+- **Idle → Walking.** Considered `X Bot@Falling Idle` as an alternative (it's a floaty
+  arms-out free-fall pose, not a standing pose) — worse than walking-in-place for a grounded
+  idle, so left alone rather than swap in something that reads more wrong.
+- **Running Slide → `X Bot@Stand To Roll`.** No better candidate on disk.
+- **Vault → `X Bot@Braced Hang To Crouch` (1.5x speed).** No better candidate on disk. Found and
+  fixed a real bug here: `BuildCharacterAnimator.cs`'s `Clip()` call for Vaulting listed
+  `"X Bot@Braced Hang To Crouch"` as its *first* candidate (copy-pasted from the Mantling call),
+  so `Clip()` never logged it as a stopgap and would NOT have auto-picked up a real `Vault.fbx`
+  if one were dropped in later. Changed to `Clip("Vault", "X Bot@Braced Hang To Crouch", "Climbing To Top")`
+  — now logs `ANIMATOR_CLIP_STOPGAP 'Vault' missing → using 'X Bot@Braced Hang To Crouch'` and
+  will self-heal once a real Vault clip is imported, same pattern as Idle/Sliding already used.
+
+**`X Bot@Landing.fbx` stays unused.** Wiring it into the Airborne→Grounded transition would need
+a new hold-timer bool (same shape as `Flipping`/`Diving` in `CharacterAnimatorBridge.cs`), a new
+state + AnyState transition in `BuildCharacterAnimator.cs`, and gating the existing `Grounded`
+AnyState transition on `IfNot Landing` — real feature work, not a small hookup, even though
+`CharacterMotor.Landed` (currently only used for camera shake) would be the trigger to hang it
+off of. Skipped per task scope; flagging as a follow-up if landing polish is wanted later.
+
+**Still need from mixamo.com (X Bot character, without skin) to fully clear these stopgaps:**
+`Idle`, `Running Slide`, `Vault`.
+
+**Verification:** `BuildCharacterAnimator.Build` headless regen — clean, 3 stopgap lines logged
+(Idle, Running Slide, Vault), `ANIMATOR_BUILT states=13 params=8`. `PlaygroundBuilder.BuildRooftopArena`
+headless — 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`. PlayMode suite — 54/54 green.
+
 ## WP3 — map-route fixes: Tower second exit + Con_West second inbound (2026-07-14)
 
 **Violations (spec audit):** `Roof_Tower` (11) had exactly one route in/out — the `7<->11` Ladder —

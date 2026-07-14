@@ -69,7 +69,8 @@ public static class BuildCharacterAnimator
         // and everything from Mantling on shifted down by one — the Any() indices below match the live enum.
         var mantling = Simple(sm, "Mantling", Clip("X Bot@Braced Hang To Crouch", "Climbing To Top"));
         // Vault clip missing → sped-up braced-hang mantle stopgap so it reads as a quick hop-over.
-        var vaulting = Simple(sm, "Vaulting", Clip("X Bot@Braced Hang To Crouch", "Climbing To Top"));
+        // "Vault" listed first so Clip() self-heals (and logs the stopgap) once that clip is imported.
+        var vaulting = Simple(sm, "Vaulting", Clip("Vault", "X Bot@Braced Hang To Crouch", "Climbing To Top"));
         vaulting.speed = 1.5f;
         var climbing = Simple(sm, "Climbing", Clip("X Bot@Freehang Climb", "Climbing Up Wall", "Rope Climb"));
         var ladder = Simple(sm, "OnLadder", Clip("X Bot@Climbing Ladder", "Climbing Ladder"));
