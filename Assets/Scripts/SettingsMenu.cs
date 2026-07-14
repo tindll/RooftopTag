@@ -49,6 +49,10 @@ public sealed class SettingsMenu : MonoBehaviour
     // difficulty row is only drawn when a bootstrap callback is actually wired up.
     private TagArenaBootstrap? _botDifficultyBootstrap;
 
+    // Null when this menu is attached by PlaygroundBootstrap (no main menu exists there) — the
+    // pause menu's Quit button falls back to a real Application.Quit in that case.
+    private MainMenuOverlay? _mainMenu;
+
     private bool _open;
     private Rect _windowRect = new(20, 20, 320, 10);
 
@@ -73,13 +77,17 @@ public sealed class SettingsMenu : MonoBehaviour
     /// <paramref name="botDifficultyBootstrap"/> is optional — pass it only when bots exist (Tag
     /// Arena / Rooftop Arena) to enable the live "Bot difficulty" row; PlaygroundBootstrap has no
     /// bots and omits it, so the row stays hidden there.
+    /// <paramref name="mainMenu"/> is optional — pass it only where a <see cref="MainMenuOverlay"/>
+    /// exists (Tag Arena / Rooftop Arena), so the pause menu's Quit button returns there instead of
+    /// calling Application.Quit; PlaygroundBootstrap has no main menu and omits it.
     /// </summary>
-    public void Configure(PlayerInputProvider input, ThirdPersonCameraRig cameraRig, RoundController? roundController, TagArenaBootstrap? botDifficultyBootstrap = null)
+    public void Configure(PlayerInputProvider input, ThirdPersonCameraRig cameraRig, RoundController? roundController, TagArenaBootstrap? botDifficultyBootstrap = null, MainMenuOverlay? mainMenu = null)
     {
         _input = input;
         _cameraRig = cameraRig;
         _roundController = roundController;
         _botDifficultyBootstrap = botDifficultyBootstrap;
+        _mainMenu = mainMenu;
     }
 
     private void Start()
@@ -162,10 +170,21 @@ public sealed class SettingsMenu : MonoBehaviour
 
         if (GUILayout.Button("Quit"))
         {
-            Application.Quit();
+            if (_mainMenu != null)
+            {
+                // Return to the main menu instead of exiting the process. Only flip _paused here
+                // (not the full Resume()) — ShowMenu already drives the identical frozen-timeScale
+                // + free-cursor state Resume() would otherwise stomp back to "playing".
+                _paused = false;
+                _mainMenu.ShowMenu();
+            }
+            else
+            {
+                Application.Quit();
 #if UNITY_EDITOR
-            UnityEditor.EditorApplication.isPlaying = false;
+                UnityEditor.EditorApplication.isPlaying = false;
 #endif
+            }
         }
     }
 

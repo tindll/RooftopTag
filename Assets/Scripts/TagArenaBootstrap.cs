@@ -34,9 +34,13 @@ public sealed class TagArenaBootstrap : MonoBehaviour
     private RoundController _roundController = null!;
     private ParkourGraph? _graph;
     private BotConfig _botConfig = null!;
+    private TagRulesConfig _tagConfig = null!;
 
     /// <summary>Current bot difficulty. Mirrors the serialized field so restarts stay consistent with the last live change.</summary>
     public BotDifficulty Difficulty => difficulty;
+
+    /// <summary>Current chaser (tagger) count — mirrors the shared runtime config so the main menu can read the live value when re-showing.</summary>
+    public int TaggerCount => _tagConfig.taggerCount;
 
     /// <summary>
     /// Re-configures every spawned bot with a new difficulty immediately (ParkourBotInput.Configure
@@ -50,10 +54,19 @@ public sealed class TagArenaBootstrap : MonoBehaviour
             input.Configure(agent, _roundController, _graph, _botConfig, newDifficulty);
     }
 
+    /// <summary>
+    /// Sets the chaser count on the shared runtime <see cref="TagRulesConfig"/> instance (the same
+    /// object reference <see cref="RoundController"/> was Configure'd with). No immediate re-roll
+    /// here — RoundController.AssignRoles reads taggerCount fresh on every StartRound call, so the
+    /// caller (MainMenuOverlay's Play button) just follows this with StartRound().
+    /// </summary>
+    public void ApplyTaggerCount(int newTaggerCount) => _tagConfig.taggerCount = newTaggerCount;
+
     private void Awake()
     {
         var tagConfig = ScriptableObject.CreateInstance<TagRulesConfig>();
         tagConfig.forcePlayerAsRunner = forcePlayerAsRunner;
+        _tagConfig = tagConfig;
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         var botConfig = ScriptableObject.CreateInstance<BotConfig>();
         // Both scenes that use this bootstrap (Tag Arena, Rooftop Arena) build on the same branching
@@ -84,7 +97,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         rig.Configure(playerMotor, mainCamera, cameraYawPivot, groundMask);
         roundController.SetCameraRig(rig);
 
-        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig, roundController, this);
+        var mainMenu = playerRoot.AddComponent<MainMenuOverlay>();
+        mainMenu.Configure(this, roundController, rig);
+        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig, roundController, this, mainMenu);
 
         var bots = new System.Collections.Generic.List<ParkourBotInput>(botRoots.Length);
         foreach (GameObject botRoot in botRoots)

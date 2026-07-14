@@ -8,7 +8,10 @@ namespace Game.Rules;
 public sealed class TagRulesConfig : ScriptableObject
 {
     [Header("Round")]
-    public float roundDuration = 300f;
+    // 120s (was 300s): a 5-minute ceiling on an 11-agent 1v10 chase-me round left "survive to the
+    // timer" as a near-impossible win condition in practice (self-play sweeps land well under 30s
+    // once a tag cascade starts) — 2 minutes keeps timer-survival a real, reachable win state.
+    public float roundDuration = 120f;
 
     /// <summary>Current mode: the player is the runner and a single bot is the tagger chasing them.</summary>
     public int taggerCount = 1;

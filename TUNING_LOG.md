@@ -3,6 +3,38 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Main-menu overlay + scene flow + roundDuration 300 -> 120 (2026-07-14)
+
+Minimal main menu for a shippable player build (there was previously no way to pick options or
+switch scenes outside the Editor):
+
+- **`MainMenuOverlay` (new, Assets/Scripts/MainMenuOverlay.cs):** IMGUI window shown at
+  RooftopArena/TagArena startup before play — title, Difficulty cycle (Casual/Skilled/Scary via
+  the existing `TagArenaBootstrap.ApplyDifficulty`), Chasers cycle (1/3/5/10, new
+  `TagArenaBootstrap.ApplyTaggerCount` writes the shared runtime `TagRulesConfig.taggerCount`;
+  `RoundController.AssignRoles` reads it fresh on every `StartRound`), Scene row
+  (Rooftop / Playground via `SceneManager.LoadScene`), PLAY, Quit game. While up it reuses the
+  pause menu's exact freeze pattern (`Time.timeScale = 0` + `CursorUnlocked`/`SuppressAutoRelock`)
+  and restarts the round on show so nothing plays out behind it; PLAY applies selections,
+  unfreezes, `StartRound()` + `SnapToTarget()`, relocks cursor. Attached at runtime by
+  `TagArenaBootstrap` only (no scene serialization — same custom-asmdef constraint as every other
+  bootstrap-attached component), so it's inherently absent from headless self-play (builds agents
+  directly, no bootstrap) and from the movement playground.
+- **Esc-pause Quit now returns to the main menu** (`SettingsMenu` gets an optional
+  `MainMenuOverlay` in `Configure`); it still `Application.Quit()`s in the playground where no
+  main menu exists. Real process-quit lives on the main menu's own "Quit game".
+- **`TagRulesConfig.roundDuration` 300 -> 120:** a 5-min ceiling made "survive to the timer" a
+  non-goal in a 1vN chase (self-play sweeps end <30s; a human dies or wins long before 5:00).
+  2 min makes timer-survival a real win condition. SelfPlayTests sets its own 60s duration, so
+  headless metrics are unaffected.
+
+Verification: headless `BuildRooftopArena` — 0 error CS, `ROOFTOP_ARENA_BUILD_OK`. Full PlayMode
+suite 50/50 green (the timer test sets its own 0.05s duration; scene-load tests unaffected — the
+overlay's `OnDestroy` resets `timeScale` like SettingsMenu's). Self-play batch unchanged in
+character: `matches=10 ... total_stuck=17 total_fallen=0 runner_win_rate=0.00` (stuck noise band
+13-25 across prior runs) — proves the menu never touches the headless path. Menu layout/flow and
+chaser-count feel need a manual pass.
+
 ## WP2 — balance sweep for runner_avg_survival 0.50-0.70: hit a structural wall at 0.00 (2026-07-14)
 
 Goal (ROADMAP WP2 / M3 sign-off): move `runner_avg_survival` from 0.00 into 0.50-0.70 in the
