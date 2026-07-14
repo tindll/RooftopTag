@@ -261,10 +261,16 @@ public static class RooftopArena
         // would fight its collider. Whenever any part of the capsule is at beam height the bob is ~L
         // (>=5m here) away along the swing axis, so a stub this size never intersects the swing while
         // still reading as the hub (the ChainSwingInteractable crane's solid jib is the visible arm).
-        TagArenaMapGeometry.CreateBox("SwingBeam", parent,
+        // Anti-exploit: rolled 60° about z so the top face tilts past ground.maxSlopeAngleDegrees (50°)
+        // → GroundDetector rejects it as standable → a pump-and-jump-release onto this hub slides off
+        // instead of granting a camp spot over the chasm. The pivot above is a coordinate, not a child
+        // of this mesh, so rotating the stub does not move the swing; the stub is compact enough (~0.77m
+        // half-diagonal) that the roll keeps it well clear of the swept arc (bob is >=5m out).
+        GameObject swingBeam = TagArenaMapGeometry.CreateBox("SwingBeam", parent,
             new Vector3(pivot.x, pivot.y, pivot.z),
             new Vector3(1.5f, 0.3f, 1.5f),
             TagArenaMapGeometry.SurfaceRole.WallBody);
+        swingBeam.transform.rotation = Quaternion.Euler(0f, 0f, 60f);
 
         // The chain itself is drawn at runtime by ChainSwingInteractable's LineRenderer (which also
         // follows the swinger), so no static chain visual is emitted here — only the overhead beam.

@@ -581,6 +581,83 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
+    public IEnumerator Swing_HangCapForcesRelease_ThenRegrabCooldownBlocksReattach()
+    {
+        // Anti-exploit regression test: a Runner used to grab the chasm rope, press NOTHING, and hang
+        // forever to the round timer (taggers can't reach a mid-air point). Now a hang cap force-drops
+        // the swinger, and a regrab cooldown stops drop-and-instant-regrab cycling of the same rope.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -20f, 0f), new Vector3(300f, 1f, 300f));
+
+        const float length = 4f;
+        Vector3 pivot = new(0f, 8f, 0f);
+        ChainSwingInteractable swing = CreateSwing(_sceneRoot.transform, pivot, length);
+
+        // A dedicated config with a short hang cap so the test doesn't crawl for 8 real seconds — same
+        // defaults otherwise. Kept local (not the shared _config) so it can't leak into other tests.
+        var cfg = ScriptableObject.CreateInstance<MovementConfig>();
+        MovementConfig.SwingSettings s = cfg.swing;
+        s.maxHangSeconds = 1f;
+        s.regrabCooldownSeconds = 1.5f;
+        cfg.swing = s;
+
+        float startAngleRad = 30f * Mathf.Deg2Rad;
+        Vector3 startPos = pivot + new Vector3(Mathf.Sin(startAngleRad), -Mathf.Cos(startAngleRad), 0f) * length;
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(startPos);
+        var motorSo = new SerializedObject(motor);
+        motorSo.FindProperty("config").objectReferenceValue = cfg;
+        motorSo.ApplyModifiedProperties();
+        Rigidbody rb = go.GetComponent<Rigidbody>();
+
+        input.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Precondition: attached to the swing.");
+
+        // Press NOTHING and poll until the hang cap force-releases (its clock starts the release
+        // cooldown, so poll rather than over-wait — otherwise the cooldown expires before we test it).
+        input.Move = Vector2.zero;
+        float wait = 0f;
+        while (motor.CurrentState == MotorState.OnSwing && wait < cfg.swing.maxHangSeconds + 0.5f)
+        {
+            yield return new WaitForFixedUpdate();
+            wait += Time.fixedDeltaTime;
+        }
+        Assert.AreNotEqual(MotorState.OnSwing, motor.CurrentState,
+            "Hang cap should force-release a player who never releases, by maxHangSeconds.");
+
+        // Just released. Hammer Interact within grab range for a window safely inside the cooldown; the
+        // regrab cooldown must deny re-attach. Pin the player beside the chain each attempt (rigidbody
+        // teleport + zeroed velocity, NOT ResetState which would clear the cooldown) so a denial is the
+        // cooldown, not having fallen out of range.
+        float elapsed = 0f;
+        bool reattachedDuringCooldown = false;
+        while (elapsed < cfg.swing.regrabCooldownSeconds * 0.5f)
+        {
+            rb.position = startPos;
+            rb.linearVelocity = Vector3.zero;
+            input.PressInteract();
+            yield return new WaitForFixedUpdate();
+            elapsed += Time.fixedDeltaTime;
+            if (motor.CurrentState == MotorState.OnSwing) { reattachedDuringCooldown = true; break; }
+        }
+        Assert.IsFalse(reattachedDuringCooldown,
+            "Regrab cooldown should block re-attaching to the same rope right after a release.");
+
+        // Wait out the rest of the cooldown, then a grab in range should succeed again.
+        yield return RunForSeconds(cfg.swing.regrabCooldownSeconds);
+        rb.position = startPos;
+        rb.linearVelocity = Vector3.zero;
+        input.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.OnSwing, motor.CurrentState,
+            "After regrabCooldownSeconds, grabbing the swing should work again.");
+
+        Debug.Log($"METRIC swing_hang_cap_s={cfg.swing.maxHangSeconds:0.00} regrab_cooldown_s={cfg.swing.regrabCooldownSeconds:0.00}");
+        AssertNoPhysicsExplosion(motor);
+        Object.DestroyImmediate(cfg);
+    }
+
+    [UnityTest]
     public IEnumerator Climb_ReachesThresholdHeightLedge()
     {
         _sceneRoot = new GameObject("TestScene");

@@ -150,6 +150,16 @@ public sealed class MovementConfig : ScriptableObject
 
         // Window after attach during which release input is ignored, so the grab press can't instantly bail.
         public float attachReleaseGraceSeconds;
+
+        // Anti-exploit: force a momentum-true release once the swinger has hung this long, so a human
+        // can't grab the rope over the chasm and hang forever to the round timer. A chasm crossing is
+        // ~2-3s so this stays a strong escape; bots auto-release well before it (~1-2s).
+        public float maxHangSeconds;
+
+        // Anti-exploit: after any release, the swing branch can't be re-grabbed for this long, so a
+        // force-dropped/bailing player can't instantly re-grab the same rope and re-camp. Ladders are
+        // unaffected. During the cooldown the player falls into the chasm.
+        public float regrabCooldownSeconds;
     }
 
     public GroundSettings ground = new()
@@ -277,5 +287,7 @@ public sealed class MovementConfig : ScriptableObject
         releaseSpeedMultiplier = 1.15f,
         jumpReleaseBonus = 1.5f,
         attachReleaseGraceSeconds = 0.15f,
+        maxHangSeconds = 8f,
+        regrabCooldownSeconds = 1.5f,
     };
 }
