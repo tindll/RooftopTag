@@ -27,6 +27,18 @@ public sealed class RoundController : MonoBehaviour
     private TagAgent? _localPlayerAgent;
     private ThirdPersonCameraRig? _cameraRig;
 
+    // Per-player tag counts for the summary screen. Incremented for every tag including
+    // bot-on-bot in headless self-play — a plain dictionary increment is metric-neutral, so it
+    // always runs rather than being gated on a local player.
+    private readonly Dictionary<TagAgent, int> _tagCounts = new();
+
+    // Auto-restart only ever ticks when _localPlayerAgent != null (see Update) — SelfPlayTests
+    // runs 10 headless matches on its own clock and never sets a local player, so this const and
+    // field are simply inert there.
+    private const float AutoRestartDuration = 8f;
+    private float _autoRestartRemaining;
+    private float _finalRoundLength;
+
     private float _timeRemaining;
     private float _roundStartTime;
     private bool _roundOver;
@@ -66,6 +78,13 @@ public sealed class RoundController : MonoBehaviour
 
     /// <summary>Loose tagger coordination: taggers record who they're currently pursuing so others prefer an unclaimed runner over piling onto the same one.</summary>
     public void ClaimTarget(TagAgent tagger, TagAgent target) => _taggerClaims[tagger] = target;
+
+    /// <summary>Increments the tagger's tag count for the summary screen. Called from TagAgent.PerformTag for every landed tag.</summary>
+    public void RecordTag(TagAgent tagger)
+    {
+        _tagCounts.TryGetValue(tagger, out int count);
+        _tagCounts[tagger] = count + 1;
+    }
 
     /// <summary>Nearest Runner not already claimed by another Tagger; falls back to the plain nearest Runner if every Runner is claimed (better to double up than idle).</summary>
     public TagAgent? FindNearestUnclaimedRunner(TagAgent self)
@@ -135,6 +154,7 @@ public sealed class RoundController : MonoBehaviour
         _roundOver = false;
         _resultMessage = "";
         _playerLost = false;
+        _tagCounts.Clear();
         AssignRoles();
     }
 
@@ -209,7 +229,23 @@ public sealed class RoundController : MonoBehaviour
             return;
         }
 
-        if (_roundOver) return;
+        if (_roundOver)
+        {
+            // Auto-restart only in the human-played game: SelfPlayTests runs 10 headless matches
+            // on its own clock, and an 8s auto-restart firing mid-harness would distort match
+            // counts. _localPlayerAgent is null for every agent there, so this is a no-op in that
+            // harness — the same gate the minimap already uses.
+            if (_localPlayerAgent != null)
+            {
+                _autoRestartRemaining -= Time.deltaTime;
+                if (_autoRestartRemaining <= 0f)
+                {
+                    StartRound();
+                    _cameraRig?.SnapToTarget();
+                }
+            }
+            return;
+        }
 
         _timeRemaining -= Time.deltaTime;
 
@@ -273,6 +309,8 @@ public sealed class RoundController : MonoBehaviour
     {
         _roundOver = true;
         _resultMessage = message;
+        _autoRestartRemaining = AutoRestartDuration;
+        _finalRoundLength = _config.roundDuration - Mathf.Max(_timeRemaining, 0f);
     }
 
     /// <summary>Fired on the local player's WasTagged event (see TagAgent.PerformTag, which never
@@ -382,7 +420,25 @@ public sealed class RoundController : MonoBehaviour
         GUI.Label(new Rect(panel.x, panel.y + 50f, panel.width, 40f), _resultMessage, _bannerStyle);
 
         _bannerSubStyle!.normal.textColor = new Color(HudCream.r, HudCream.g, HudCream.b, 0.85f);
-        GUI.Label(new Rect(panel.x, panel.y + 110f, panel.width, 24f), "Press R to restart", _bannerSubStyle);
+        GUI.Label(new Rect(panel.x, panel.y + 96f, panel.width, 22f),
+            _localPlayerAgent != null
+                ? $"Next round in {Mathf.Max(0, Mathf.CeilToInt(_autoRestartRemaining))}s   —   Press R to restart"
+                : "Press R to restart",
+            _bannerSubStyle);
+
+        // Per-player round summary (local player only): tags landed, runners left, round length.
+        // runnersRemaining is recomputed live here (it was a local in the role-update loop); roles
+        // are frozen once _roundOver, so counting current Runners is accurate.
+        if (_localPlayerAgent != null)
+        {
+            int runnersRemaining = 0;
+            foreach (TagAgent agent in _agents)
+                if (agent.Role == Role.Runner) runnersRemaining++;
+
+            GUI.Label(new Rect(panel.x, panel.y + 118f, panel.width, 22f),
+                $"Your tags: {_tagCounts.GetValueOrDefault(_localPlayerAgent)}    Runners left: {runnersRemaining}    Round length: {_finalRoundLength:0.0}s",
+                _bannerSubStyle);
+        }
     }
 
     private static void DrawPanel(Rect rect, Color color)
