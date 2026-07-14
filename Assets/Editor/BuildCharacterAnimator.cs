@@ -65,9 +65,10 @@ public static class BuildCharacterAnimator
 
         // Slide clip missing → dive-roll stopgap (reads as a floor tumble).
         var sliding = Simple(sm, "Sliding", Clip("X Bot@Running Slide", "Running Slide", "X Bot@Stand To Roll"));
-        // The run-up is trimmed off the clip at import (CharacterImportPostprocessor) and the clip is
-        // one-shot, so no state cycleOffset is needed — the state plays the slide from its first
-        // (already-trimmed) frame and holds the low pose if it outlasts the clip.
+        // The clip is import-trimmed to the tight low-glide plateau (frames 10-22) and LOOPS with
+        // loop-pose on (CharacterImportPostprocessor), so no state cycleOffset is needed — the state
+        // plays the deep-crouch glide and, if the slide outlasts the clip, seamlessly cycles that low
+        // pose instead of freezing on a stood-up recovery frame (Bug A fix).
         // Wall-run was removed from CharacterMotor on this line, so MotorState has no WallRunning value
         // and everything from Mantling on shifted down by one — the Any() indices below match the live enum.
         var mantling = Simple(sm, "Mantling", Clip("X Bot@Braced Hang To Crouch", "Climbing To Top"));

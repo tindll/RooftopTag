@@ -336,6 +336,16 @@ public sealed class TagAgent : MonoBehaviour
     /// </summary>
     public void TryLunge()
     {
+        // Round-start grace: no lunge until past it, matching tags (TryTagInRange ~:460 and
+        // OnCollisionEnter ~:384 both gate on IsPastStartGrace). Root cause of the "lunge on spawn"
+        // bug: the local player's lunge is bound to <Mouse>/leftButton, so the main-menu PLAY click
+        // (or an R-restart click) leaks a leftButton press that fires TryLunge on the round's first
+        // frame. AssignRoles spawns with startGrace:false, so the IsInGrace gate below doesn't catch
+        // it. Harmless while runners couldn't dash; WP1 gave runners a dash, so it became a visible
+        // spawn-lunge. Gating here (a full no-op, like a grace denial) disallows it during the whole
+        // start-grace window without touching normal mid-round lunging.
+        if (_roundController != null && !_roundController.IsPastStartGrace) return;
+
         // Any role may lunge — it's a movement/escape dash (same impulse + cooldown for a Runner as a
         // Tagger). Only a Tagger's lunge arms the contact-tag window below, so a Runner's dash can
         // never tag anyone. Both roles still pass through the cooldown/grace gates here.

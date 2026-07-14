@@ -23,22 +23,32 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
         "X Bot@Falling Idle", "X Bot@Rope Swinging",
         "X Bot@Climbing Ladder", "X Bot@Freehang Climb",
         "X Bot@Idle",
-        // Running Slide is deliberately NOT here: the slide is a one-shot, not continuous motion.
-        // Looping it wrapped the clip back to its run-up mid-slide (the state can outlast the clip),
-        // which snapped the limbs — the in-game "flail". Non-looping, it holds on the final frame.
+        // Running Slide is NOT here — its loop flags are set explicitly in the slide branch below
+        // (loopTime + loopPose on the tight low-glide window), not via this whole-clip loop set.
+        // The old "never loop the slide" note stood because looping the whole 46-frame clip wrapped
+        // from the stand-up recovery back to the run-up mid-slide and snapped the limbs (the "flail").
+        // That no longer applies now the trim is a tight deep-crouch sub-window (see SlideFirst/Last).
         // Legacy names kept so older/re-added clips still loop if present.
         "Idle", "Running", "Rope Swinging",
         "Climbing Ladder", "Rope Climb", "Falling Idle",
     };
 
-    // Running Slide trim knobs. The Mixamo clip is 46 frames: it opens with a multi-stride run-up
-    // and ends standing back up. In-game slides are brief, so trim at import to just the slide
-    // itself — start past the run-up, end before the stand-up recovery. With the clip non-looping,
-    // a slide that outlasts it then freezes on the LOW SLIDE pose instead of the run-up or the
-    // stood-up recovery. Tune these two if the entry/freeze pose reads wrong.
+    // Running Slide trim knobs. The Mixamo clip is 46 frames (30fps). Per-frame Hips/Head world-Y,
+    // measured by CharacterPreviewShot.SlideFrames (humanoid-retargeted onto the raccoon):
+    //   frames  0- 2  standing         (hips ~0.40, head ~0.72)
+    //   frames  3- 9  drop into slide  (hips 0.39 -> 0.11)
+    //   frames 10-22  LOW GLIDE plateau (hips 0.08-0.13, head 0.27-0.33) — deepest ~f11/f16
+    //   frames 23-45  stand back up    (hips 0.15 -> 0.40)
+    // The prior trim (18-40) sat ENTIRELY on the stand-up ramp, so a slide that outlasted the clip
+    // froze on frame 40 — the MOST upright pose — while CharacterMotor kept the capsule shrunk to
+    // 0.5x + recentred: feet ended up below the lowered root → "sink into floor, sliding standing
+    // up" (Bug A). Fix: trim to the flat deep-crouch plateau (10-22) and LOOP it with loop-pose ON
+    // (loopTime + loopPose, set in OnPreprocessAnimation below). The window is low start-to-end and
+    // near-static, so the loop-pose-matched wrap is seamless — a long slide reads as a continuous
+    // low glide instead of freezing on a stood-up frame. Re-render via SlideFrames if retuning.
     const string SlideClip = "X Bot@Running Slide";
-    const int SlideFirstFrame = 18; // past the ~40% run-up
-    const int SlideLastFrame = 40;  // before the stand-up recovery
+    const int SlideFirstFrame = 10; // first frame of the low-glide plateau (settled deep crouch)
+    const int SlideLastFrame = 22;  // last plateau frame before the stand-up recovery (f23+) begins
 
     void OnPreprocessAnimation()
     {
@@ -55,6 +65,11 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
             {
                 clips[i].firstFrame = SlideFirstFrame;
                 clips[i].lastFrame = SlideLastFrame;
+                // Loop the tight low-glide window with loop-pose matching so a slide that outlasts
+                // the clip cycles a seamless continuous low crouch instead of freezing on one frame
+                // (loopPose serializes as loopBlend in the .meta). See SlideFirst/LastFrame notes.
+                clips[i].loopTime = true;
+                clips[i].loopPose = true;
             }
         }
         if (clips.Length > 0)

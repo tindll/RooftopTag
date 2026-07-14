@@ -122,6 +122,43 @@ public sealed class TagRulesTests
     }
 
     [UnityTest]
+    public IEnumerator TryLunge_DuringRoundStartGrace_IsNoOp()
+    {
+        // Regression (Bug B): a lunge fired on the round's first frame — the main-menu PLAY leftButton
+        // click leaks into the local player's lunge action. TryLunge is now gated on
+        // RoundController.IsPastStartGrace (matching tags), so a lunge during the start-grace window is
+        // a full no-op: no impulse, no cooldown spent.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
+
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.taggerCount = 1; // roundStartGraceDuration defaults to 3s — plenty of window for a 1-frame test
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform, false);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        controller.Configure(config);
+
+        (_, CharacterMotor aMotor, TagAgent a, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f));
+        (_, _, TagAgent b, _) = CreateTagAgent(new Vector3(10f, 1.1f, 0f));
+        a.SetRoundController(controller);
+        b.SetRoundController(controller);
+        controller.RegisterAgent(a, isLocalPlayer: false);
+        controller.RegisterAgent(b, isLocalPlayer: false);
+
+        yield return null; // RoundController.Start() → StartRound() stamps _roundStartTime = now
+
+        Assert.IsFalse(controller.IsPastStartGrace, "Precondition: still inside the round-start grace window.");
+        float speedBefore = aMotor.CurrentSpeed;
+        a.TryLunge();
+        float speedAfter = aMotor.CurrentSpeed;
+
+        Debug.Log($"METRIC start_grace_lunge_speed_delta={speedAfter - speedBefore:0.00} cooldown={a.LungeCooldownRemaining:0.00}");
+        Assert.AreEqual(0f, speedAfter - speedBefore, 0.0001f, "Lunge during round-start grace must apply no impulse.");
+        Assert.AreEqual(0f, a.LungeCooldownRemaining, "Lunge during round-start grace must be a full no-op — no cooldown spent.");
+    }
+
+    [UnityTest]
     public IEnumerator RoundController_AllRunnersTagged_EndsRoundTaggersWin()
     {
         _sceneRoot = new GameObject("TestScene");

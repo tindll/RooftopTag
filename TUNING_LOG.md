@@ -3,6 +3,61 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Two bug fixes: slide sinks-into-floor, lunge-on-spawn (2026-07-14)
+
+### Bug A — slide starts OK then character sinks into the floor sliding standing up
+
+**Root cause.** A prior Task-1 change made `X Bot@Running Slide` one-shot, trimmed to frames
+`18-40`. Per-frame Hips/Head world-Y (measured by `CharacterPreviewShot.SlideFrames`, which
+humanoid-retargets the clip onto the raccoon in AnimationMode and logs each bone's height) showed
+the Mixamo clip's real shape:
+
+| region | frames | hipsY |
+|--------|--------|-------|
+| standing | 0-2 | ~0.40 |
+| drop into slide | 3-9 | 0.39 → 0.11 |
+| **low-glide plateau** | **10-22** | **0.08-0.13** (deepest ~f11/f16) |
+| stand back up | 23-45 | 0.15 → 0.40 |
+
+The old `18-40` trim sat **entirely on the stand-up recovery ramp**, so a slide that outlasted
+the ~0.7s clip froze on frame 40 — the *most upright* pose (hipsY 0.369, headY 0.688) — while
+`CharacterMotor.EnterSliding` keeps the capsule shrunk to 0.5x + recentred. A standing held-pose
+over a lowered/shrunk root put the feet below the root → "sink into floor, sliding standing up".
+
+**Fix.** Retrim to the flat deep-crouch plateau `firstFrame:10 lastFrame:22` and turn that segment
+back to LOOPING with loop-pose ON (`loopTime:1` + `loopPose`/`loopBlend:1`) in
+`CharacterImportPostprocessor`. The window is low start-to-end (endpoints f10 hips0.087/head0.329 ≈
+f22 hips0.112/head0.339) and near-static, so loop-pose matching makes the wrap seamless — a long
+slide now cycles a continuous low glide instead of freezing on a stood-up frame. The earlier
+"don't loop the slide" note (looping the *whole* 46-frame clip wrapped recovery→run-up and flailed)
+no longer applies to a tight low-only window.
+
+**Verified.** Re-ran `SlideFrames` on the retrimmed+looped clip: all 13 held frames are low
+(hipsY 0.082-0.112, headY 0.277-0.339 — vs the old freeze at hipsY 0.369 / headY 0.688), feet
+(bounds min-Y ≈ 0) sit at the root/ground so no extra model anchor offset is needed. Controller
+regenerated, clip `.meta` now `firstFrame:10 lastFrame:22 loopTime:1 loopBlend:1`.
+
+### Bug B — a lunge fires at round start (player lunges on spawn)
+
+**Root cause.** The local player's lunge is bound to `<Mouse>/leftButton` (`TagAgent.Configure`).
+The main-menu PLAY click (or an R-restart click) leaks a `leftButton` press that fires
+`TryLunge()` on the round's first frame. `AssignRoles` spawns agents with `startGrace:false`, so
+the per-agent conversion-grace gate in `TryLunge` doesn't catch it — and `TryLunge`, unlike
+`TryTagInRange`/`OnCollisionEnter`, never checked the round-start grace (`IsPastStartGrace`). It was
+harmless while runners couldn't dash; WP1 gave runners a dash, so the stray input became a visible
+spawn-lunge.
+
+**Fix.** Gate `TryLunge` on `RoundController.IsPastStartGrace` (a full no-op during the whole
+start-grace window, matching how tags are already gated), so no lunge — from a leaked click or
+otherwise — can fire until the round is live. Normal mid-round lunging is untouched. Added PlayMode
+test `TryLunge_DuringRoundStartGrace_IsNoOp` (asserts no impulse and no cooldown spent).
+
+**Metric outcome.** PlayMode 57/57 pass (56 prior + the new gate test). Self-play batch unchanged
+in character: 10/10 "Taggers win", total_stuck=17 (≤4/match), total_fallen=0, time-to-first-tag
+3.3-9.1s (all past the 3s start grace, so bot taggers still tag on schedule — the gate's effect on
+their first-moments lunges is negligible). Rooftop arena builds clean (ROOFTOP_ARENA_BUILD_OK, 0
+CS errors).
+
 ## Slide feel polish: ceiling-check on stand-up, camera slide feedback, entry-speed snap (2026-07-14)
 
 **1. Ceiling check on stand-up.** `CharacterMotor.ExitSliding` restored full capsule height
