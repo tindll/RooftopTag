@@ -121,7 +121,12 @@ public static class RooftopGraphBuilder
                             || (link.From == 23 && link.To == 24) || (link.From == 24 && link.To == 23);
                         ParkourEdgeType jumpEdgeType = isScafHiOverlap ? ParkourEdgeType.Vault : ParkourEdgeType.Jump;
                         float jumpEntrySpeed = isScafHiOverlap ? config.mantleVault.vaultMinApproachSpeed : sprint;
-                        graph.AddEdge(fromNode, toNode, jumpEdgeType, jumpEntrySpeed, bidirectional: true);
+                        // True void the bot must clear: both chosen nodes sit EdgeInset inside their
+                        // roof lips, so the actual lip-to-lip gap is their separation minus both insets.
+                        // Feeds ParkourEdge.EmptyGap → IsShortJumpEdge, so sprint-vs-walk takeoff keys
+                        // off real per-edge geometry instead of the retired corridor's PlatformLength.
+                        float emptyGap = Mathf.Max(0f, Vector3.Distance(a, b) - 2f * EdgeInset);
+                        graph.AddEdge(fromNode, toNode, jumpEdgeType, jumpEntrySpeed, bidirectional: true, emptyGap: emptyGap);
                     }
                     else
                     {

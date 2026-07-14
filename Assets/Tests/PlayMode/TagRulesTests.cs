@@ -296,13 +296,14 @@ public sealed class TagRulesTests
         }
 
         Debug.Log($"METRIC rooftop_arena_agent_count={controller.Agents.Count} taggers={taggers} runners={runners}");
-        // The "chase me" ruleset scaled up to the full 11-agent roster: 1 human Runner + 10 bot
-        // Taggers hunting them (forcePlayerAsRunner=true) — RooftopArena is now the main game scene,
-        // building on the branching RooftopArena topology. TagArena.unity keeps the smaller 3-agent
-        // debug version of the same "chase me" mode (see TagArenaScene_IsChaseMeDebugMode below).
+        // Current "chase me" ruleset (TagRulesConfig.taggerCount=1, forcePlayerAsRunner=true): a single
+        // deliberate smart-chaser Tagger hunting everyone else. RooftopArena's 11-agent roster (1 human
+        // + 10 bots via TagArenaBootstrap.botRoots) → the human is the forced Runner and exactly one bot
+        // is the Tagger, leaving 10 Runners. TagArena.unity is the smaller 3-agent debug variant of the
+        // same mode (see TagArenaScene_IsChaseMeDebugMode below).
         Assert.AreEqual(11, controller.Agents.Count, "Rooftop Arena should spawn exactly 11 agents.");
-        Assert.AreEqual(10, taggers, "Should start with exactly 10 taggers.");
-        Assert.AreEqual(1, runners, "Should start with exactly 1 runner.");
+        Assert.AreEqual(1, taggers, "Should start with exactly 1 tagger (the single smart chaser).");
+        Assert.AreEqual(10, runners, "Should start with exactly 10 runners.");
 
         // Single-mode scene loads leak forward: Unity's physics simulation and Update loop run
         // across ALL loaded scenes regardless of which is "active", so the 12 live agents and
@@ -338,12 +339,13 @@ public sealed class TagRulesTests
         }
 
         Debug.Log($"METRIC tag_arena_agent_count={controller.Agents.Count} taggers={taggers} runners={runners}");
-        // "Chase me" debug mode: 3 agents (player + 2 bot Taggers), player forced as Runner —
-        // not the real 12-agent ruleset (see RooftopArenaScene_SpawnsWithCorrectRoleDistribution
-        // above for that, which is now the main game scene).
+        // "Chase me" debug mode: 3 agents (player + 2 bots), player forced as Runner, and the same
+        // single-Tagger ruleset (taggerCount=1) as the main scene — so exactly 1 bot chases, leaving
+        // the player plus the other bot as the 2 Runners. See
+        // RooftopArenaScene_SpawnsWithCorrectRoleDistribution above for the full 11-agent main scene.
         Assert.AreEqual(3, controller.Agents.Count, "Tag Arena should spawn exactly 3 agents.");
-        Assert.AreEqual(2, taggers, "Should start with exactly 2 taggers.");
-        Assert.AreEqual(1, runners, "Should start with exactly 1 runner.");
+        Assert.AreEqual(1, taggers, "Should start with exactly 1 tagger (the single smart chaser).");
+        Assert.AreEqual(2, runners, "Should start with exactly 2 runners.");
 
         // Single-mode scene loads leak forward: Unity's physics simulation and Update loop run
         // across ALL loaded scenes regardless of which is "active", so the live agents and real

@@ -8,13 +8,18 @@ public sealed class ParkourEdge
     public readonly ParkourEdgeType Type;
     public readonly float RequiredEntrySpeed;
     public readonly float Cost;
+    /// <summary>True empty-void distance this edge spans, lip-to-lip with roof insets removed. Only
+    /// meaningful for Jump edges (the graph builder populates it); 0 elsewhere. Lets the bot pick a
+    /// sprint vs walk takeoff from real per-edge geometry instead of the retired corridor's PlatformLength.</summary>
+    public readonly float EmptyGap;
 
-    public ParkourEdge(int fromNode, int toNode, ParkourEdgeType type, float requiredEntrySpeed, float cost)
+    public ParkourEdge(int fromNode, int toNode, ParkourEdgeType type, float requiredEntrySpeed, float cost, float emptyGap = 0f)
     {
         FromNode = fromNode;
         ToNode = toNode;
         Type = type;
         RequiredEntrySpeed = requiredEntrySpeed;
         Cost = cost;
+        EmptyGap = emptyGap;
     }
 }

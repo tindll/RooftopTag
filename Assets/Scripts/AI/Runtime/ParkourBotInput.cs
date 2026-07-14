@@ -1,7 +1,6 @@
 #nullable enable
 
 using System.Collections.Generic;
-using Game.MapGeometry;
 using Game.Movement;
 using Game.Rules;
 using UnityEngine;
@@ -72,6 +71,16 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private bool _jumpWasShort;   // was the in-flight jump a short (walk) one — for landing telemetry
     private float _jumpTargetZ;
 
+    // Commit-to-edge latch. Once the bot presses the button that starts a special edge
+    // (jump/swing/climb/ladder/vault/mantle), planning freezes so the every-reactionTime replan can't
+    // reset _pathIndex and drop the held approach steering + Interact mid-maneuver — the root cause of
+    // Swing/Climb/Ladder showing hundreds of attempts and zero completions. Cleared when the committed
+    // edge's ToNode is reached, on a fall-respawn teleport, or when the deadline expires (a maneuver
+    // that stalled must not latch the bot forever).
+    private bool _committed;
+    private float _commitDeadline;
+    private ParkourEdge? _committedEdge;
+
     public Vector2 Move { get; private set; }
     public Vector2 Look => Vector2.zero;
     public bool JumpHeld => false;
@@ -115,6 +124,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 if (_jumpWasShort) _metrics?.ShortJumpSignedOvershoot.Add(signedZ);
                 else _metrics?.LongJumpSignedOvershoot.Add(signedZ);
             }
+            else _committed = false; // a >12m "landing" means a fall-respawn teleported us mid-jump — drop the commitment
             _jumpInFlight = false;
         }
 
@@ -129,7 +139,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         if (Time.time >= _nextDecisionTime)
         {
             _nextDecisionTime = Time.time + Mathf.Max(_tuning.reactionTime, 0.05f);
-            Replan();
+            if (_committed && Time.time >= _commitDeadline)
+                _committed = false; // deadline — the maneuver stalled; let planning resume
+            SelectTarget();
+            if (!_committed)
+                RecomputePath(); // frozen while committed so a mid-edge bot keeps its approach + held Interact
         }
 
         if (_target == null)
@@ -162,7 +176,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
     // ---------------------------------------------------------------- Planning
 
-    private void Replan()
+    /// <summary>Refresh the target and its predicted intercept/flee point. ALWAYS runs — tag logic and
+    /// prediction must stay live even while committed to an edge; only the path rebuild is gated.</summary>
+    private void SelectTarget()
     {
         bool isTagger = _agent.Role == Role.Tagger;
         TagAgent? target = isTagger
@@ -170,23 +186,28 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             : _roundController.FindNearestOpposingAgent(_agent);
 
         _target = target;
-        if (target == null)
-        {
-            _path = null;
-            return;
-        }
+        if (target == null) return; // leave _path alone; a committed bot finishes its edge, deadline clears it
 
         if (isTagger) _roundController.ClaimTarget(_agent, target);
 
         Vector3 predicted = PredictPosition(target);
         LastPredictedPoint = predicted;
+    }
 
-        if (_graph == null)
+    /// <summary>Rebuild the planned path to the current target. SKIPPED while committed to an edge, so
+    /// a mid-maneuver bot preserves its approach steering, held Interact, and completion bookkeeping
+    /// across reaction ticks instead of resetting _pathIndex every 0.3s.</summary>
+    private void RecomputePath()
+    {
+        if (_target == null || _graph == null)
         {
             _path = null;
+            _pathIndex = 0;
             return;
         }
 
+        bool isTagger = _agent.Role == Role.Tagger;
+        Vector3 predicted = LastPredictedPoint ?? _target.transform.position;
         int startNode = _graph.NearestNode(transform.position);
         int goalNode = isTagger
             ? _graph.NearestNode(predicted)
@@ -257,6 +278,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 return toNodePos;
 
             _metrics?.RecordEdgeUsage(edge.Type);
+            if (_committed && ReferenceEquals(edge, _committedEdge))
+            {
+                _committed = false; // committed edge completed — arrived at its ToNode
+                _committedEdge = null;
+            }
             _pathIndex++;
         }
 
@@ -304,7 +330,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 if (_agent.Motor.CurrentState == MotorState.Grounded && IsAboutToRunOffEdge(steeringDir))
                 {
                     JumpPressed = true;
-                    _metrics?.RecordEdgeAttempt(edge.Type);
+                    Commit(edge);
                     _metrics?.JumpTakeoffSpeeds.Add(_agent.Motor.HorizontalVelocity.magnitude);
                     _jumpInFlight = true;
                     _jumpTargetPos = _graph!.Nodes[edge.ToNode].Position;
@@ -322,6 +348,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 // the vault ledges (~0.55m / ~1.05m) sit in the mantle band, which has no speed gate.
                 // Harmless while moving: no ladder/swing/wall-hook exists on these ledges to trigger.
                 InteractPressed = true;
+                Commit(edge);
                 // If it has actually stalled against the ledge, hop: a jump clears the low boxes
                 // outright (jump height ~2m exceeds every vault/mantle ledge) or re-triggers the
                 // mantle check airborne (TickAirborne runs it too), breaking a dead stop the interact
@@ -338,7 +365,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 // motor's ExitDirection auto-release still handles the actual departure toward the exit.
                 if (_agent.Motor.CurrentState != MotorState.OnSwing)
                     InteractPressed = true;
-                _metrics?.RecordEdgeAttempt(edge.Type);
+                Commit(edge);
                 break;
 
             case ParkourEdgeType.Climb:
@@ -351,10 +378,24 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 if (Mathf.Min(distFrom, distTo) <= interactTriggerDistance)
                 {
                     InteractPressed = true;
-                    _metrics?.RecordEdgeAttempt(edge.Type);
+                    Commit(edge);
                 }
                 break;
         }
+    }
+
+    /// <summary>Latch onto the special edge the bot has just started executing: freeze planning until
+    /// the edge completes (ToNode arrival), a fall-respawn teleport, or the 4s deadline. Records
+    /// exactly ONE attempt per execution here — swing/climb/ladder previously counted per-FixedUpdate
+    /// (frame-inflated: 333/471/54 attempts, 0 completions); this matches Jump's per-event semantics.
+    /// No-op if already committed, so neither the counter nor the deadline re-arm each frame.</summary>
+    private void Commit(ParkourEdge edge)
+    {
+        if (_committed) return;
+        _committed = true;
+        _commitDeadline = Time.time + 4f;
+        _committedEdge = edge;
+        _metrics?.RecordEdgeAttempt(edge.Type);
     }
 
     /// <summary>Should the bot approach at walk speed to avoid overshooting a short gap? Only for a
@@ -377,9 +418,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         ParkourEdge edge = _path[index];
         if (edge.Type != ParkourEdgeType.Jump) return false;
 
-        float centerDist = Vector3.Distance(_graph!.Nodes[edge.FromNode].Position, _graph.Nodes[edge.ToNode].Position);
-        float emptyGap = centerDist - TagArenaLayout.PlatformLength;
-        return emptyGap <= shortJumpGapThreshold;
+        // Real per-edge void distance (lip-to-lip, insets removed) baked in by RooftopGraphBuilder —
+        // no longer the retired corridor's PlatformLength const that misclassified nearly every gap.
+        return edge.EmptyGap <= shortJumpGapThreshold;
     }
 
     /// <summary>Jump if the bot has effectively stopped while grounded — used at ledges to break a

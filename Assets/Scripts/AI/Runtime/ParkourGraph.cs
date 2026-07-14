@@ -30,16 +30,16 @@ public sealed class ParkourGraph
         return id;
     }
 
-    public void AddEdge(int from, int to, ParkourEdgeType type, float requiredEntrySpeed, float? cost = null, bool bidirectional = false)
+    public void AddEdge(int from, int to, ParkourEdgeType type, float requiredEntrySpeed, float? cost = null, bool bidirectional = false, float emptyGap = 0f)
     {
         float resolvedCost = cost ?? Vector3.Distance(_nodes[from].Position, _nodes[to].Position);
-        var edge = new ParkourEdge(from, to, type, requiredEntrySpeed, resolvedCost);
+        var edge = new ParkourEdge(from, to, type, requiredEntrySpeed, resolvedCost, emptyGap);
         _edges.Add(edge);
         _outgoing[from].Add(edge);
 
         if (bidirectional)
         {
-            var reverse = new ParkourEdge(to, from, type, requiredEntrySpeed, resolvedCost);
+            var reverse = new ParkourEdge(to, from, type, requiredEntrySpeed, resolvedCost, emptyGap);
             _edges.Add(reverse);
             _outgoing[to].Add(reverse);
         }

@@ -33,7 +33,14 @@ reports; key signatures re-verified by the design agent (ParkourBotInput fields 
 :165-196, RecordEdgeUsage :259, RecordEdgeAttempt :307/:341/:354, IsShortJumpEdge :374-383,
 ParkourEdge immutable ctor, RoundController fall branch :208-223).
 
-## WP1 — Bot commit-to-edge + short-jump fix + honest instrumentation (UNBLOCKS M3; user's emphasis)
+## WP1 — Bot commit-to-edge + short-jump fix + honest instrumentation (DONE 2026-07-14; see TUNING_LOG top entry)
+
+**Status: DONE.** All three fixes landed on `port-features`. PlayMode 50/50 green; self-play shows
+Swing/Climb completions 0→>0, takeoff 4.41→6.30, land-within-1.75m 0.31→0.77, honest attempt
+counts (Swing 333→20, Climb 471→4), stuck 44→24. Ladder still 0 (routing/match-length, deferred to
+WP2/WP3 — the commit latch itself is proven via Climb, which shares Ladder's code path).
+`runner_avg_survival` unchanged at 0.00 → this is exactly WP2's job.
+
 
 1. **Commit-to-edge latch** (`ParkourBotInput.cs`) — opus. Fields `bool _committed; float
    _commitDeadline;`. Latch sets inside `ExecuteEdgeButtons` at the first `JumpPressed`/

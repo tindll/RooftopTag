@@ -3,6 +3,62 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## WP1 — bot commit-to-edge + short-jump fix + honest instrumentation (2026-07-14)
+
+Three mechanism bugs from the bot-execution forensics fixed together; special edges now COMPLETE
+instead of being abandoned mid-approach every 0.3s replan.
+
+**Before (pre-WP1 baseline):**
+`runner_avg_survival=0.00 total_stuck=44 total_edge_usage=[Run, Jump, Vault only]
+total_edge_attempts=[Swing=333, Climb=471, Ladder=54] jump_takeoff_speed_avg=4.41
+jump_land_within_1.75m=0.31 jump_landing_err_avg~3.09`
+
+**After (this batch, 10 matches):**
+`selfplay_batch matches=10 runner_win_rate=0.00 runner_avg_survival=0.00 speed_p50=6.81
+speed_p90=7.28 total_stuck=24 total_fallen=0 total_edge_usage=[Run=1026, Jump=600, Vault=55,
+Climb=1, Swing=1] total_edge_attempts=[Jump=633, Swing=20, Vault=67, Climb=4]
+max_distance_from_spawn=51.5 jump_takeoff_speed_avg=6.30 jump_landing_err_avg=1.58
+jump_land_within_1.75m=0.77 short_jump_signed_avg=-0.10(n=129) long_jump_signed_avg=-0.35(n=482)`
+
+**Fix 1 — commit-to-edge latch (`ParkourBotInput`).** Split `Replan()` into `SelectTarget()`
+(always runs — target/prediction/ClaimTarget stay live) and `RecomputePath()` (SKIPPED while
+`_committed`). `Commit(edge)` latches at the first Jump/Interact press for a committed-kind edge
+(Jump/SlideHop/Swing/Climb/Ladder/Vault/Mantle), deadline `Time.time + 4f`. Unlatched on the
+committed edge's ToNode arrival (same site as `RecordEdgeUsage`), on the existing >12m
+fall-respawn teleport guard, and on deadline timeout. This preserves the held Interact + approach
+steering across reaction ticks — the root cause of hundreds of swing/climb attempts converting to
+zero completions.
+
+**Fix 2 — real per-edge gap metadata (`ParkourEdge`/`ParkourGraph`/`RooftopGraphBuilder`).**
+`ParkourEdge` gains `readonly float EmptyGap`, threaded through `AddEdge` (optional, default 0).
+The Jump case in the builder computes it from the resolved lip nodes: `Distance(a,b) - 2*EdgeInset`
+(both nodes sit 1m inside their roof lip). `IsShortJumpEdge` now reads `edge.EmptyGap` — the last
+dependency on the retired-corridor `TagArenaLayout.PlatformLength` is gone. Takeoff speed 4.41→6.30,
+land-within-1.75m 0.31→0.77, landing error ~3.09→1.58.
+
+**Fix 3 — honest attempt counters.** Moved `RecordEdgeAttempt` into `Commit`, so it fires exactly
+once per edge-execution (was per-FixedUpdate for Swing/Climb/Ladder). Swing 333→20 attempts,
+Climb 471→4 — now comparable to Jump's per-event semantics.
+
+**Also (test fixes, pre-existing red):**
+- `Runner_CanLunge_ButOpensNoTagWindowAndTagsNobody` — removed `TagAgent.TryLunge`'s tagger-only
+  early return; runners now get the dash impulse (same cooldown), while the contact-tag window
+  stays armed only for `Role==Tagger`, so a runner's dash tags nobody.
+- `RooftopArenaScene_SpawnsWithCorrectRoleDistribution` / `TagArenaScene_IsChaseMeDebugMode` —
+  asserted the stale 10-tagger config. Actual shipped config is `taggerCount=1` +
+  `forcePlayerAsRunner=true` (single smart-chaser design): RooftopArena = 11 agents / 1 tagger /
+  10 runners; TagArena = 3 agents / 1 tagger / 2 runners. Updated to reality.
+
+**Verified:** rebuild `ROOFTOP_ARENA_BUILD_OK` (0 error CS), **PlayMode 50/50 green**, self-play
+batch above.
+
+**Gate result:** Swing and Climb completions 0→>0 (the mechanism is proven working); jump quality
+strongly up; stuck 44→24; attempts honest. **Ladder stayed 0/0** — not a regression: Ladder shares
+the exact switch-case with Climb (which completes), so the latch works; ladders simply aren't being
+*selected* by Dijkstra in these short (~20s, survival=0.00) matches. Re-costing the graph / adding
+ladder routes is WP3 (map routes) + WP2 (match length via balance) — both outside WP1's "don't
+touch graph layout" constraint. `runner_avg_survival` unchanged at 0.00 (reported, not gated).
+
 ## Merge main's polish work into port-features (2026-07-14)
 
 Cherry-picked / hand-applied the 7 polish commits that existed only on `main`, resolving every
