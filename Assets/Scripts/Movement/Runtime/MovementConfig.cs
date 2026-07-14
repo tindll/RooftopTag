@@ -250,7 +250,10 @@ public sealed class MovementConfig : ScriptableObject
 
     public LadderSettings ladder = new()
     {
-        climbSpeed = 9f, // was 3.5 — well under sprint speed (8); user wants ladders to feel "way faster"
+        // Pipe climb rate. 6 m/s: slower than the old 9 (user wanted it eased off) but still clearly
+        // faster than the wall-grab + double-jump loop (wall-climb tops out at climb.climbSpeed = 4 and
+        // the regrab/double-jump combo nets well under that), so the pipe stays the premium vertical.
+        climbSpeed = 6f,
         detachPushSpeed = 3f,
         entryMomentumRetention = 0.5f,
         // Off-the-top launch, tuned down from 5 / 5.5: it read as "flying off like a big jump".
