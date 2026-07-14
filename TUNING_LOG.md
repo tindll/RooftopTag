@@ -3,6 +3,62 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Role-linked character model, new Idle/Slide clips, heartbeat removal (2026-07-14)
+
+Three user-reported fixes, all verified headless with the Editor closed.
+
+**1. Character model now follows role, not player-vs-bot.** `TagArenaBootstrap` used to hardcode
+the player to the "raccoon" prefab and every bot to "pest_control" regardless of role, so a
+bot that got infected (Runner→Tagger) kept looking like a raccoon. Extracted the model-attach
+logic (`AttachCharacterModel`) out of `TagArenaBootstrap` into a new static
+`Game.Movement.CharacterModelAttacher.Attach(...)` — it had to move out of `TagArenaBootstrap`
+(which compiles into `Assembly-CSharp`) because `TagAgent` lives in the `Game.Rules` asmdef,
+which cannot reference back into `Assembly-CSharp` (confirmed by a real CS0103 compile error on
+the first attempt). `TagAgent.SetRole` now calls a new `SwapModel(role)` whenever the role's
+expected resource ("raccoon" for Runner, "pest_control" for Tagger) differs from what's currently
+attached: destroys the old "CharacterModel" child and the old `CharacterAnimatorBridge` component
+(the bridge lives on the agent root, not the model child, so it needs its own `Destroy` — this
+also fires the bridge's `OnDestroy`, unsubscribing its `Motor.DoubleJumped` handler), then
+re-attaches via `CharacterModelAttacher.Attach` and rewires `TagAgent.Lunged` to the new bridge's
+`TriggerDiveRoll`. This covers every conversion path for free since they all route through
+`TagAgent.SetRole` — round-start `AssignRoles`, `PerformTag` (tag conversion), and the
+fall-off-map conversion in `RoundController.Update`. Guarded by `_animController == null` (never
+set for the headless self-play capsules, which call `TagAgent.Configure` without the new
+bridge/animController/modelResourceName parameters) so the swap path is a complete no-op there —
+confirmed by an unchanged selfplay METRIC line (see below).
+
+**2. Wired the user's new Idle and Running Slide clips.** New files landed as
+`X Bot@Idle.fbx` and `X Bot@Running Slide.fbx` (not the plain `Idle.fbx`/`Running Slide.fbx`
+names `BuildCharacterAnimator.Clip()` was matching). Added `"X Bot@Idle"` and
+`"X Bot@Running Slide"` as the first candidates in the Grounded-idle and Sliding `Clip()` calls
+(existing fallback candidates kept, so nothing regresses if the files are ever renamed/removed),
+and added both names to `CharacterImportPostprocessor.LoopClips` (both are continuous motion).
+Regenerated the controller headless — `ANIMATOR_CLIP_STOPGAP` for Idle and Running Slide are gone;
+only `ANIMATOR_CLIP_STOPGAP 'Vault' missing → using 'X Bot@Braced Hang To Crouch'` remains (no
+Vault clip exists yet, unrelated to this change).
+
+**3. Removed the heartbeat audio cue; vignette now reads as a steady glow.** Per feedback the
+proximity heartbeat was too distracting. Deleted `RoundController.GetHeartbeatClip`/
+`AddHeartPulse` (the procedural clip synthesis) and the `AudioSource.PlayClipAtPoint` scheduling
+in `UpdateProximityCue`, along with the now-unused `HeartbeatIntervalFar/Near`,
+`HeartbeatPulseDecay`, `_nextHeartbeatUnscaled`, `_lastHeartbeatUnscaled`, and `_heartbeatClip`
+fields. Kept the red vignette, but since its alpha pulse used to sync to the heartbeat's beat
+timing, switched it to a steady `alpha = VignetteMaxAlpha * _proximityIntensity` (no pulse) —
+picked over a standalone ~1Hz sine pulse as the calmer read, which was the whole point of the
+change.
+
+**Verification:**
+- Controller regen headless: `ANIMATOR_BUILT states=13 params=8` — Idle/Slide stopgaps gone,
+  only Vault remains (expected, unrelated).
+- Compile + `BuildRooftopArena` headless: 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`.
+- Full PlayMode suite: **54/54 green** (role-swap didn't break `TagRulesTests`; heartbeat removal
+  touched no test assertion — none referenced it).
+- `Tools/selfplay.sh`: `matches=10 ... total_stuck=17 total_fallen=0` (within the expected
+  ≤~25 stuck / 0 fallen envelope) — confirms the model-swap headless guard and the heartbeat
+  removal don't touch the bot-only harness.
+- New FBX files staged and confirmed as LFS pointers via `git lfs status` (not raw blobs), per the
+  project's `*.fbx filter=lfs` rule.
+
 ## Animator clip stopgap audit (2026-07-14)
 
 Checked `Assets/Art/Characters/Animations/` against the three known ANIMATOR_CLIP_STOPGAP

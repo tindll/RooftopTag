@@ -49,7 +49,7 @@ public static class BuildCharacterAnimator
         groundTree.blendParameter = "StrafeSpeed";
         groundTree.blendParameterY = "ForwardSpeed";
         // Thresholds track MovementConfig walk (3.5) / sprint (7) so a clip is fully weighted at its speed.
-        groundTree.AddChild(Clip("Idle", "Walking"), new Vector2(0f, 0f)); // Idle missing → Walking stopgap
+        groundTree.AddChild(Clip("X Bot@Idle", "Idle", "Walking"), new Vector2(0f, 0f)); // Idle missing → Walking stopgap
         groundTree.AddChild(Clip("Walking"), new Vector2(0f, 3.5f));
         groundTree.AddChild(Clip("Fast Run", "Running"), new Vector2(0f, 7f));
         groundTree.AddChild(Clip("X Bot@Walking Backwards", "Walking Backwards"), new Vector2(0f, -3.5f));
@@ -64,7 +64,7 @@ public static class BuildCharacterAnimator
         airTree.AddChild(Clip("X Bot@Jumping", "Jump", "Jumping"), 3f);
 
         // Slide clip missing → dive-roll stopgap (reads as a floor tumble).
-        var sliding = Simple(sm, "Sliding", Clip("Running Slide", "X Bot@Stand To Roll"));
+        var sliding = Simple(sm, "Sliding", Clip("X Bot@Running Slide", "Running Slide", "X Bot@Stand To Roll"));
         // Wall-run was removed from CharacterMotor on this line, so MotorState has no WallRunning value
         // and everything from Mantling on shifted down by one — the Any() indices below match the live enum.
         var mantling = Simple(sm, "Mantling", Clip("X Bot@Braced Hang To Crouch", "Climbing To Top"));

@@ -22,6 +22,7 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
         "X Bot@Left Strafe", "X Bot@Right Strafe",
         "X Bot@Falling Idle", "X Bot@Rope Swinging",
         "X Bot@Climbing Ladder", "X Bot@Freehang Climb",
+        "X Bot@Idle", "X Bot@Running Slide",
         // Legacy names kept so older/re-added clips still loop if present.
         "Idle", "Running", "Running Slide", "Rope Swinging",
         "Climbing Ladder", "Rope Climb", "Falling Idle",

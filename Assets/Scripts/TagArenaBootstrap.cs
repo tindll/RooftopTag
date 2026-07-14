@@ -87,9 +87,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         CharacterMotor playerMotor = playerRoot.AddComponent<CharacterMotor>();
         playerMotor.Configure(groundMask, wallMask, cameraYawPivot);
         TagAgent playerAgent = playerRoot.AddComponent<TagAgent>();
-        var (playerRenderer, playerProcedural, playerBridge) = AttachCharacterModel(playerRoot, "raccoon", playerMotor, animController);
-        playerAgent.Configure(tagConfig, playerMotor, playerRenderer, isLocalPlayer: true, proceduralBody: playerProcedural);
-        if (playerBridge != null) playerAgent.Lunged += playerBridge.TriggerDiveRoll;
+        var (playerRenderer, playerProcedural, playerBridge) = CharacterModelAttacher.Attach(playerRoot, "raccoon", playerMotor, animController);
+        playerAgent.Configure(tagConfig, playerMotor, playerRenderer, isLocalPlayer: true, proceduralBody: playerProcedural,
+            bridge: playerBridge, animController: animController, modelResourceName: "raccoon");
         playerAgent.SetRoundController(roundController);
         roundController.RegisterAgent(playerAgent, isLocalPlayer: true);
 
@@ -108,9 +108,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
             CharacterMotor botMotor = botRoot.AddComponent<CharacterMotor>();
             botMotor.Configure(groundMask, wallMask, null);
             TagAgent botAgent = botRoot.AddComponent<TagAgent>();
-            var (botRenderer, botProcedural, botBridge) = AttachCharacterModel(botRoot, "pest_control", botMotor, animController);
-            botAgent.Configure(tagConfig, botMotor, botRenderer, isLocalPlayer: false, proceduralBody: botProcedural);
-            if (botBridge != null) botAgent.Lunged += botBridge.TriggerDiveRoll;
+            var (botRenderer, botProcedural, botBridge) = CharacterModelAttacher.Attach(botRoot, "pest_control", botMotor, animController);
+            botAgent.Configure(tagConfig, botMotor, botRenderer, isLocalPlayer: false, proceduralBody: botProcedural,
+                bridge: botBridge, animController: animController, modelResourceName: "pest_control");
             botAgent.SetRoundController(roundController);
             botInput.Configure(botAgent, roundController, graph, botConfig, difficulty);
             roundController.RegisterAgent(botAgent, isLocalPlayer: false);
@@ -139,49 +139,5 @@ public sealed class TagArenaBootstrap : MonoBehaviour
 
             Destroy(marker);
         }
-    }
-
-    /// <summary>
-    /// Replaces the agent's placeholder capsule with a rigged, animated character model loaded from
-    /// Resources, adds the Animator bridge, and returns the renderer TagAgent should tint plus a flag
-    /// telling it to skip its procedural capsule presentation. Falls back to the existing capsule
-    /// (procedural = true) if the model or controller assets are missing, so the game still runs.
-    /// </summary>
-    private (Renderer? renderer, bool procedural, CharacterAnimatorBridge? bridge) AttachCharacterModel(
-        GameObject root, string resourceName, CharacterMotor motor, RuntimeAnimatorController? controller)
-    {
-        var prefab = Resources.Load<GameObject>(resourceName);
-        if (prefab == null || controller == null)
-        {
-            Debug.LogWarning($"Character model '{resourceName}' or CharacterAnimator not found in Resources — using capsule.");
-            return (root.GetComponentInChildren<Renderer>(), true, null);
-        }
-
-        GameObject model = Instantiate(prefab, root.transform);
-        model.name = "CharacterModel";
-        model.transform.localPosition = Vector3.zero;
-        model.transform.localRotation = Quaternion.identity;
-
-        // Tripo exports ~1 m tall; scale up to a ~1.8 m character (matches the old capsule height).
-        var rends = model.GetComponentsInChildren<Renderer>();
-        if (rends.Length > 0)
-        {
-            Bounds mb = rends[0].bounds;
-            foreach (Renderer r in rends) mb.Encapsulate(r.bounds);
-            if (mb.size.y > 0.01f) model.transform.localScale *= 1.8f / mb.size.y;
-        }
-
-        // Hide the placeholder capsule body but keep it in the hierarchy (harmless, and avoids
-        // disturbing anything that assumed a "Body" child exists).
-        Transform capsule = root.transform.Find("Body");
-        if (capsule != null) capsule.gameObject.SetActive(false);
-
-        Animator animator = model.GetComponentInChildren<Animator>();
-        animator.runtimeAnimatorController = controller;
-        animator.applyRootMotion = false;
-        var bridge = root.AddComponent<CharacterAnimatorBridge>();
-        bridge.Configure(motor, animator);
-
-        return (model.GetComponentInChildren<SkinnedMeshRenderer>(), false, bridge);
     }
 }

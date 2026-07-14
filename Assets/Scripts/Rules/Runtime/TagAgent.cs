@@ -69,6 +69,13 @@ public sealed class TagAgent : MonoBehaviour
     private bool _proceduralBody = true;
     private bool _isLocalPlayer;
 
+    // Rigged-model role swap (Runner = raccoon, Tagger = pest_control) — see SwapModel below. All
+    // three stay null for the headless self-play capsules (they never pass these to Configure), which
+    // is exactly the guard SwapModel uses to no-op there.
+    private CharacterAnimatorBridge? _bridge;
+    private RuntimeAnimatorController? _animController;
+    private string? _currentModelResource;
+
     private InputAction? _lungeAction;
     private InputAction? _tagAction;
     private float _lungeCooldownRemaining;
@@ -117,13 +124,17 @@ public sealed class TagAgent : MonoBehaviour
     /// <summary>Raised the moment a lunge actually fires (past cooldown/grace) — drives the dive-roll animation.</summary>
     public event Action? Lunged;
 
-    public void Configure(TagRulesConfig config, CharacterMotor motor, Renderer? bodyRenderer, bool isLocalPlayer, bool proceduralBody = true)
+    public void Configure(TagRulesConfig config, CharacterMotor motor, Renderer? bodyRenderer, bool isLocalPlayer, bool proceduralBody = true,
+        CharacterAnimatorBridge? bridge = null, RuntimeAnimatorController? animController = null, string? modelResourceName = null)
     {
         _config = config;
         _motor = motor;
         _bodyRenderer = bodyRenderer;
         _isLocalPlayer = isLocalPlayer;
         _proceduralBody = proceduralBody;
+        _bridge = bridge;
+        _animController = animController;
+        _currentModelResource = modelResourceName;
 
         if (_bodyRenderer != null)
         {
@@ -134,6 +145,10 @@ public sealed class TagAgent : MonoBehaviour
 
         _motor.Landed -= OnLanded; // idempotent in case Configure is ever called more than once
         _motor.Landed += OnLanded;
+
+        // Own the bridge's dive-roll wiring here (rather than the bootstrap wiring it externally)
+        // since a later role swap (SwapModel) has to unhook and rehook it as the model gets replaced.
+        if (_bridge != null) Lunged += _bridge.TriggerDiveRoll;
 
         if (_isLocalPlayer && _lungeAction == null)
         {
@@ -266,7 +281,50 @@ public sealed class TagAgent : MonoBehaviour
     {
         Role = role;
         if (startGrace) _graceRemaining = _config.conversionGraceDuration;
+        SwapModel(role);
         UpdateColor();
+    }
+
+    private static string ResourceForRole(Role role) => role == Role.Tagger ? "pest_control" : "raccoon";
+
+    /// <summary>
+    /// Re-attaches the rigged model to match <paramref name="role"/> (Runner looks like a raccoon,
+    /// Tagger like pest_control) whenever it differs from what's currently attached — covers both the
+    /// initial AssignRoles spawn and every later conversion (tag, fall). No-ops entirely when no real
+    /// model/controller was ever attached (headless self-play's bare capsules never pass these to
+    /// Configure), so this never touches the bot-only harness.
+    /// </summary>
+    private void SwapModel(Role role)
+    {
+        string wanted = ResourceForRole(role);
+        if (_animController == null || wanted == _currentModelResource) return;
+
+        // Destroy the old model + bridge before attaching the new one. The bridge lives on this root
+        // (not the model child, see AttachCharacterModel), so it needs its own Destroy; that also fires
+        // its OnDestroy, which unsubscribes its own Motor.DoubleJumped handler. Unsubscribing Lunged
+        // here first (TagAgent's own event) avoids leaking a reference to the about-to-be-destroyed bridge.
+        if (_bridge != null)
+        {
+            Lunged -= _bridge.TriggerDiveRoll;
+            Destroy(_bridge);
+        }
+        Transform oldModel = transform.Find("CharacterModel");
+        if (oldModel != null) Destroy(oldModel.gameObject);
+
+        (Renderer? renderer, bool procedural, CharacterAnimatorBridge? bridge) =
+            CharacterModelAttacher.Attach(gameObject, wanted, _motor, _animController);
+        _bodyRenderer = renderer;
+        _proceduralBody = procedural;
+        _bridge = bridge;
+        _currentModelResource = wanted;
+        if (_bridge != null) Lunged += _bridge.TriggerDiveRoll;
+
+        if (_bodyRenderer != null)
+        {
+            _materialInstance = _bodyRenderer.material;
+            _materialInstance.EnableKeyword("_EMISSION");
+            _bodyBaseScale = _bodyRenderer.transform.localScale;
+        }
     }
 
     /// <summary>
