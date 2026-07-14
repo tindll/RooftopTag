@@ -3,6 +3,63 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Slide feel polish: ceiling-check on stand-up, camera slide feedback, entry-speed snap (2026-07-14)
+
+**1. Ceiling check on stand-up.** `CharacterMotor.ExitSliding` restored full capsule height
+unconditionally, so standing up under low geometry popped the capsule straight into the ceiling.
+Fixed with a single guard in `ExitSliding` itself (not duplicated per call site — all 3 exit paths
+route through it): before restoring height, `IsCeilingBlocked()` checks the FULL-HEIGHT standing
+capsule's volume (same point/radius shape `Awake` gives the real collider) via `Physics.OverlapCapsule`
+against `groundMask | wallMask`. If blocked, `ExitSliding` returns `false` and leaves the capsule
+shrunk / state unchanged — the stand-up exit, the probe-lapse-to-Airborne exit, and the slide-hop
+jump-cancel all now check this return value and back off if blocked, so a blocked slide keeps
+sliding even past `maxSlideDuration` until clear. The slide-hop jump-cancel additionally *peeks*
+the jump buffer (`Time.time <= _jumpBufferDeadline`) instead of consuming it, so a ceiling-blocked
+jump-cancel leaves the press buffered (fires the instant you clear the ceiling) rather than eating
+it for a hop that can't happen. Cost stays to one cast per exit *attempt* (jump buffered / probe
+lapsed / wants-exit true), never per ordinary slide tick.
+
+Two false positives surfaced and were fixed by filtering `OverlapCapsule`'s hits rather than using
+`CheckCapsule` (which can't be filtered): (a) the character's own `CapsuleCollider` always overlaps
+its own position — `CheckCapsule`/`OverlapCapsule` don't exclude self, so with test/`~0` masks the
+check was permanently "blocked" against itself; (b) on a tilted ramp, the ramp's own thin slab
+(finite thickness, tilted) can graze the full-height check volume near the feet even though the
+character is legitimately sliding on it, not blocked by it. Both are excluded explicitly: `hit ==
+_capsule` and `hit == _ground.collider` (the ground/ramp already known to be under the slide).
+
+**2. Camera slide feedback** (`ThirdPersonCameraRig` + new `CameraConfig` fields, feel-test knobs):
+while `MotorState.Sliding`, the orbit pivot dips `slideCameraDrop` (0.35m default) via `SmoothDamp`
+eased in/out over `slideCameraEaseTime` (0.15s) — same smoothing family as the existing
+`positionSmoothTime` pivot-follow. Slide entry (edge-detected via a `_wasSliding` bool) also fires a
+`slideFovKick` (+5°) that decays linearly over `slideFovKickDuration` (0.4s), added on top of the
+existing speed-based FOV widen. Subtle, not dramatic — both knobs are commented as feel-test values.
+
+**3. Entry snap.** `MovementConfig.slide.minEntrySpeed` 3 -> 4: `walkSpeed` is 3.5, so at 3 a plain
+walking shuffle (no Sprint) half-triggered a slide off CTRL alone. Bumped just above walkSpeed so
+sliding on flat ground now needs Sprint; the slope-standstill OR-entry (`IsOnSlope`) is untouched —
+holding CTRL on a ramp from a standstill still slides. Preserved untouched: entry boost, carve
+steering, downhill accel, `slideHopRetention`, `capsuleHeightMultiplier`, and Task 1's min-duration +
+probe grace.
+
+**Knobs added:** `slideCameraDrop=0.35`, `slideCameraEaseTime=0.15`, `slideFovKick=5`,
+`slideFovKickDuration=0.4` (all feel-test — tune freely). `slide.minEntrySpeed` 3 -> 4.
+
+**Verification (Editor closed):**
+- Compile + `BuildRooftopArena` headless: 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`.
+- Full PlayMode suite: **56/56 green** (55 existing + 1 new). One existing test needed updating —
+  `SlideHeld_TriggersAtWalkSpeedWithoutSprint` asserted the *opposite* of the new intent (that
+  walking alone triggers a slide); renamed to `SlideHeld_RequiresSprintSpeedNotJustWalking` and now
+  asserts walking alone does NOT slide while sprinting still does. Added
+  `ExitSliding_BlockedByLowCeiling_StaysShrunkAndSliding`: a low overhead box (bottom face above the
+  shrunk slide capsule's top but below the full standing capsule's top) blocks a stand-up attempt —
+  motor stays `Sliding`, capsule stays shrunk, even with CTRL released. This test is what caught both
+  false positives above (it passed for the wrong reason — self-collision — before the `OverlapCapsule`
+  filter fix; the ramp tests then caught the slab false positive).
+- `Tools/selfplay.sh`: `total_stuck=18 total_fallen=0` (within the ≤~25 stuck / 0 fallen envelope),
+  `speed_p50=7.00 speed_p90=7.28` — bots sprint well above the bumped `minEntrySpeed=4`, so the entry
+  snap costs them nothing; no Slide-specific edge regression visible in edge usage.
+- Camera slide feedback is feel only — manual verification, not automated.
+
 ## Slide flail fix: one-shot clip trim + slide state-thrash hysteresis (2026-07-14)
 
 **Root cause.** The CTRL slide flailed limbs in-game while previewing fine in the editor. The

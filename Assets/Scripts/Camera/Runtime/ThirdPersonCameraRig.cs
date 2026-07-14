@@ -28,6 +28,14 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
     private bool _pivotInitialized;
     private int _obstructionMask = ~0;
 
+    // Slide camera feedback (see CameraConfig.slideCameraDrop/slideFovKick): a small pivot dip
+    // eased in/out with the same SmoothDamp family as _smoothedPivotPosition above, plus a
+    // decaying FOV kick fired once on slide entry (edge-detected via _wasSliding).
+    private float _slideDropCurrent;
+    private float _slideDropVelocity;
+    private float _slideFovKickTimer;
+    private bool _wasSliding;
+
     public Transform YawPivot => yawPivot!;
 
     /// <summary>External cursor-unlock control. Escape used to be read directly in <see cref="LateUpdate"/>
@@ -161,7 +169,14 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
         Quaternion rotation = Quaternion.Euler(_pitch, _yaw, 0f);
         yawPivot!.rotation = Quaternion.Euler(0f, _yaw, 0f);
 
-        Vector3 rawPivot = target.transform.position + Vector3.up * config.orbitHeight;
+        bool isSliding = target.CurrentState == MotorState.Sliding;
+        if (isSliding && !_wasSliding) _slideFovKickTimer = config.slideFovKickDuration; // entry-edge kick
+        _wasSliding = isSliding;
+
+        float targetSlideDrop = isSliding ? config.slideCameraDrop : 0f;
+        _slideDropCurrent = Mathf.SmoothDamp(_slideDropCurrent, targetSlideDrop, ref _slideDropVelocity, config.slideCameraEaseTime);
+
+        Vector3 rawPivot = target.transform.position + Vector3.up * (config.orbitHeight - _slideDropCurrent);
         if (!_pivotInitialized)
         {
             _smoothedPivotPosition = rawPivot;
@@ -197,8 +212,12 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
 
         cameraComponent.transform.SetPositionAndRotation(desiredCamPos + shakeOffset, rotation);
 
+        if (_slideFovKickTimer > 0f) _slideFovKickTimer = Mathf.Max(0f, _slideFovKickTimer - Time.deltaTime);
+        float kickT = config.slideFovKickDuration > 0f ? _slideFovKickTimer / config.slideFovKickDuration : 0f;
+        float slideFovKick = config.slideFovKick * kickT;
+
         float speedT = Mathf.Clamp01(target.CurrentSpeed / config.speedForMaxFov);
-        float targetFov = Mathf.Lerp(config.baseFov, config.maxFov, speedT);
+        float targetFov = Mathf.Lerp(config.baseFov, config.maxFov, speedT) + slideFovKick;
         cameraComponent.fieldOfView = Mathf.Lerp(cameraComponent.fieldOfView, targetFov, config.fovLerpSpeed * Time.deltaTime);
     }
 }

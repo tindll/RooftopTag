@@ -312,14 +312,50 @@ public sealed class CharacterMotor : MonoBehaviour
         _capsule.center = new Vector3(0f, _capsule.height * 0.5f, 0f);
     }
 
-    private void ExitSliding(bool forcedByMaxDuration = false)
+    /// <summary>
+    /// Attempts to stand back up to full capsule height. Returns false (and leaves the capsule
+    /// shrunk, slide ongoing) if a ceiling check says standing up here would pop the capsule into
+    /// low geometry — the caller must not transition state in that case. Every ExitSliding call
+    /// site is gated through this single check rather than each re-implementing it.
+    /// </summary>
+    private bool ExitSliding(bool forcedByMaxDuration = false)
     {
+        if (IsCeilingBlocked())
+            return false; // stay shrunk, stay Sliding — even past maxSlideDuration — until clear
+
         _capsule.height = _defaultCapsuleHeight;
         _capsule.center = _defaultCapsuleCenter;
         _lastSlideEndTime = Time.time;
 
         if (forcedByMaxDuration)
             _forcedSlideCooldownDeadline = Time.time + config.slide.forcedExitCooldown;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Checks the FULL-HEIGHT standing capsule's volume (same point/radius shape Awake gives the
+    /// real collider) at the current position against ground+wall geometry — either mask may tag a
+    /// low ceiling. Only called from ExitSliding's exit attempts (jump-cancel, stand-up, probe
+    /// lapse), never every slide tick, so the cost stays to one cast per attempt.
+    /// Uses OverlapCapsule (not CheckCapsule) so two known false positives can be filtered out:
+    /// our own CapsuleCollider (always overlaps our own position — CheckCapsule doesn't exclude
+    /// self) and the ground/ramp collider we're already resting on (a tilted ramp's own thin slab
+    /// can graze the full-height check volume near the feet; that's the slope we're already
+    /// legitimately sliding down, not a ceiling).
+    /// </summary>
+    private bool IsCeilingBlocked()
+    {
+        float radius = config.ground.capsuleRadius;
+        Vector3 bottom = transform.position + Vector3.up * radius;
+        Vector3 top = transform.position + Vector3.up * Mathf.Max(radius, _defaultCapsuleHeight - radius);
+        Collider[] hits = Physics.OverlapCapsule(bottom, top, radius * 0.95f, groundMask | wallMask, QueryTriggerInteraction.Ignore);
+        foreach (Collider hit in hits)
+        {
+            if (hit == _capsule || hit == _ground.collider) continue;
+            return true;
+        }
+        return false;
     }
 
     // How sharply A/D curves a slide (degrees/sec of heading change at full input) — steers, not flings.
@@ -348,9 +384,13 @@ public sealed class CharacterMotor : MonoBehaviour
             _slideProbeMissElapsed += dt;
             if (_slideProbeMissElapsed >= SlideProbeGraceSeconds)
             {
-                ExitSliding();
-                EnterAirborne();
-                return;
+                if (ExitSliding())
+                {
+                    EnterAirborne();
+                    return;
+                }
+                // else: ceiling-blocked — stay sliding on the last good ground info (rare: off an
+                // edge while still under low geometry) until the ceiling clears.
             }
         }
         else
@@ -362,11 +402,18 @@ public sealed class CharacterMotor : MonoBehaviour
         _lastGroundedTime = Time.time;
         _slideElapsed += dt;
 
-        if (ConsumeBufferedJump())
+        // Peek the jump buffer (don't consume yet): a ceiling-blocked jump-cancel must leave the
+        // press buffered — jumping now would pop the capsule straight into the ceiling — rather
+        // than eating the press for a hop that can't happen.
+        if (Time.time <= _jumpBufferDeadline)
         {
-            ExitSliding();
-            PerformJump(config.slide.slideHopRetention, config.jump.jumpSpeed);
-            return;
+            if (ExitSliding())
+            {
+                ConsumeBufferedJump();
+                PerformJump(config.slide.slideHopRetention, config.jump.jumpSpeed);
+                return;
+            }
+            // else: ceiling-blocked — suppress the slide-hop jump-cancel, keep sliding, press stays buffered.
         }
 
         Vector3 horizontal = HorizontalVelocity;
@@ -447,8 +494,12 @@ public sealed class CharacterMotor : MonoBehaviour
             (!_input.SlideHeld || durationExceeded || (speed < config.slide.minEntrySpeed * 0.4f && !IsOnSlope()));
         if (wantsExit)
         {
-            ExitSliding(forcedByMaxDuration: durationExceeded);
-            _state = MotorState.Grounded;
+            if (ExitSliding(forcedByMaxDuration: durationExceeded))
+            {
+                _state = MotorState.Grounded;
+            }
+            // else: ceiling-blocked — keep sliding (even past maxSlideDuration, capsule still
+            // shrunk) until a cast says the ceiling is clear.
         }
 
         SnapToGround();

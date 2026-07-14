@@ -196,7 +196,11 @@ public sealed class MovementConfig : ScriptableObject
 
     public SlideSettings slide = new()
     {
-        minEntrySpeed = 3f,
+        // 3 -> 4: walkSpeed is 3.5, so at 3 a plain walking shuffle (no Sprint) half-triggered a
+        // slide off CTRL alone. Bumped just above walkSpeed so sliding on flat ground needs Sprint
+        // (or downhill momentum) — the slope-standstill entry below is an OR condition on IsOnSlope
+        // and is untouched, so holding CTRL on a ramp from a standstill still slides.
+        minEntrySpeed = 4f,
         entryBoostImpulse = 2.5f,
         slideFriction = 2f,
         downhillAccelMultiplier = 1.5f,

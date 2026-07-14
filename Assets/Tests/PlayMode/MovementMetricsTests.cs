@@ -152,11 +152,13 @@ public sealed class MovementMetricsTests
     }
 
     [UnityTest]
-    public IEnumerator SlideHeld_TriggersAtWalkSpeedWithoutSprint()
+    public IEnumerator SlideHeld_RequiresSprintSpeedNotJustWalking()
     {
-        // Regression test: walkSpeed and slide.minEntrySpeed used to be equal (4 m/s each), so a
-        // player not holding Sprint would hover right at the threshold and slide would rarely (or
-        // never) trigger — reported directly from a manual feel-test.
+        // Updated for the slide.minEntrySpeed bump (3 -> 4, slide-feel polish task): this used to
+        // assert the OPPOSITE — that a plain walkSpeed-only shuffle (3.5 m/s, no Sprint) triggered
+        // a slide — which is exactly the "walking half-slides" feel the bump was meant to remove.
+        // Now asserts the corrected behavior: walking alone no longer triggers it, sprinting still
+        // does. The slope-standstill OR-entry (IsOnSlope) is a separate path, untouched by this.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 100f), new Vector3(10f, 1f, 220f));
 
@@ -169,9 +171,50 @@ public sealed class MovementMetricsTests
         float walkSpeed = motor.CurrentSpeed;
         input.SlideHeld = true;
         yield return RunForSeconds(0.1f);
+        Debug.Log($"METRIC walk_speed_mps={walkSpeed:0.00} slide_state_at_walk={motor.CurrentState}");
+        Assert.AreNotEqual(MotorState.Sliding, motor.CurrentState,
+            "Walking alone (no Sprint) should no longer trigger a slide now that minEntrySpeed sits above walkSpeed.");
 
-        Debug.Log($"METRIC walk_speed_mps={walkSpeed:0.00} slide_state={motor.CurrentState}");
-        Assert.AreEqual(MotorState.Sliding, motor.CurrentState, "Slide should trigger at walk speed without needing Sprint held.");
+        input.SlideHeld = false;
+        yield return new WaitForFixedUpdate();
+        input.SprintHeld = true;
+        yield return RunForSeconds(1f);
+
+        float sprintSpeed = motor.CurrentSpeed;
+        input.SlideHeld = true;
+        yield return RunForSeconds(0.1f);
+        Debug.Log($"METRIC sprint_speed_mps={sprintSpeed:0.00} slide_state_at_sprint={motor.CurrentState}");
+        Assert.AreEqual(MotorState.Sliding, motor.CurrentState, "Sprint speed should still reliably trigger the slide.");
+        AssertNoPhysicsExplosion(motor);
+    }
+
+    [UnityTest]
+    public IEnumerator ExitSliding_BlockedByLowCeiling_StaysShrunkAndSliding()
+    {
+        // Ceiling-check regression (slide-feel polish): ExitSliding used to restore full capsule
+        // height unconditionally on a stand-up, so sliding under low geometry and releasing CTRL
+        // popped the capsule straight into the ceiling. A low overhead box's bottom face (y=1.3)
+        // sits above the shrunk slide capsule's top (0.9 = capsuleHeightMultiplier 0.5 * default
+        // height 1.8, so the slide itself is unaffected) but below the full standing capsule's top
+        // (1.8), so it blocks only the stand-up.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 100f), new Vector3(10f, 1f, 220f));
+        CreateGround(_sceneRoot.transform, new Vector3(0f, 2.8f, 100f), new Vector3(6f, 3f, 220f));
+
+        (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(new Vector3(0f, 1.1f, 0f));
+
+        input.Move = new Vector2(0f, 1f); // default SprintHeld=true — comfortably clears minEntrySpeed
+        yield return RunForSeconds(1.5f);
+
+        input.SlideHeld = true;
+        yield return RunForSeconds(0.35f); // past minSlideDuration (0.25) so the stand-up gate is live
+        Assert.AreEqual(MotorState.Sliding, motor.CurrentState, "Precondition: should be sliding under the low ceiling.");
+
+        input.SlideHeld = false; // release CTRL — a normal stand-up would fire here
+        yield return RunForSeconds(0.2f);
+
+        Assert.AreEqual(MotorState.Sliding, motor.CurrentState,
+            "Should stay Sliding (capsule still shrunk) while a low ceiling blocks standing up, even with CTRL released.");
         AssertNoPhysicsExplosion(motor);
     }
 
