@@ -3,6 +3,26 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Lunge dive-roll clip + WP4 session tally (2026-07-14)
+
+**Lunge animation.** The lunge (`TagAgent.Lunged` → `CharacterAnimatorBridge.TriggerDiveRoll` →
+`Diving` bool → animator `DiveRoll` state) was already wired; it just pointed at the wrong clip.
+`DiveRoll` used `Clip("X Bot@Stand To Roll", ...)` (a from-standing roll sped to 2× to read as a
+lunge). User supplied the dedicated `X Bot@Dive Roll.fbx`. Swapped the preferred clip to it and
+dropped the speed-up 2→1.4 (a real dive already launches forward, so it needs far less speed). Old
+stopgaps kept as fallbacks. Controller regenerated headless (`ANIMATOR_BUILT states=13`, no
+`ANIMATOR_CLIP_STOPGAP` for DiveRoll → the new clip resolved).
+
+**WP4 — session score memory.** `RoundController` gained four fields (`_sessionRounds/_sessionWins/
+_sessionLosses/_sessionBestSurvival`) updated once in `EndRound` (win/loss via the same
+`_playerLost`/role computation the end screen uses) and rendered as a dim footer under the per-round
+summary. Counters live outside `StartRound`, so `R` never resets them; local-player-gated, so the
+headless self-play harness (null player) never accumulates. End-screen panel height 150→176.
+
+**Verify.** Compile clean; PlayMode 51/51 (gate suites); self-play `total_stuck=13` (baseline 17),
+`total_fallen=0`, all edge kinds exercised (Swing/Climb/Vault/Ladder/Drop >0), `runner_avg_survival`
+0.00 (unchanged — the known infection-cascade wall, not a regression).
+
 ## Two bug fixes: slide sinks-into-floor, lunge-on-spawn (2026-07-14)
 
 ### Bug A — slide starts OK then character sinks into the floor sliding standing up

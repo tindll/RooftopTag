@@ -82,12 +82,15 @@ Tools/selfplay-results.xml
 
 # Ad-hoc verification artifacts (any session)
 Tools/*.log
+Tools/*.xml
 Tools/*-results.xml
 Tools/build_*
 Tools/stdout_*
 Tools/*.out
 Tools/wait_and_verify_*
 Tools/regress_verify_summary.txt
+Tools/selfplay-*.txt
+Tools/screenshots/
 
 # Unity test-framework scene artifacts (leak from interrupted PlayMode runs)
 Assets/InitTestScene*

@@ -89,8 +89,12 @@ public static class BuildCharacterAnimator
 
         // Dive roll: a tagger's committed lunge. Driven by the bridge's Diving bool (held for the clip
         // length) so the grounded/airborne AnyState transitions can't yank it back mid-roll.
-        var diveRoll = Simple(sm, "DiveRoll", Clip("X Bot@Stand To Roll", "Dive Roll"));
-        diveRoll.speed = 2f; // sped up so the stand-to-roll reads as a quick committed lunge
+        // Prefer the dedicated "X Bot@Dive Roll" clip (a real forward dive) over the old
+        // Stand-To-Roll stopgap; the stopgaps stay as fallbacks so Clip() self-heals if it's removed.
+        var diveRoll = Simple(sm, "DiveRoll", Clip("X Bot@Dive Roll", "X Bot@Stand To Roll", "Dive Roll"));
+        // Dive Roll already launches forward, so it needs far less speed-up than the from-standing
+        // Stand-To-Roll did (2f). 1.4x keeps it a snappy committed lunge without looking frantic.
+        diveRoll.speed = 1.4f;
 
         sm.defaultState = grounded;
 

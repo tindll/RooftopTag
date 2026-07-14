@@ -56,6 +56,13 @@ public sealed class RoundController : MonoBehaviour
     private float _autoRestartRemaining;
     private float _finalRoundLength;
 
+    // Session tally — accumulated across rounds (never reset by StartRound), updated once in EndRound
+    // and rendered on the end screen. Local-player only; stays 0 in the headless self-play harness.
+    private int _sessionRounds;
+    private int _sessionWins;
+    private int _sessionLosses;
+    private float _sessionBestSurvival;
+
     private float _timeRemaining;
     private float _roundStartTime;
     private bool _roundOver;
@@ -368,6 +375,20 @@ public sealed class RoundController : MonoBehaviour
         _resultMessage = message;
         _autoRestartRemaining = AutoRestartDuration;
         _finalRoundLength = _config.roundDuration - Mathf.Max(_timeRemaining, 0f);
+
+        // Session tally — persists across rounds (StartRound never clears these), rendered under the
+        // end-screen summary. Local player only, so the headless self-play harness (null player) is
+        // untouched. Win/loss uses the same computation as DrawEndScreen: a set _playerLost is always
+        // a loss, otherwise the local role must match the winning side. This runs exactly once per
+        // round (the _roundOver guard above), so it can't double-count.
+        if (_localPlayerAgent != null)
+        {
+            bool runnersWon = message.StartsWith("Runners");
+            bool localWon = !_playerLost && runnersWon == (_localPlayerAgent.Role == Role.Runner);
+            _sessionRounds++;
+            if (localWon) _sessionWins++; else _sessionLosses++;
+            _sessionBestSurvival = Mathf.Max(_sessionBestSurvival, _finalRoundLength);
+        }
     }
 
     /// <summary>Fired on the local player's WasTagged event (see TagAgent.PerformTag, which never
@@ -464,7 +485,7 @@ public sealed class RoundController : MonoBehaviour
                 ? runnersWon
                 : runnersWon == (_localPlayerAgent.Role == Role.Runner);
 
-        const float w = 540f, h = 150f;
+        const float w = 540f, h = 176f;
         var panel = new Rect((Screen.width - w) * 0.5f, Screen.height * 0.5f - 80f, w, h);
         DrawPanel(panel, new Color(HudPanel.r, HudPanel.g, HudPanel.b, 0.82f));
 
@@ -495,6 +516,13 @@ public sealed class RoundController : MonoBehaviour
 
             GUI.Label(new Rect(panel.x, panel.y + 118f, panel.width, 22f),
                 $"Your tags: {_tagCounts.GetValueOrDefault(_localPlayerAgent)}    Runners left: {runnersRemaining}    Round length: {_finalRoundLength:0.0}s",
+                _bannerSubStyle);
+
+            // Session tally (persists across R-restarts) — dimmer than the per-round line so it reads
+            // as a running footer, not part of this round's result.
+            _bannerSubStyle.normal.textColor = new Color(HudCream.r, HudCream.g, HudCream.b, 0.55f);
+            GUI.Label(new Rect(panel.x, panel.y + 140f, panel.width, 22f),
+                $"Session — Rounds: {_sessionRounds}    Wins: {_sessionWins}    Losses: {_sessionLosses}    Best survival: {_sessionBestSurvival:0.0}s",
                 _bannerSubStyle);
         }
     }
