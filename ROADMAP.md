@@ -94,11 +94,20 @@ regressed. This signs off M3.
    jarring instant teleport to original spawn. Satisfies the spec's "pick one and justify"
    (justification: preserves infection pacing, removes teleport disorientation, no new climb-back
    state machine). `RoundController` fall branch.
-2. **Map routes** — sonnet. `RooftopArena.Links`: add a second link to Tower(11) (Jump/Swing from
-   an adjacent roof so it's not ladder-only) and a second INBOUND to Con_West(22).
-   `JumpMakeable` auto-validates; watch for `ROOFTOP_LINK_SKIPPED`.
+2. **Map routes — DONE (2026-07-14, see TUNING_LOG).** Neither Tower nor Con_West had a
+   same-mechanism neighbour within `JumpMakeable`'s bidirectional range (every roof near Tower is
+   too tall to jump back up onto it; Con_West's other close neighbour, Con_Alley, is the ~10m
+   chasm the Swing exists for). Added: a new one-way `LinkKind.Drop` (`11->8`, Tower's east face
+   down to Roof_N2, reusing the `ParkourEdgeType.Drop` the motor/bot-input already had scaffolding
+   for but no LinkKind ever emitted) giving Tower a second exit on a different face from its south
+   ladder; and a `LinkKind.Ramp` (`18<->22`, Con_Yard<->Con_West, rise 2m) giving Con_West a second,
+   bidirectional inbound from a different neighbour than W2. `JumpMakeable`/the graph builder
+   validated both — no `ROOFTOP_LINK_SKIPPED`.
 
-**Gate:** suites + self-play (respawn sane, ≥2 routes to nodes 11/22, survival still in band).
+**Gate:** suites + self-play (respawn sane, ≥2 routes to nodes 11/22, survival still in band). Map
+routes gate MET: compile clean, `ROOFTOP_ARENA_BUILD_OK` (26 roofs, 44 links), PlayMode 54/54 (+4
+new route-count/edge tests), self-play `total_stuck=14` (baseline 17), `total_fallen=0`, Drop edge
+used 11/11 attempts. Fall-rule item (1) is unstarted — separate opus task, out of this pass's scope.
 
 ## WP4 — Round summary + session score memory (small, high-visibility)
 

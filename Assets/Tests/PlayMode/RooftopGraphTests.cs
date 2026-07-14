@@ -97,4 +97,55 @@ public class RooftopGraphTests
                 "23->22 must not use the one-directional Swing edge; it should route the long way (e.g. via the Jump at 22<->15).");
         }
     }
+
+    // WP3 map-route fixes: Roof_Tower (11) was ladder-only (single route in/out via 7<->11); Con_West
+    // (22) had only one INBOUND route (15<->22 Jump), despite already having 2 outbound (Jump + the
+    // 22->23 Swing). Counted directly off RooftopArena.Links rather than the built graph, matching how
+    // the violations were originally specced (route = a Links entry, direction resolved by whether its
+    // LinkKind is one-way).
+
+    private static bool IsOneWayKind(RooftopArena.LinkKind kind) =>
+        kind is RooftopArena.LinkKind.Swing or RooftopArena.LinkKind.Drop;
+
+    private static int InboundRouteCount(int roof) =>
+        RooftopArena.Links.Count(l => l.To == roof || (l.From == roof && !IsOneWayKind(l.Kind)));
+
+    private static int OutboundRouteCount(int roof) =>
+        RooftopArena.Links.Count(l => l.From == roof || (l.To == roof && !IsOneWayKind(l.Kind)));
+
+    [Test]
+    public void Links_TowerHasSecondExit()
+    {
+        // Was exactly 1 (the 7<->11 Ladder) — a cornered runner had no second way down. The new
+        // one-way Drop (11->8) adds a second outbound route on a different face.
+        Assert.That(OutboundRouteCount(11), Is.GreaterThanOrEqualTo(2));
+    }
+
+    [Test]
+    public void Links_ConWestHasSecondInbound()
+    {
+        // Was exactly 1 (15->22 Jump). The new Ramp (18<->22) is bidirectional, adding a second
+        // inbound route from a different neighbour (Con_Yard, not W2).
+        Assert.That(InboundRouteCount(22), Is.GreaterThanOrEqualTo(2));
+    }
+
+    [Test]
+    public void Graph_TowerDropEdgeIsMakeable()
+    {
+        // The Drop link is only emitted if RooftopGraphBuilder's JumpMakeable gate accepts it (same
+        // validator as Jump) — this catches a future roof reshuffle silently dropping the edge instead
+        // of failing loud via ROOFTOP_LINK_SKIPPED.
+        ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
+        Assert.That(graph.Edges.Any(e => e.Type == ParkourEdgeType.Drop), Is.True);
+    }
+
+    [Test]
+    public void Graph_ConWestReachableFromConYard()
+    {
+        ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
+        int fromYard = graph.NearestNode(RooftopArena.Roofs[18].Walk);
+        int conWest = graph.NearestNode(RooftopArena.Roofs[22].Walk);
+        IReadOnlyList<ParkourEdge>? path = graph.FindPath(fromYard, conWest);
+        Assert.That(path, Is.Not.Null);
+    }
 }

@@ -3,6 +3,52 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## WP3 — map-route fixes: Tower second exit + Con_West second inbound (2026-07-14)
+
+**Violations (spec audit):** `Roof_Tower` (11) had exactly one route in/out — the `7<->11` Ladder —
+a dead end for a runner cornered up there. `Con_West` (22) had only one INBOUND route (`15->22`
+Jump); its outbound was already covered twice (that same Jump, plus the one-way `22->23` Swing).
+
+**Why not a plain second Jump/Ladder:** Tower is h9; every neighbour close enough to be a candidate
+is too tall to jump back UP onto it (`JumpMakeable`'s rise<=2.5m cap rules out all of them — checked
+N1, N1E, N1WW, N2 by hand against the actual lip-to-lip node math), and none of them touch Tower's
+footprint (Ladder needs real adjacency; only the existing south neighbour, N1W, does). Con_West's
+only other close neighbour is Con_Alley — the ~10m N-S chasm the Swing already exists for (a Ramp
+there was tried on paper: rise 1.5m gives a ~3.7m run, nowhere near enough to cross a 10m gap —
+would leave the ramp's foot floating in mid-air, so this was rejected before writing any code).
+
+**Fix 1 — Tower's second exit: new `LinkKind.Drop` (`RooftopArena.cs`).** One-way, descent-only link
+type. `ParkourEdgeType.Drop` and its motor/bot-input scaffolding (`ApplySteeringSafety`'s
+gap-crossing allowlist, `Commit`'s committed-kind gate) already existed on this branch but no
+`LinkKind` had ever emitted it. Added `new(11, 8, LinkKind.Drop)` — Tower's EAST face (closest node
+pair ~9.6m, comfortably under the 11m descent range `JumpMakeable` allows) down to Roof_N2 (h5, a
+4m drop) — a genuinely different face from the south ladder. `RooftopGraphBuilder`'s new `Drop` case
+validates only the From->To direction (not both, unlike Jump) and emits a single `bidirectional:
+false` edge; `RooftopArena.Build()` needs no geometry for it (same as Jump — the gap IS the drop).
+Folded `Drop` into `ParkourBotInput`'s existing Jump/SlideHop button-press case (a jump press off a
+ledge you're descending is still correct, it just lands lower).
+
+**Fix 2 — Con_West's second inbound: new `LinkKind.Ramp` (`18<->22`, Con_Yard<->Con_West).** Rise
+2m (h1.5->h3.5), ~1-4m real gap — small enough for the standard 22° ramp to actually reach (verified
+foot/top placement by hand-running `BuildRamp`'s own math before committing; lands ~0.2m short of
+dead-flush on Con_Yard's corner, an acceptable cosmetic sliver given the ramp box is its own solid
+collider regardless). Bidirectional, so it also gives Con_West's second inbound a different face
+(west) than the existing south-facing Jump to W2.
+
+**Tests added (`RooftopGraphTests.cs`):** `Links_TowerHasSecondExit` / `Links_ConWestHasSecondInbound`
+count routes directly off `RooftopArena.Links` (one-way kinds — Swing/Drop — don't count backward).
+`Graph_TowerDropEdgeIsMakeable` / `Graph_ConWestReachableFromConYard` check the built graph actually
+emits/paths the new edges (catches a future roof reshuffle silently triggering
+`ROOFTOP_LINK_SKIPPED` instead of failing loud).
+
+**Verification:** compile clean, `ROOFTOP_ARENA_BUILD_OK` (26 roofs, 44 links, was 42), no
+`ROOFTOP_LINK_SKIPPED`/`ROOFTOP_LINK_REDUNDANT`/`ROOFTOP_LADDER_RAMP_CLIP` warnings. PlayMode 54/54
+(50 + 4 new). Self-play 10-match batch: `total_stuck=14` (baseline 17, improved), `total_fallen=0`
+(unchanged), `jump_land_within_1.75m=0.73` (baseline 0.75, healthy), new edge kind actively used —
+`total_edge_usage=[...Drop=11...]` with `total_edge_attempts=[...Drop=11...]` (100% completion on
+attempts, no stranded bots on the new descent). `runner_avg_survival=0.00` unchanged, as expected —
+untouched by this pass (WP2's structural wall, separate concern).
+
 ## WP3 — smarter runner flee: threat-aware routing + break-contact juke (2026-07-14)
 
 Goal: runner bots that evade convincingly instead of getting corner-swept — the human moves the

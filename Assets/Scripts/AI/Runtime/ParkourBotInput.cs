@@ -468,8 +468,12 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         {
             case ParkourEdgeType.Jump:
             case ParkourEdgeType.SlideHop:
+            case ParkourEdgeType.Drop:
                 // Jump exactly when the ground is about to run out underfoot, rather than at a
                 // fixed distance from the landing node — robust regardless of the actual gap size.
+                // Drop (a one-way descent edge, e.g. Tower's second exit) reuses this verbatim: a
+                // jump press off a ledge you're descending from is still the correct way to clear
+                // the gap, it just lands lower than it took off.
                 if (_agent.Motor.CurrentState == MotorState.Grounded && IsAboutToRunOffEdge(steeringDir))
                 {
                     JumpPressed = true;

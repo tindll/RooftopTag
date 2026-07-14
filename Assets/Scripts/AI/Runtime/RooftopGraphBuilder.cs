@@ -207,6 +207,29 @@ public static class RooftopGraphBuilder
                     graph.AddEdge(vaultFrom, vaultTo, ParkourEdgeType.Vault, config.mantleVault.vaultMinApproachSpeed, bidirectional: true);
                     break;
                 }
+
+                case RooftopArena.LinkKind.Drop:
+                {
+                    // One-way descent: only the From->To direction is validated/emitted (bidirectional
+                    // Jump can't be used here because the reverse climb is too tall — see the Links
+                    // table comment on Tower's 11->8 Drop). Same lip-to-lip node pair and JumpMakeable
+                    // gate as Jump, just checked in a single direction and emitted non-bidirectional
+                    // with ParkourEdgeType.Drop (already wired into the motor's generic gap-crossing
+                    // paths — see ApplySteeringSafety/Commit's committed-kind gate in ParkourBotInput).
+                    (int dropFrom, int dropTo) = ClosestPair(link.From, link.To);
+                    Vector3 dropA = graph.Nodes[dropFrom].Position;
+                    Vector3 dropB = graph.Nodes[dropTo].Position;
+                    if (JumpMakeable(dropA, dropB))
+                    {
+                        float dropGap = Mathf.Max(0f, Vector3.Distance(dropA, dropB) - 2f * EdgeInset);
+                        graph.AddEdge(dropFrom, dropTo, ParkourEdgeType.Drop, sprint, bidirectional: false, emptyGap: dropGap);
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"ROOFTOP_LINK_SKIPPED: drop {RooftopArena.Roofs[link.From].Name}→{RooftopArena.Roofs[link.To].Name} not makeable (gap/height).");
+                    }
+                    break;
+                }
             }
         }
 

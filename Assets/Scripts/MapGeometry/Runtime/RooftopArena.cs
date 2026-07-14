@@ -32,7 +32,7 @@ public static class RooftopArena
         public Vector3 Walk => new(Center.x, Center.y + 0.1f, Center.z);
     }
 
-    public enum LinkKind { Jump, Ramp, Ladder, Swing, ClimbWall, VaultWall }
+    public enum LinkKind { Jump, Ramp, Ladder, Swing, ClimbWall, VaultWall, Drop }
 
     public readonly struct Link
     {
@@ -171,6 +171,27 @@ public static class RooftopArena
         // presents 1.5m -> resolves as Mantle in the motor; from the Alley side it's a clean 1m ->
         // Vault. See the VaultWall build case for the wall box and RooftopGraphBuilder for the edge.
         new(18, 23, LinkKind.VaultWall),
+
+        // WP3 map-route fix: Tower (11) had exactly one route in/out — the 7<->11 Ladder on its
+        // south face — a dead end for a cornered runner. Every OTHER neighbour is too tall to
+        // jump back up onto Tower (h9; JumpMakeable's rise<=2.5m cap rules out all of them), so a
+        // plain bidirectional Jump can't give Tower a second route. Descent is legal though: Drop
+        // is a one-way (From->To only) gap-crossing edge — exactly ParkourEdgeType.Drop, already
+        // wired into the motor/bot-input's generic "gap crossing" paths (ApplySteeringSafety,
+        // Commit's committed-kind gate) but never emitted by any LinkKind until now. Tower's EAST
+        // face (closest node pair ~9.6m, comfortably under the 11m descent range) drops down to
+        // Roof_N2 (h5, 4m lower) — a genuinely different face from the south ladder, giving a
+        // cornered runner a second way OFF the tower. No geometry needed: like Jump, the gap
+        // between the roofs IS the drop. See RooftopGraphBuilder's Drop case for the one-way edge.
+        new(11, 8, LinkKind.Drop),
+
+        // WP3 map-route fix: Con_West (22) had only one INBOUND route (the 15<->22 Jump) — its
+        // outbound was already covered twice (Jump back to 15, plus the Swing to 23). Con_Yard
+        // (18) sits ~1m/4m (x/z) from Con_West at a gentle 2m rise (h1.5->h3.5) — small enough for
+        // a plain 22° Ramp (unlike Con_Alley, whose ~10m N-S chasm is why THAT crossing needed a
+        // Swing instead). Bidirectional, so it also gives Con_West a genuinely different second
+        // inbound face (west, vs the existing south-facing Jump to W2).
+        new(18, 22, LinkKind.Ramp),
     };
 
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
@@ -223,7 +244,7 @@ public static class RooftopArena
                 case LinkKind.VaultWall:
                     BuildVaultWall(root.transform, Roofs[link.From], Roofs[link.To]);
                     break;
-                // Jump links need no geometry — the gap between roofs IS the jump.
+                // Jump/Drop links need no geometry — the gap between roofs IS the jump/drop.
             }
         }
 
