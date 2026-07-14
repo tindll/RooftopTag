@@ -42,6 +42,14 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     // "fails the first jump" (the 3m opening gap) was this fixed-power overshoot. Above it, sprint.
     [SerializeField] private float shortJumpGapThreshold = 4.5f;
 
+    // Shortfall recovery: while descending mid-Jump-edge with no floor in reach below, if the bot is
+    // still farther than this from the target lip it spends its double-jump (runners only — the motor's
+    // CanDoubleJump gate makes this a no-op for taggers). The double-jump adds roughly 5-6m of flight
+    // (doubleJumpSpeed 5 at ~6.5m/s horizontal), so firing with less than ~4m remaining converts a jump
+    // that would have made it into an overshoot past the node — measured: threshold 2m dropped
+    // jump_land_within from 0.77 to 0.75; only genuine shortfalls should trigger it.
+    [SerializeField] private float doubleJumpShortfallDistance = 4f;
+
     // Cliff-avoidance tuning — see ChaseFleeBotInput's original fix notes: the raycast must cover
     // a band both above and below the bot's current height (ramps rise above a shallow check),
     // not just straight down from a fixed small offset.
@@ -70,6 +78,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private bool _approachShortGap;
     private bool _jumpWasShort;   // was the in-flight jump a short (walk) one — for landing telemetry
     private float _jumpTargetZ;
+    private bool _airJumpRequested; // edge-trigger: one mid-air double-jump press per airborne period
 
     // Commit-to-edge latch. Once the bot presses the button that starts a special edge
     // (jump/swing/climb/ladder/vault/mantle), planning freezes so the every-reactionTime replan can't
@@ -110,6 +119,27 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     {
         JumpPressed = false;
         InteractPressed = false;
+
+        if (_agent.Motor.CurrentState == MotorState.Grounded)
+            _airJumpRequested = false; // double-jump recharges on the ground (mirrors the motor's _doubleJumpUsed reset)
+
+        // Jump-shortfall recovery: descending mid-flight on a committed Jump edge, still short of the
+        // target lip, with no floor within safe-drop reach below → press jump once for the double-jump
+        // boost, converting a near-miss into a landing. Runner-only via the motor's CanDoubleJump gate;
+        // the motor's _doubleJumpUsed already caps it at one per airborne period, _airJumpRequested just
+        // stops the bot re-buffering the press every tick.
+        if (_jumpInFlight && !_airJumpRequested && _agent.Motor.CanDoubleJump
+            && _agent.Motor.CurrentState == MotorState.Airborne && _agent.Motor.Velocity.y < 0f)
+        {
+            Vector3 toLip = _jumpTargetPos - transform.position;
+            toLip.y = 0f;
+            if (toLip.magnitude > doubleJumpShortfallDistance
+                && !Physics.Raycast(transform.position, Vector3.down, maxSafeDrop + 1f))
+            {
+                JumpPressed = true;
+                _airJumpRequested = true;
+            }
+        }
 
         if (_jumpInFlight && _agent.Motor.CurrentState == MotorState.Grounded)
         {

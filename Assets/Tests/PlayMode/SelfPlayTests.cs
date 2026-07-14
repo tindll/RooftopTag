@@ -122,6 +122,7 @@ public sealed class SelfPlayTests
             controller.RegisterAgent(agent, isLocalPlayer: false);
 
             agent.WasTagged += _ => metrics.RecordFirstTag(elapsedRef);
+            motor.DoubleJumped += () => metrics.DoubleJumpCount++;
             agents.Add(agent);
         }
 
@@ -251,7 +252,8 @@ public sealed class SelfPlayTests
                   $"jump_landing_err_avg={AverageOrZero(results.SelectMany(m => m.JumpLandingErrors)):0.00} " +
                   $"jump_land_within_1.75m={FractionWithin(results.SelectMany(m => m.JumpLandingErrors), 1.75f):0.00} " +
                   $"short_jump_signed_avg={AverageOrZero(results.SelectMany(m => m.ShortJumpSignedOvershoot)):0.00}(n={results.Sum(m => m.ShortJumpSignedOvershoot.Count)}) " +
-                  $"long_jump_signed_avg={AverageOrZero(results.SelectMany(m => m.LongJumpSignedOvershoot)):0.00}(n={results.Sum(m => m.LongJumpSignedOvershoot.Count)})");
+                  $"long_jump_signed_avg={AverageOrZero(results.SelectMany(m => m.LongJumpSignedOvershoot)):0.00}(n={results.Sum(m => m.LongJumpSignedOvershoot.Count)}) " +
+                  $"bot_double_jumps={results.Sum(m => m.DoubleJumpCount)}");
 
         Assert.Greater(results.Count, 0, "Batch should have run at least one match.");
     }

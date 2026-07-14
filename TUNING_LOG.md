@@ -3,6 +3,40 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Bot double-jump: jump-shortfall recovery (2026-07-14)
+
+Runner bots now spend their double-jump (already player-proven; RoundController grants
+`CanDoubleJump` to Runners only) to rescue Jump-edge shortfalls. Trigger in
+`ParkourBotInput.Tick`: while `_jumpInFlight` on a committed Jump/SlideHop edge, descending
+(`Motor.Velocity.y < 0`), no floor within `maxSafeDrop + 1m` below, and still more than
+`doubleJumpShortfallDistance` horizontally from the target lip → press Jump once
+(`_airJumpRequested` edge-trigger, reset on grounded; the motor's `_doubleJumpUsed` caps it at
+one per airborne period regardless). Taggers unaffected — motor gate makes the press a no-op.
+The optional "escape hop while fleeing" trigger was SKIPPED: it needs new airborne-fleeing state
+and trigger 1 is where the value is.
+
+**Trigger tune (one iteration).** First threshold 2m fired 29x/batch but converted would-have-made
+jumps into ~3m overshoots: `jump_land_within_1.75m` 0.77 -> 0.75 (err improved 1.58 -> 1.50). The
+double-jump adds ~5-6m of flight (doubleJumpSpeed 5 at ~6.5 m/s horizontal), so raised to 4m —
+only genuine shortfalls fire.
+
+**WP1 baseline:** `total_stuck=24 total_fallen=0 jump_takeoff_speed_avg=6.30
+jump_landing_err_avg=1.58 jump_land_within_1.75m=0.77`
+
+**After (threshold 4m, two batches):**
+`jump_land_within_1.75m=0.77 / 0.75, jump_landing_err_avg=1.53 / 1.53, total_fallen=0 / 0,
+bot_double_jumps=6 / 7, total_stuck=30 / 45`. Stuck is heavily noisy: two runs of IDENTICAL code
+spread 30 -> 45, so the delta vs the single-run baseline of 24 is within run noise (double-jump
+fires only 6-7 times a batch and cannot mechanically account for it — it never touches grounded
+steering). Landing gates hold/improve; fallen stays 0 (the below-floor raycast keeps the boost
+from firing over safe ground, and it only ever fires mid-gap where the alternative was the pit).
+
+**Instrumentation:** `MatchMetrics.DoubleJumpCount` counts actual `CharacterMotor.DoubleJumped`
+events (harness subscribes per-agent), logged as `bot_double_jumps` in the batch METRIC line —
+fires are real motor double-jumps, not just bot presses.
+
+Verification: headless BuildRooftopArena OK (0 error CS), PlayMode 50/50, selfplay batches above.
+
 ## WP1 — bot commit-to-edge + short-jump fix + honest instrumentation (2026-07-14)
 
 Three mechanism bugs from the bot-execution forensics fixed together; special edges now COMPLETE

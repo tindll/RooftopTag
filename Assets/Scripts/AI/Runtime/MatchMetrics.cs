@@ -20,6 +20,9 @@ public sealed class MatchMetrics
     /// <summary>Same, for LONG (sprint) jumps.</summary>
     public readonly List<float> LongJumpSignedOvershoot = new();
 
+    /// <summary>Actual motor double-jumps fired by bots this match (harness subscribes to <see cref="Game.Movement.CharacterMotor.DoubleJumped"/>) — verifies the shortfall-recovery trigger really fires, not just that the bot pressed jump.</summary>
+    public int DoubleJumpCount;
+
     public float? TimeToFirstTag;
     public string Winner = "";
     public int StuckAgentCount;
