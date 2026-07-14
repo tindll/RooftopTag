@@ -91,6 +91,59 @@ public sealed class DoubleJumpTests
     }
 
     [UnityTest]
+    public IEnumerator Runner_WallGrabJumpOff_RechargesDoubleJump()
+    {
+        (CharacterMotor motor, ScriptedCharacterInput input) = SetUpGroundedPlayer(canDoubleJump: true);
+
+        // Wall-hook is player-only (gated on cameraYaw != null) — wire up a camera-yaw transform
+        // facing +Z, matching the wall placed in front of the player below.
+        var camYaw = new GameObject("CamYaw").transform;
+        camYaw.SetParent(_sceneRoot!.transform, false);
+        motor.Configure(~0, ~0, camYaw);
+
+        // A wall just in front of the player, within wallHook.detectionDistance (1.0m default). The
+        // player never moves horizontally (no Move input), so this gap stays constant.
+        GameObject wall = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        wall.transform.SetParent(_sceneRoot.transform, false);
+        wall.transform.position = new Vector3(0f, 2f, 0.95f);
+        wall.transform.localScale = new Vector3(4f, 8f, 0.5f); // front face at z=0.7
+
+        yield return WaitUntilGrounded(motor, 3f);
+
+        // Burn the double-jump BEFORE the wall grab, so a recharge is the only way it can fire again.
+        input.PressJump();
+        yield return new WaitForFixedUpdate();
+        yield return WaitUntilRisingBelow(motor, _config.jump.doubleJumpSpeed - 1f);
+        input.PressJump();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(_config.jump.doubleJumpSpeed, motor.Velocity.y, 0.5f,
+            "Precondition: double-jump used before the wall grab.");
+
+        // Grab the wall.
+        yield return WaitUntilRisingBelow(motor, _config.jump.doubleJumpSpeed - 1f);
+        input.PressInteract();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.WallHook, motor.CurrentState, "Precondition: wall-grab should have caught.");
+
+        // Jump off the wall.
+        input.PressJump();
+        yield return new WaitForFixedUpdate();
+        Assert.AreEqual(MotorState.Airborne, motor.CurrentState, "Should be airborne again after launching off the wall.");
+
+        // A few ticks for the launch-off's own outward velocity to carry the player clear of the
+        // wall (so this can't accidentally re-snag it) before testing the double-jump.
+        for (int i = 0; i < 8; i++)
+            yield return new WaitForFixedUpdate();
+
+        // Mid-air press after the wall jump-off should double-jump — proves the wall-grab recharged it.
+        input.PressJump();
+        yield return new WaitForFixedUpdate();
+        Debug.Log($"METRIC walljump_recharge_double_jump_velocity={motor.Velocity.y:0.00} expected={_config.jump.doubleJumpSpeed:0.00}");
+        Assert.AreEqual(_config.jump.doubleJumpSpeed, motor.Velocity.y, 0.5f,
+            "Jumping off a wall-grab should recharge the double-jump, same as landing.");
+    }
+
+    [UnityTest]
     public IEnumerator Tagger_GetsNoDoubleJump()
     {
         (CharacterMotor motor, ScriptedCharacterInput input) = SetUpGroundedPlayer(canDoubleJump: false);

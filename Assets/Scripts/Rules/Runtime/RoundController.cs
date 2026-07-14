@@ -44,20 +44,6 @@ public sealed class RoundController : MonoBehaviour
     private const float TagFlashMaxAlpha = 0.6f;
     private float _tagFlashEndUnscaled = -1f;
 
-    // Tagger-proximity cue: a red IMGUI vignette that grows as the nearest Tagger closes on the LOCAL
-    // player while they're a Runner. Used to also drive a quickening heartbeat sound synced to the
-    // vignette's pulse, but that read as too distracting per feedback — removed; the vignette now just
-    // holds a steady alpha proportional to intensity (calmer than re-deriving a standalone pulse).
-    // Gated behind the same check in UpdateProximityCue/DrawProximityVignette — local player exists, is
-    // a Runner, not in grace, and a real graphics device — so it never ticks in the bot-only headless
-    // self-play harness (the same _localPlayerAgent + graphics gate the minimap and tag-juice already use).
-    private const float ProximityFarDistance = 18f;   // intensity 0 at/beyond this
-    private const float ProximityNearDistance = 5f;    // intensity 1 at/within this
-    private const float VignetteMaxAlpha = 0.5f;
-    private const int VignetteTextureSize = 256;
-    private float _proximityIntensity;
-    private Texture2D? _vignetteTexture;
-
     // Per-player tag counts for the summary screen. Incremented for every tag including
     // bot-on-bot in headless self-play — a plain dictionary increment is metric-neutral, so it
     // always runs rather than being gated on a local player.
@@ -320,19 +306,28 @@ public sealed class RoundController : MonoBehaviour
             if (agent.transform.position.y < FallResetY
                 && _spawnStates.TryGetValue(agent, out (Vector3 pos, Quaternion rot) spawn))
             {
-                // Anyone (bot or player) who falls off the map respawns at their start — there's
-                // nothing below the rooftop gaps to land on. A Runner is also converted to a Tagger
-                // on the way back: falling off reads as "the map itself tagged you". A Tagger keeps
-                // its role. If this converts the last Runner, the runnersRemaining == 0 check below
-                // ends the round this same frame with the existing "Taggers win" result.
-                Role respawnRole = agent.Role == Role.Runner ? Role.Tagger : agent.Role;
-                // The local player is never converted to Tagger, even by falling off the map —
-                // they just respawn as a Runner and keep playing (same no-infection rule as a tag).
-                if (agent == _localPlayerAgent) respawnRole = Role.Runner;
-                agent.Motor.ResetState(spawn.pos, spawn.rot);
-                // Brief grace on respawn so you don't reappear right into a tagger's reach (and, for a
-                // freshly-converted Runner, so the conversion telegraphs the same way a normal tag does).
-                agent.SetRole(respawnRole, startGrace: true);
+                if (agent == _localPlayerAgent)
+                {
+                    // The local player falling off the map is a loss, same flow as being tagged
+                    // (see PlayerCaught) — no respawn, the round is over (EndRound no-ops if it
+                    // already ended this same frame, e.g. via a simultaneous tag).
+                    _playerLost = true;
+                    EndRound("You fell off the map!");
+                }
+                else
+                {
+                    // Bots who fall off the map respawn at their start — there's nothing below the
+                    // rooftop gaps to land on. A Runner is also converted to a Tagger on the way
+                    // back: falling off reads as "the map itself tagged you". A Tagger keeps its
+                    // role. If this converts the last Runner, the runnersRemaining == 0 check below
+                    // ends the round this same frame with the existing "Taggers win" result.
+                    Role respawnRole = agent.Role == Role.Runner ? Role.Tagger : agent.Role;
+                    agent.Motor.ResetState(spawn.pos, spawn.rot);
+                    // Brief grace on respawn so it doesn't reappear right into a tagger's reach (and,
+                    // for a freshly-converted Runner, so the conversion telegraphs the same way a
+                    // normal tag does).
+                    agent.SetRole(respawnRole, startGrace: true);
+                }
             }
 
             // Taggers get a flat base speed edge (taggerBaseSpeedMultiplier, ~1.04x) at ALL times, with
@@ -364,15 +359,13 @@ public sealed class RoundController : MonoBehaviour
             // top of the map (matched by the -playerYaw offset rotation in DrawMinimap below).
             _minimapCamera.transform.rotation = Quaternion.Euler(90f, _localPlayerAgent.transform.eulerAngles.y, 0f);
         }
-
-        UpdateProximityCue();
     }
 
     private void EndRound(string message)
     {
+        if (_roundOver) return; // don't let a second same-frame trigger (e.g. fall-loss then win/lose check) stomp the result
         _roundOver = true;
         _resultMessage = message;
-        _proximityIntensity = 0f; // stop the vignette drawing over the round-result screen
         _autoRestartRemaining = AutoRestartDuration;
         _finalRoundLength = _config.roundDuration - Mathf.Max(_timeRemaining, 0f);
     }
@@ -388,23 +381,6 @@ public sealed class RoundController : MonoBehaviour
         // Headline already reads "YOU LOSE" (via _playerLost); give the banner a flavour subline
         // instead of repeating the same words twice on the end screen.
         EndRound("The chasers caught you");
-    }
-
-    /// <summary>Local-player Runner proximity cue, ticked each frame from Update: maps the distance to
-    /// the nearest Tagger to a 0..1 intensity. Fully gated — local player exists, is a Runner, not in
-    /// grace, and a real graphics device — so it never runs in the bot-only headless self-play harness
-    /// (same gate the minimap uses). Sets _proximityIntensity for DrawProximityVignette to read in OnGUI.</summary>
-    private void UpdateProximityCue()
-    {
-        _proximityIntensity = 0f;
-        if (_localPlayerAgent == null || _localPlayerAgent.Role != Role.Runner || _localPlayerAgent.IsInGrace) return;
-        if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return;
-
-        TagAgent? nearestTagger = FindNearestOpposingAgent(_localPlayerAgent); // Runner → nearest Tagger
-        if (nearestTagger == null) return;
-
-        float dist = Vector3.Distance(_localPlayerAgent.transform.position, nearestTagger.transform.position);
-        _proximityIntensity = Mathf.InverseLerp(ProximityFarDistance, ProximityNearDistance, dist); // 0 @18m → 1 @5m
     }
 
     // ---------------------------------------------------------------- HUD (IMGUI)
@@ -433,7 +409,6 @@ public sealed class RoundController : MonoBehaviour
     {
         EnsureHudStyles();
         DrawTagConversionFlash();
-        DrawProximityVignette();
 
         DrawTimer();
 
@@ -567,48 +542,6 @@ public sealed class RoundController : MonoBehaviour
             normal = { textColor = new Color(1f, 1f, 1f, t) },
         };
         GUI.Label(new Rect(0, Screen.height / 2f - 120, Screen.width, 80), "YOU'RE IT", itStyle);
-    }
-
-    /// <summary>Red danger vignette drawn full-screen behind the HUD when a Tagger is closing on the
-    /// local Runner. Alpha is a steady intensity × max — no pulse — since this used to be synced to a
-    /// heartbeat sound that read as too distracting per feedback; removed the sound and kept the read
-    /// calm rather than reintroducing a standalone pulse. _proximityIntensity is only ever &gt; 0 when
-    /// UpdateProximityCue's local-player + graphics gate passed this frame, so this never draws in
-    /// headless self-play; the texture is built lazily here, inside that guaranteed-graphics path
-    /// (like the minimap's SetupMinimap textures).</summary>
-    private void DrawProximityVignette()
-    {
-        if (_proximityIntensity <= 0f) return;
-        _vignetteTexture ??= BuildVignetteTexture(VignetteTextureSize);
-
-        Color prev = GUI.color;
-        GUI.color = new Color(0.8f, 0f, 0f, VignetteMaxAlpha * _proximityIntensity);
-        GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), _vignetteTexture);
-        GUI.color = prev;
-    }
-
-    /// <summary>Inverted radial: transparent center ramping to opaque toward the edges (corners fully
-    /// opaque) with a squared falloff for a soft feathered ring — white, tinted red via GUI.color when
-    /// drawn. Same SetPixels approach as BuildCircularMaskTexture, built once and cached.</summary>
-    private static Texture2D BuildVignetteTexture(int size)
-    {
-        var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
-        float radius = size * 0.5f;
-        const float innerFrac = 0.45f; // fully transparent within this fraction of the radius
-        Vector2 center = new(radius, radius);
-        var pixels = new Color[size * size];
-        for (int y = 0; y < size; y++)
-        {
-            for (int x = 0; x < size; x++)
-            {
-                float distNorm = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center) / radius;
-                float a = Mathf.Clamp01((distNorm - innerFrac) / (1f - innerFrac));
-                pixels[y * size + x] = new Color(1f, 1f, 1f, a * a); // squared → softer falloff toward the rim
-            }
-        }
-        tex.SetPixels(pixels);
-        tex.Apply();
-        return tex;
     }
 
     // ---------------------------------------------------------------- Minimap

@@ -3,6 +3,55 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Fall = lose, double-jump wall recharge, vignette removal, slide clip offset (2026-07-14)
+
+Two user-requested gameplay fixes plus two touch-ups, all verified headless with the Editor closed.
+
+**1. Local player falling off the map now loses the round.** `RoundController.Update`'s
+`FallResetY` check used to respawn the local player as a Runner (an earlier chase-me change);
+per feedback, falling should end the round exactly like being tagged. The fall branch now splits:
+local player → `_playerLost = true` + `EndRound("You fell off the map!")` (no respawn — the end
+screen headline reads YOU LOSE via `_playerLost`, banner carries the fall-specific subline;
+auto-restart/R handles the next round as usual); bots keep the existing respawn + Runner→Tagger
+conversion untouched. `EndRound` also gained an early `if (_roundOver) return;` guard so a
+same-frame second trigger (fall-loss plus the runners-remaining check) can't stomp the result
+message — it was previously only guarded at call sites.
+
+**2. Wall-grab / climb recharges the double-jump.** `CharacterMotor._doubleJumpUsed` used to
+reset only in the grounded tick; jumping off a wall-grab left you with no air jump. Reset
+placement: on **state entry** (grabbing = fresh start), not at launch-off — nothing between
+grabbing and launching can re-arm the flag, so one reset per entry point covers both the
+explicit jump-off and a passive drop-off. Four entry points: `TryStartWallHook`, `TryWallHang`
+(both WallHook entries), `StartClimbToLedge` (Climbing), and `AttachToLadder` (not explicitly
+requested, but a ladder grab is the same "fresh start" moment — noted as a judgment call).
+Swings deliberately NOT included (momentum-true release is its own reward). ParkourBotInput's
+shortfall-recovery trigger reads motor state generically and its own `_airJumpRequested` still
+resets on Grounded only — bots just get a rare free recharge mid-parkour via ladders/climbs,
+which the selfplay line confirms is metric-neutral (`bot_double_jumps=4`, normal range).
+
+**3. Removed the tagger-proximity red vignette.** Follow-through on the heartbeat removal —
+the steady red glow read as leftover noise without the audio cue it was built to accompany.
+Deleted `UpdateProximityCue`, `DrawProximityVignette`, `BuildVignetteTexture`, and the
+`Proximity*/Vignette*` constants/fields from `RoundController`.
+
+**4. Slide animation starts mid-clip.** Mixamo's Running Slide opens with a multi-stride
+run-up; in-game slides last well under a second, so the player only ever saw the run-up.
+`BuildCharacterAnimator` now sets `cycleOffset = 0.4` on the Sliding state (start right at the
+drop into the slide); controller regenerated headless — `ANIMATOR_BUILT states=13 params=8`,
+only the known Vault stopgap remains.
+
+**New test:** `DoubleJumpTests.Runner_WallGrabJumpOff_RechargesDoubleJump` — burns the
+double-jump mid-air, grabs a wall (E), jumps off, and asserts a fresh mid-air press kicks up at
+`doubleJumpSpeed` again.
+
+**Verification:**
+- Compile + `BuildRooftopArena` headless: 0 `error CS`, exit 0.
+- Full PlayMode suite: **55/55 green** (54 existing + the new wall-grab recharge test).
+- `Tools/selfplay.sh`: `matches=10 runner_win_rate=0.00 ... total_stuck=19 total_fallen=0 ...
+  bot_double_jumps=4` — within the expected ≤~25 stuck / 0 fallen envelope; fall-lose is
+  local-player-gated so the bot-only harness is untouched, and the DJ recharge shows no
+  behavioral drift.
+
 ## Role-linked character model, new Idle/Slide clips, heartbeat removal (2026-07-14)
 
 Three user-reported fixes, all verified headless with the Editor closed.

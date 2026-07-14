@@ -677,6 +677,11 @@ public sealed class CharacterMotor : MonoBehaviour
         _wallHookElapsed = 0f;
         _state = MotorState.WallHook;
         _rb.linearVelocity = Vector3.zero;
+        // Grabbing the wall recharges the double-jump, same as landing — a wall-grab is a fresh
+        // start, so even a passive drop-off (not just an explicit launch-off) leaves the air jump
+        // available. Reset here (on entry) rather than at launch-off: nothing between grabbing and
+        // launching can re-arm _doubleJumpUsed, so one reset covers both paths.
+        _doubleJumpUsed = false;
         return true;
     }
 
@@ -725,6 +730,7 @@ public sealed class CharacterMotor : MonoBehaviour
         _wallHookElapsed = 0f;
         _state = MotorState.WallHook;
         _rb.linearVelocity = Vector3.zero;
+        _doubleJumpUsed = false; // wall-grab recharges the double-jump — see TryStartWallHook
         return true;
     }
 
@@ -865,6 +871,7 @@ public sealed class CharacterMotor : MonoBehaviour
         _state = MotorState.Climbing;
         _transitionEnd = ledgePoint;
         _climbApproachDir = approachDir.normalized;
+        _doubleJumpUsed = false; // climbing recharges the double-jump too — see TryStartWallHook
     }
 
     private void TickClimbing(float dt)
@@ -1102,6 +1109,9 @@ public sealed class CharacterMotor : MonoBehaviour
         _ladderCarryover = CurrentSpeed * config.ladder.entryMomentumRetention;
         _state = MotorState.OnLadder;
         _rb.linearVelocity = Vector3.zero;
+        // Not requested explicitly, but consistent with the wall-grab/climb recharge: grabbing a
+        // ladder is the same kind of "fresh start" moment, so it recharges the double-jump too.
+        _doubleJumpUsed = false;
     }
 
     private void AttachToSwing(ChainSwingInteractable swing)
