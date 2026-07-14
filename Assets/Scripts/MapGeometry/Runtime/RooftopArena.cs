@@ -192,6 +192,56 @@ public static class RooftopArena
         // Swing instead). Bidirectional, so it also gives Con_West a genuinely different second
         // inbound face (west, vs the existing south-facing Jump to W2).
         new(18, 22, LinkKind.Ramp),
+
+        // More walkable ramp connections between buildings (user: "add more ramps connecting the
+        // buildings"). Each is parallel to an existing Jump but gives a no-jump walking route, and
+        // all rises are gentle (<=2m) so BuildRamp lays a ~22° grade (the tighter 5m-gap pairs hit
+        // its run clamp and get a touch steeper, still walkable). Spawn (0) already had a west ramp
+        // to W1 (0<->3); these add its east/north/south spokes, making Spawn a 4-way ramp hub, plus
+        // two ramps up onto the tall NE/NW corner roofs and a central north spine.
+        new(0, 1, LinkKind.Ramp),    // Spawn h3 -> E1 h4   (east spoke)
+        new(0, 4, LinkKind.Ramp),    // Spawn h3 -> N1 h4   (north spoke)
+        new(0, 12, LinkKind.Ramp),   // Spawn h3 -> S1 h4   (south spoke)
+        new(4, 8, LinkKind.Ramp),    // N1 h4  -> N2 h5      (central north spine)
+        new(9, 10, LinkKind.Ramp),   // N2E h5 -> N2EE h7    (up onto the tall NE roof, +2m)
+        new(15, 16, LinkKind.Ramp),  // W2 h4  -> N1WW h6    (up onto the tall NW roof, +2m)
+    };
+
+    // Long vertical "climb pipes" on the exposed OUTER faces of the perimeter roofs — placed where
+    // the only thing below is the void. Distinct from the roof-to-roof Ladder LINKS above: those are
+    // bot-pathable graph edges (they connect two adjacent roofs, so the graph wires a Ladder edge and
+    // the layout's small height steps keep them short). A void pipe instead runs from a tall roof's
+    // lip DOWN past the building base into open air, connecting no second roof — so it is NOT a graph
+    // edge (bots only ever traverse graph edges) and lives in this separate list. That is exactly the
+    // point: a cornered RUNNER can drop onto the pipe and climb down an exposed face into the void
+    // where the bots won't follow. Fed straight into the ladder-interactable list in Build, which
+    // both the saved scene (PlaygroundBuilder) and headless self-play (RooftopInteractableBuilder)
+    // already iterate — so no per-builder hand-authoring, one source of truth.
+    //
+    // Face = outward unit direction into the void (which building face the pipe runs down). BottomY =
+    // how deep the pipe reaches; every building bottoms at y=-3 (BuildingSkirt), so a BottomY below
+    // that literally hangs into the void. Kept long (>=10m) on purpose — the old 1m "accent" pipes
+    // read as useless.
+    public readonly struct VoidPipe
+    {
+        public readonly int Roof;
+        public readonly Vector3 Face;   // outward unit dir into the void
+        public readonly float BottomY;  // pipe foot, well below the roof surface (into the void)
+        public VoidPipe(int roof, Vector3 face, float bottomY) { Roof = roof; Face = face; BottomY = bottomY; }
+    }
+
+    public static readonly VoidPipe[] VoidPipes =
+    {
+        new(11, new Vector3(-1f, 0f,  0f), -8f), // Roof_Tower  west  face (h9) — longest, ~17m into the void
+        new(11, new Vector3( 0f, 0f,  1f), -8f), // Roof_Tower  north face — Tower's second exposed void face
+        new(10, new Vector3( 0f, 0f,  1f), -7f), // Roof_N2EE   north face (h7) — NE corner
+        new(10, new Vector3( 1f, 0f,  0f), -7f), // Roof_N2EE   east  face
+        new( 6, new Vector3( 1f, 0f,  0f), -7f), // Roof_N1EE   east  face (h6)
+        new(16, new Vector3(-1f, 0f,  0f), -7f), // Roof_N1WW   west  face (h6)
+        new( 8, new Vector3( 0f, 0f,  1f), -7f), // Roof_N2     north face (h5)
+        new(22, new Vector3(-1f, 0f,  0f), -7f), // Con_West    west  face (h3.5) — construction-zone edge
+        new(24, new Vector3( 0f, 0f, -1f), -7f), // Con_ScafHi  south face (h4) — SW corner
+        new(14, new Vector3( 0f, 0f, -1f), -7f), // Roof_S2     south face (h3) — south edge
     };
 
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
@@ -247,6 +297,11 @@ public static class RooftopArena
                 // Jump/Drop links need no geometry — the gap between roofs IS the jump/drop.
             }
         }
+
+        // Long over-void escape pipes (player features; see VoidPipes). Added to the same ladder list
+        // the scene + headless builders consume, so they appear identically in both. Not graph edges.
+        foreach (VoidPipe pipe in VoidPipes)
+            ladders.Add(VoidPipeAnchors(pipe));
 
         ValidateLadderRampClearance(ladders, ramps);
 
@@ -461,6 +516,21 @@ public static class RooftopArena
         Vector3 faceEdge = new Vector3(upper.Center.x, 0f, upper.Center.z) + outward * (Mathf.Max(upper.SizeX, upper.SizeZ) * 0.5f + 0.4f);
         Vector3 bottom = new(faceEdge.x, lower.Center.y + 0.2f, faceEdge.z);
         Vector3 top = new(faceEdge.x, upper.Center.y, faceEdge.z);
+        return (bottom, top, outward);
+    }
+
+    /// <summary>Anchors for a <see cref="VoidPipe"/>: a vertical climb line on the roof's exposed
+    /// outer face, top flush at the roof surface (so a climber dismounts straight onto the roof) and
+    /// bottom hanging in the void below. Mirrors <see cref="LadderAnchors"/>'s face-edge + 0.4m offset
+    /// so the pipe sits just proud of the building face.</summary>
+    public static (Vector3 bottom, Vector3 top, Vector3 outward) VoidPipeAnchors(VoidPipe p)
+    {
+        Roof roof = Roofs[p.Roof];
+        Vector3 outward = p.Face.normalized;
+        float halfExtent = Mathf.Abs(outward.x) > Mathf.Abs(outward.z) ? roof.SizeX * 0.5f : roof.SizeZ * 0.5f;
+        Vector3 faceEdge = new Vector3(roof.Center.x, 0f, roof.Center.z) + outward * (halfExtent + 0.4f);
+        Vector3 top = new(faceEdge.x, roof.Center.y, faceEdge.z);
+        Vector3 bottom = new(faceEdge.x, p.BottomY, faceEdge.z);
         return (bottom, top, outward);
     }
 

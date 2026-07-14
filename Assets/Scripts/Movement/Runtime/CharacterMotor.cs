@@ -578,7 +578,13 @@ public sealed class CharacterMotor : MonoBehaviour
         if (hasInput || newHorizontal.magnitude > 0.5f)
         {
             Vector3 slopeGravity = Vector3.ProjectOnPlane(Physics.gravity, _ground.normal);
-            newVelocity += slopeGravity * (config.ground.slopeGravityInfluence * dt);
+            // Downhill assist ONLY. slopeGravity points down the fall line, so on an uphill run it
+            // opposes travel and drags you — which felt bad ("not fun being slowed by the ramp", user).
+            // Applying it only when it aligns with travel (Dot > 0 = heading downhill) keeps the fun
+            // downhill speed-up while making a ramp cost no speed to run UP. Flat ground is unaffected
+            // (slopeGravity ≈ 0 there).
+            if (Vector3.Dot(slopeGravity, newHorizontal) > 0f)
+                newVelocity += slopeGravity * (config.ground.slopeGravityInfluence * dt);
         }
 
         _rb.linearVelocity = newVelocity;
