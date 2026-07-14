@@ -87,6 +87,8 @@ public sealed class TagAgent : MonoBehaviour
 
     private LineRenderer? _reachRing;
     private static AudioClip? _boopClip;
+    private static AudioClip? _convertedClip;
+    private static AudioClip? _lungeWhooshClip;
 
     // Landing feedback: a brief squash-and-stretch pulse on the body plus a soft thump, gated by
     // CharacterMotor's own minAirTimeForLandingEffects (the same gate camera shake uses) so tiny
@@ -308,6 +310,11 @@ public sealed class TagAgent : MonoBehaviour
             _lungeTagWindowRemaining = LungeTagWindow; // arm contact-tag for the dive
             _lungeTagUsed = false;
         }
+
+        // Local player's lunge whoosh — rising pitch-sweep. Bots also call TryLunge in the headless
+        // harness, so gate on local-player + graphics (same guard as OnLanded ~:171).
+        if (_isLocalPlayer && SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
+            AudioSource.PlayClipAtPoint(GetLungeWhooshClip(), transform.position);
     }
 
     // Contact tag — active ONLY during the lunge window, and only the first runner touched per lunge.
@@ -420,6 +427,18 @@ public sealed class TagAgent : MonoBehaviour
         other.WasTagged?.Invoke(other);
         AudioSource.PlayClipAtPoint(GetBoopClip(), other.transform.position);
         _roundController?.RecordTag(this);
+
+        // Tag-moment juice — ONLY when the local player is the tagger or the one tagged, AND graphics
+        // exist. Same guard as OnLanded (~:171): PerformTag runs for every bot-on-bot tag in the
+        // headless self-play harness, and any timeScale change / audio spawn there would skew the
+        // metric batch. Gating here keeps the juice fully out of that harness.
+        bool localInvolved = _isLocalPlayer || other._isLocalPlayer;
+        if (localInvolved && SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
+        {
+            _roundController?.TriggerTagSlowMo();
+            if (other._isLocalPlayer) // the local player got converted → "you're it" descending blip
+                AudioSource.PlayClipAtPoint(GetConvertedClip(), other.transform.position);
+        }
     }
 
     /// <summary>
@@ -612,5 +631,63 @@ public sealed class TagAgent : MonoBehaviour
         _landingThumpClip = AudioClip.Create("LandingThump", sampleCount, 1, sampleRate, false);
         _landingThumpClip.SetData(samples, 0);
         return _landingThumpClip;
+    }
+
+    // ---------------------------------------------------------------- Tag-moment stingers
+
+    /// <summary>"You're it" stinger for the local player getting tagged: two DESCENDING tones (high
+    /// then low), each with its own sine envelope so neither clicks. Static-cached like GetBoopClip.</summary>
+    private static AudioClip GetConvertedClip()
+    {
+        if (_convertedClip != null) return _convertedClip;
+
+        const int sampleRate = 44100;
+        const float duration = 0.22f;
+        const float highFrequency = 660f;
+        const float lowFrequency = 440f;
+        int sampleCount = Mathf.CeilToInt(sampleRate * duration);
+        int half = sampleCount / 2;
+        var samples = new float[sampleCount];
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float t = i / (float)sampleRate;
+            bool firstTone = i < half;
+            float frequency = firstTone ? highFrequency : lowFrequency;
+            int local = firstTone ? i : i - half;
+            int localCount = firstTone ? half : sampleCount - half;
+            float envelope = Mathf.Sin(Mathf.PI * local / localCount); // per-tone fade so both read cleanly
+            samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * t) * envelope * 0.5f;
+        }
+
+        _convertedClip = AudioClip.Create("TagConverted", sampleCount, 1, sampleRate, false);
+        _convertedClip.SetData(samples, 0);
+        return _convertedClip;
+    }
+
+    /// <summary>Local player's lunge "whoosh": a rising pitch-SWEEP sine (phase-accumulated like the
+    /// landing thump's sweep, not noise). Static-cached like GetBoopClip.</summary>
+    private static AudioClip GetLungeWhooshClip()
+    {
+        if (_lungeWhooshClip != null) return _lungeWhooshClip;
+
+        const int sampleRate = 44100;
+        const float duration = 0.2f;
+        const float startFrequency = 300f;
+        const float endFrequency = 1200f; // pitch rises through the clip for a "whoosh"
+        int sampleCount = Mathf.CeilToInt(sampleRate * duration);
+        var samples = new float[sampleCount];
+        float phase = 0f;
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float t = i / (float)sampleCount;
+            float frequency = Mathf.Lerp(startFrequency, endFrequency, t);
+            phase += frequency / sampleRate;
+            float envelope = Mathf.Sin(Mathf.PI * t); // fade in/out so it doesn't click
+            samples[i] = Mathf.Sin(2f * Mathf.PI * phase) * envelope * 0.4f;
+        }
+
+        _lungeWhooshClip = AudioClip.Create("LungeWhoosh", sampleCount, 1, sampleRate, false);
+        _lungeWhooshClip.SetData(samples, 0);
+        return _lungeWhooshClip;
     }
 }

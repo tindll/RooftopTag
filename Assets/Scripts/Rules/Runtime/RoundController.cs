@@ -27,6 +27,23 @@ public sealed class RoundController : MonoBehaviour
     private TagAgent? _localPlayerAgent;
     private ThirdPersonCameraRig? _cameraRig;
 
+    // Tag-moment slow-mo: on a local-player-involved tag, dip to 0.35x for ~0.25s. The restore is
+    // driven off Time.unscaledTime (never a timeScale-scaled timer) so it self-restores even at 0.35x,
+    // and it fully defers to the pause menu's timeScale ownership (SettingsMenu sets timeScale=0 while
+    // paused, 1 on resume): TriggerTagSlowMo won't touch timeScale while paused, and the Update restore
+    // bails without stomping if the pause menu froze timeScale mid-slow-mo. Only ever set from
+    // TagAgent.PerformTag's local-player+graphics gate, so it never runs in the headless self-play harness.
+    private const float TagSlowMoScale = 0.35f;
+    private const float TagSlowMoDuration = 0.25f;
+    private float _slowMoEndUnscaled = -1f;
+
+    // Conversion flash + "YOU'RE IT" pulse, drawn in OnGUI over unscaled time. Only ever armed by the
+    // WasTagged subscription in RegisterAgent's isLocalPlayer branch, so it's local-player-only and
+    // never draws in the bot-only headless harness.
+    private const float TagFlashDuration = 0.4f;
+    private const float TagFlashMaxAlpha = 0.6f;
+    private float _tagFlashEndUnscaled = -1f;
+
     // Per-player tag counts for the summary screen. Incremented for every tag including
     // bot-on-bot in headless self-play — a plain dictionary increment is metric-neutral, so it
     // always runs rather than being gated on a local player.
@@ -71,10 +88,23 @@ public sealed class RoundController : MonoBehaviour
             // _isLocalPlayer guard), so the "all runners tagged" win check in Update never fires for
             // them — explicitly end the round here instead.
             agent.WasTagged += PlayerCaught;
+            agent.WasTagged += OnLocalPlayerTagged; // local-only: arms the conversion flash + "YOU'RE IT"
             SetupMinimap();
             SetupLungeSpinner();
         }
     }
+
+    /// <summary>Local-player-involved tag juice: dip to slow-mo. No-op if the pause menu currently owns
+    /// a frozen timeScale — pausing wins, we don't fight it. Graphics-gated at the call site
+    /// (TagAgent.PerformTag), so this never runs in the headless self-play harness.</summary>
+    public void TriggerTagSlowMo()
+    {
+        if (Time.timeScale == 0f) return; // pause menu owns timeScale — leave it alone
+        Time.timeScale = TagSlowMoScale;
+        _slowMoEndUnscaled = Time.unscaledTime + TagSlowMoDuration;
+    }
+
+    private void OnLocalPlayerTagged(TagAgent _) => _tagFlashEndUnscaled = Time.unscaledTime + TagFlashDuration;
 
     /// <summary>Loose tagger coordination: taggers record who they're currently pursuing so others prefer an unclaimed runner over piling onto the same one.</summary>
     public void ClaimTarget(TagAgent tagger, TagAgent target) => _taggerClaims[tagger] = target;
@@ -219,6 +249,20 @@ public sealed class RoundController : MonoBehaviour
 
     private void Update()
     {
+        // Tag slow-mo self-restore, on UNSCALED time so it fires even while timeScale is 0.35. If the
+        // pause menu froze timeScale to 0 mid-slow-mo, pausing wins: drop our claim and leave timeScale
+        // alone (SettingsMenu restores it to 1 on resume) rather than stomping it back to 1 while paused.
+        if (_slowMoEndUnscaled >= 0f)
+        {
+            if (Time.timeScale == 0f)
+                _slowMoEndUnscaled = -1f;
+            else if (Time.unscaledTime >= _slowMoEndUnscaled)
+            {
+                Time.timeScale = 1f;
+                _slowMoEndUnscaled = -1f;
+            }
+        }
+
         // R restarts at any point, not just once the round has ended — mid-round it's the
         // playground-style "reset" the player uses to recover from falling off the map, on top
         // of doubling as the round's own restart-on-win/loss key.
@@ -351,6 +395,7 @@ public sealed class RoundController : MonoBehaviour
     private void OnGUI()
     {
         EnsureHudStyles();
+        DrawTagConversionFlash();
 
         DrawTimer();
 
@@ -447,6 +492,43 @@ public sealed class RoundController : MonoBehaviour
         GUI.color = color;
         GUI.DrawTexture(rect, Texture2D.whiteTexture);
         GUI.color = prev;
+    }
+
+    /// <summary>Full-screen grace-orange flash fading over unscaled time, plus a "YOU'RE IT" pop, when
+    /// the LOCAL player is converted. Armed only via the WasTagged subscription in RegisterAgent's
+    /// isLocalPlayer branch, so it's inherently local-player-only and never draws in headless self-play.</summary>
+    private void DrawTagConversionFlash()
+    {
+        if (_tagFlashEndUnscaled < 0f) return;
+
+        float remaining = _tagFlashEndUnscaled - Time.unscaledTime;
+        if (remaining <= 0f)
+        {
+            _tagFlashEndUnscaled = -1f;
+            return;
+        }
+
+        float t = remaining / TagFlashDuration; // 1 → 0 over the flash
+        Color prevColor = GUI.color;
+
+        Color flash = _config.conversionGraceColor;
+        flash.a = TagFlashMaxAlpha * t;
+        GUI.color = flash;
+        GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.whiteTexture);
+
+        GUI.color = prevColor;
+
+        // "YOU'RE IT" pulse: pops in large and shrinks toward a resting size while fading — same big
+        // centered look as the round-result headline (~:315).
+        int fontSize = Mathf.RoundToInt(Mathf.Lerp(36f, 64f, t));
+        var itStyle = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = fontSize,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter,
+            normal = { textColor = new Color(1f, 1f, 1f, t) },
+        };
+        GUI.Label(new Rect(0, Screen.height / 2f - 120, Screen.width, 80), "YOU'RE IT", itStyle);
     }
 
     // ---------------------------------------------------------------- Minimap
