@@ -50,9 +50,10 @@ public static class RooftopArena
     {
         public readonly List<(Vector3 bottom, Vector3 top, Vector3 outward)> Ladders;
         public readonly List<(Vector3 pivot, float length, Vector3 exitDir)> Swings;
-        public ArenaInteractables(List<(Vector3, Vector3, Vector3)> ladders, List<(Vector3, float, Vector3)> swings)
+        public readonly List<(Vector3 pos, int tier)> Cans;
+        public ArenaInteractables(List<(Vector3, Vector3, Vector3)> ladders, List<(Vector3, float, Vector3)> swings, List<(Vector3, int)> cans)
         {
-            Ladders = ladders; Swings = swings;
+            Ladders = ladders; Swings = swings; Cans = cans;
         }
     }
 
@@ -207,6 +208,25 @@ public static class RooftopArena
         new(15, 16, LinkKind.Ramp),  // W2 h4  -> N1WW h6    (up onto the tall NW roof, +2m)
     };
 
+    // Trash-can objective spawn spots (see the Bins feature). (world pos, tier): tier 1 = small can
+    // (+1), tier 2 = dumpster (+2). ~8 hand-placed spots with mixed risk; RoundController activates a
+    // random subset each round. Offset ~2m from roof centres; several force vertical traversal.
+    public static readonly (Vector3 pos, int tier)[] CanAnchors =
+    {
+        // Positions are OFFSET ~2-2.5m off each roof's centre (verified still on-roof): the centre
+        // itself is a graph node + a spawn point, and a can carries a SOLID collider, so a centred can
+        // would trap spawned/pathing agents (N1 and E1S are spawn roofs). Offset keeps the can findable
+        // without blocking the objective's own traffic.
+        (new Vector3(-11f, 9.2f, 21f), 1),  // Roof_Tower top — pipe/ladder-only, high risk
+        (new Vector3( 27.5f, 7.2f, 27.5f), 1), // Roof_N2EE — tallest NE roof
+        (new Vector3(  2.5f, 4.1f, 13f), 1), // Roof_N1 — central, exposed (spawn roof → offset +x)
+        (new Vector3(-26f, 4.2f,  2.5f), 1), // Roof_W2 — west street
+        (new Vector3( 15f, 3.2f,-13f), 1),  // Roof_E1S — southeast (spawn roof → offset +x)
+        (new Vector3(-29f, 1.7f,-14f), 2),  // Con_Yard — construction pit dumpster (enclosed, low)
+        (new Vector3(-35f, 2.2f,-27f), 2),  // Con_Alley — long SW alley dumpster
+        (new Vector3(  2.5f, 3.2f,-26f), 1), // Roof_S2 — south row
+    };
+
     // Long vertical "climb pipes" on the exposed OUTER faces of the perimeter roofs — placed where
     // the only thing below is the void. Distinct from the roof-to-roof Ladder LINKS above: those are
     // bot-pathable graph edges (they connect two adjacent roofs, so the graph wires a Ladder edge and
@@ -311,8 +331,24 @@ public static class RooftopArena
         // identically in saved scenes AND headless self-play.
         RoofPropDresser.DressRoofs(root.transform);
 
+        // Trash-can objective anchors (see the Bins feature): one shared list both build paths
+        // (PlaygroundBuilder scene + headless RooftopInteractableBuilder) consume. Each spot is
+        // validated against the SAME nav-clearance rule RoofPropDresser uses — link corridors,
+        // graph anchors and spawn points (ClearanceSegments) — but a tight spot is WARNED, never
+        // dropped: a missing can would break the round's objective count.
+        var canSegments = RoofPropDresser.ClearanceSegments();
+        var cans = new List<(Vector3, int)>();
+        foreach ((Vector3 pos, int tier) in CanAnchors)
+        {
+            if (!RoofPropDresser.IsClear(pos, canSegments, RoofPropDresser.DefaultClearRadius))
+                Debug.LogWarning($"TRASHCAN_ANCHOR_TIGHT: can at ({pos.x:F1}, {pos.z:F1}) tier {tier} " +
+                    $"is within {RoofPropDresser.DefaultClearRadius:F1}m of a link corridor/spawn — kept anyway.");
+            cans.Add((pos, tier));
+        }
+        Debug.Log($"TRASHCAN_ANCHORS: {cans.Count} spots");
+
         Debug.Log($"ROOFTOP_BUILD: {Roofs.Length} roofs, {Links.Length} links; sprintSpeed={config.ground.sprintSpeed}");
-        return new ArenaInteractables(ladders, swings);
+        return new ArenaInteractables(ladders, swings, cans);
     }
 
     /// <summary>

@@ -77,6 +77,14 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     // runners fans across several exits instead of funneling into one easily-swept node.
     private const float FleeGoalSpread = 6f;
 
+    // Runner eat-objective (only when ActiveCans is non-empty). Low pressure = the nearest tagger's
+    // graph path-distance to the runner exceeds CanSeekPressureDistance; then the runner detours to the
+    // nearest active can instead of fleeing. An eat-commit freezes planning while the eat channel fills,
+    // so it MUST stay interruptible: a tagger closing within CanAbortDistance clears the commit and the
+    // runner flees next tick rather than channelling into a face-tag.
+    private const float CanSeekPressureDistance = 12f;
+    private const float CanAbortDistance = 6f;
+
     private TagAgent _agent = null!;
     private RoundController _roundController = null!;
     private ParkourGraph? _graph;
@@ -112,6 +120,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private float _jukeEndTime;
     private float _jukeCooldownEnd;
     private Vector3 _jukeDir;
+
+    // Runner eat-objective: the active can this runner is currently detouring to eat (null = fleeing
+    // normally). Set in RecomputePath when pressure is low, steered at via ComputeSteerPoint's fallback,
+    // and cleared on arrival-abort, when the can is eaten/deactivated, or when flee is chosen again.
+    private TrashCanInteractable? _targetCan;
 
     public Vector2 Move { get; private set; }
     public Vector2 Look => Vector2.zero;
@@ -201,6 +214,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 RecomputePath(); // frozen while committed so a mid-edge bot keeps its approach + held Interact
         }
 
+        // Runner eat-objective: stand on the target can to feed the eat channel, and bail if a tagger
+        // closes. Runs EVERY tick (even while committed) so the eat-commit stays interruptible by threat.
+        if (UpdateEatObjective())
+            return; // standing still on the can; planning frozen by the commit latch
+
         if (_target == null)
         {
             Move = Vector2.zero;
@@ -275,11 +293,116 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         bool isTagger = _agent.Role == Role.Tagger;
         Vector3 predicted = LastPredictedPoint ?? _target.transform.position;
         int startNode = _graph.NearestNode(transform.position);
-        int goalNode = isTagger
-            ? _graph.NearestNode(predicted)
-            : FleeGoalNode(startNode);
+
+        int goalNode;
+        if (isTagger)
+        {
+            goalNode = _graph.NearestNode(predicted);
+        }
+        else
+        {
+            // Reuse ONE tagger scan for both the eat-pressure gate and the flee scorer.
+            float[] threatDist = TaggerDistances();
+            goalNode = TrySeekCanGoal(startNode, threatDist, out int canNode)
+                ? canNode
+                : FleeGoalNode(startNode, threatDist);
+        }
+
         _path = _graph.FindPath(startNode, goalNode);
         _pathIndex = 0;
+    }
+
+    /// <summary>Nearest-tagger graph path-distance to EVERY node (MIN over all taggers = pincer
+    /// awareness). Shared by the flee scorer and the eat-pressure gate so the taggers are swept once.</summary>
+    private float[] TaggerDistances()
+    {
+        var threatDist = new float[_graph!.Nodes.Count];
+        for (int i = 0; i < threatDist.Length; i++) threatDist[i] = float.MaxValue;
+        foreach (TagAgent agent in _roundController.Agents)
+        {
+            if (agent.Role != Role.Tagger) continue;
+            float[] td = _graph.DistancesFrom(_graph.NearestNode(agent.transform.position));
+            for (int i = 0; i < td.Length; i++)
+                if (td[i] < threatDist[i]) threatDist[i] = td[i];
+        }
+        return threatDist;
+    }
+
+    /// <summary>Low-pressure eat detour: if any active can exists AND the nearest tagger's path-distance
+    /// to the runner exceeds CanSeekPressureDistance, target the nearest active can and route to its node.
+    /// Returns false (→ normal flee) with no cans or under pressure, gating this so a can-free scene keeps
+    /// runner behaviour exactly as before. threatDist[startNode] is the shared scan — no fresh sweep.</summary>
+    private bool TrySeekCanGoal(int startNode, float[] threatDist, out int canNode)
+    {
+        canNode = startNode;
+        _targetCan = null;
+
+        IReadOnlyList<TrashCanInteractable> cans = _roundController.ActiveCans;
+        if (cans.Count == 0) return false;                                  // no cans → flee as before
+        if (threatDist[startNode] <= CanSeekPressureDistance) return false; // tagger near → flee
+
+        TrashCanInteractable? nearest = null;
+        float bestSqr = float.MaxValue;
+        Vector3 pos = transform.position;
+        for (int i = 0; i < cans.Count; i++)
+        {
+            float sqr = (cans[i].Position - pos).sqrMagnitude;
+            if (sqr < bestSqr) { bestSqr = sqr; nearest = cans[i]; }
+        }
+        if (nearest == null) return false;
+
+        _targetCan = nearest;
+        canNode = _graph!.NearestNode(nearest.Position);
+        return true;
+    }
+
+    /// <summary>Runner eat-objective, evaluated every tick so it can interrupt the eat-commit. Drops a
+    /// vanished can, ABORTS (clears the eat-commit) if a tagger is within CanAbortDistance, else — once
+    /// within EatRadius of the can — stands still and latches the commit for the eat duration (+slack) so
+    /// RoundController's eat channel fills without replanning. Returns true only while standing to eat.</summary>
+    private bool UpdateEatObjective()
+    {
+        if (_targetCan == null) return false;
+
+        bool eatCommit = _committed && _committedEdge == null; // the eat-commit has no backing edge
+
+        // Can eaten/deactivated (by us or another runner, or a round reset) → resume normal planning.
+        if (!_targetCan.IsActive || _targetCan.IsEaten)
+        {
+            _targetCan = null;
+            if (eatCommit) _committed = false;
+            return false;
+        }
+
+        float taggerDist = _target != null
+            ? Vector3.Distance(transform.position, _target.transform.position)
+            : float.MaxValue;
+
+        // Abort hatch: a tagger this close means channelling = a face-tag. Clear the eat-commit only
+        // (never a mid-jump edge commit) and force an immediate flee replan.
+        if (taggerDist <= CanAbortDistance)
+        {
+            _targetCan = null;
+            if (eatCommit) _committed = false;
+            _nextDecisionTime = Time.time; // replan next tick instead of coasting on the stale can route
+            return false;
+        }
+
+        // On the can → stop and freeze planning for the eat (mirrors Commit's latch, but with the
+        // eat-duration deadline and no backing edge).
+        if (Vector3.Distance(transform.position, _targetCan.Position) <= _roundController.EatRadius)
+        {
+            Move = Vector2.zero;
+            if (!_committed)
+            {
+                _committed = true;
+                _commitDeadline = Time.time + _targetCan.EatDuration + 1f;
+                _committedEdge = null;
+            }
+            return true;
+        }
+
+        return false; // still walking toward the can — let normal steering carry it there
     }
 
     private Vector3 PredictPosition(TagAgent target)
@@ -305,20 +428,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     /// reason survival was pinned at 0.00. Falls back to the start node (→ empty path → direct
     /// steering) only if nothing is reachable.
     /// </summary>
-    private int FleeGoalNode(int startNode)
+    private int FleeGoalNode(int startNode, float[] threatDist)
     {
         float[] selfDist = _graph!.DistancesFrom(startNode);
-
-        // Nearest-tagger path-distance to each node (min over all taggers = pincer awareness).
-        float[] threatDist = new float[selfDist.Length];
-        for (int i = 0; i < threatDist.Length; i++) threatDist[i] = float.MaxValue;
-        foreach (TagAgent agent in _roundController.Agents)
-        {
-            if (agent.Role != Role.Tagger) continue;
-            float[] td = _graph.DistancesFrom(_graph.NearestNode(agent.transform.position));
-            for (int i = 0; i < td.Length; i++)
-                if (td[i] < threatDist[i]) threatDist[i] = td[i];
-        }
 
         int best = startNode;
         float bestScore = float.NegativeInfinity;
@@ -373,8 +485,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             _pathIndex++;
         }
 
-        // Path fully walked — home in on the actual (possibly-moved) target directly.
-        return _target!.transform.position;
+        // Path fully walked — home in on the eat-target can if seeking one (final approach onto the
+        // can so UpdateEatObjective can trigger), else the actual (possibly-moved) target directly.
+        return _targetCan != null ? _targetCan.Position : _target!.transform.position;
     }
 
     // ---------------------------------------------------------------- Steering / execution

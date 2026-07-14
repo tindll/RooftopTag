@@ -2,6 +2,7 @@
 
 using System.Collections.Generic;
 using Game.CameraSystem;
+using Game.Movement;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.Rendering;
@@ -63,6 +64,16 @@ public sealed class RoundController : MonoBehaviour
     private int _sessionLosses;
     private float _sessionBestSurvival;
 
+    // Trash-can objective: Runners win instantly by eating trashPointsToWin points of cans before the
+    // timer runs out. All state is instance (never static) so the self-play harness's 10 matches/process
+    // each start clean. Scenes with no cans (playground / TagArena) leave these empty → every hook no-ops.
+    private int _trashPoints;
+    private readonly List<TrashCanInteractable> _cans = new();       // every can in the scene
+    private readonly List<TrashCanInteractable> _activeCans = new();  // activated, not-yet-eaten subset
+    // TODO wire MatchMetrics.CansEaten — RoundController holds no MatchMetrics ref (it's per-agent on
+    // ParkourBotInput), so the metrics agent reads this exposed counter instead.
+    private int _cansEatenThisMatch;
+
     private float _timeRemaining;
     private float _roundStartTime;
     private bool _roundOver;
@@ -76,6 +87,28 @@ public sealed class RoundController : MonoBehaviour
     public string ResultMessage => _resultMessage;
     public float TimeRemaining => _timeRemaining;
     public IReadOnlyList<TagAgent> Agents => _agents;
+
+    // Trash-can objective, exposed for bot AI + HUD. _activeCans only ever holds active, non-eaten cans
+    // (an eaten can is removed in Update), so it satisfies the "active, non-eaten" contract directly.
+    public IReadOnlyList<TrashCanInteractable> ActiveCans => _activeCans;
+    public int TrashPoints => _trashPoints;
+    public float EatRadius => _config.eatRadius;
+    public int CansEatenThisMatch => _cansEatenThisMatch;
+
+    /// <summary>True if any active can is mid-eat (Progress &gt; 0); <paramref name="canPos"/> is that can's world position — the tagger-facing "a channel is live" ping.</summary>
+    public bool AnyRunnerEating(out Vector3 canPos)
+    {
+        foreach (TrashCanInteractable can in _activeCans)
+        {
+            if (can.Progress > 0f)
+            {
+                canPos = can.Position;
+                return true;
+            }
+        }
+        canPos = default;
+        return false;
+    }
 
     /// <summary>No tag should land while this is false — see <see cref="TagRulesConfig.roundStartGraceDuration"/>.</summary>
     public bool IsPastStartGrace => Time.time - _roundStartTime >= _config.roundStartGraceDuration;
@@ -192,7 +225,35 @@ public sealed class RoundController : MonoBehaviour
         _resultMessage = "";
         _playerLost = false;
         _tagCounts.Clear();
+        SetupTrashCans();
         AssignRoles();
+    }
+
+    // Rebuild the trash objective for the round: find every can, reset them all, then activate a random
+    // subset of size min(activeCanCount, canCount). A plain Fisher-Yates over the found list before taking
+    // the first N gives a tier mix for free. Scenes with no cans leave _activeCans empty → the objective
+    // no-ops everywhere it's read.
+    private void SetupTrashCans()
+    {
+        _trashPoints = 0;
+        _cansEatenThisMatch = 0;
+        _activeCans.Clear();
+        _cans.Clear();
+        _cans.AddRange(FindObjectsByType<TrashCanInteractable>(FindObjectsSortMode.None));
+        foreach (TrashCanInteractable can in _cans) can.ResetForRound();
+
+        for (int i = _cans.Count - 1; i > 0; i--)
+        {
+            int j = Random.Range(0, i + 1);
+            (_cans[i], _cans[j]) = (_cans[j], _cans[i]);
+        }
+
+        int activateCount = Mathf.Min(_config.activeCanCount, _cans.Count);
+        for (int i = 0; i < activateCount; i++)
+        {
+            _cans[i].Activate();
+            _activeCans.Add(_cans[i]);
+        }
     }
 
     private void AssignRoles()
@@ -349,6 +410,53 @@ public sealed class RoundController : MonoBehaviour
             if (agent.Role == Role.Runner) runnersRemaining++;
         }
 
+        // Trash-can objective, checked BEFORE the tag/timer win checks. Per active can, the single nearest
+        // eligible Runner standing still (speed < eatMaxSpeed) within eatRadius fills it — going per-can
+        // means two Runners can never both fill the same can (the nearest owns it). Reaching
+        // trashPointsToWin is an instant Runner win. No cans → the loop is empty and this is a no-op.
+        // Iterate backwards so an eaten can can be removed from _activeCans in place.
+        if (IsPastStartGrace)
+        {
+            for (int i = _activeCans.Count - 1; i >= 0; i--)
+            {
+                TrashCanInteractable can = _activeCans[i];
+
+                TagAgent? nearestRunner = null;
+                float nearestSqr = _config.eatRadius * _config.eatRadius; // doubles as the in-radius gate
+                foreach (TagAgent agent in _agents)
+                {
+                    if (agent.Role != Role.Runner) continue;
+                    float sqr = (agent.transform.position - can.Position).sqrMagnitude;
+                    if (sqr <= nearestSqr)
+                    {
+                        nearestSqr = sqr;
+                        nearestRunner = agent;
+                    }
+                }
+
+                // No runner in range, or the owner is moving too fast: channel breaks, reset it.
+                if (nearestRunner == null || nearestRunner.Motor.CurrentSpeed >= _config.eatMaxSpeed)
+                {
+                    can.Progress = 0f;
+                    continue;
+                }
+
+                can.Progress += Time.deltaTime / can.EatDuration;
+                if (can.Progress >= 1f)
+                {
+                    can.MarkEaten();
+                    _activeCans.RemoveAt(i);
+                    _trashPoints += can.Value;
+                    _cansEatenThisMatch++; // TODO wire MatchMetrics.CansEaten
+                    if (_trashPoints >= _config.trashPointsToWin)
+                    {
+                        EndRound("Runners win! The trash has been eaten.");
+                        return;
+                    }
+                }
+            }
+        }
+
         if (runnersRemaining == 0)
         {
             EndRound("Taggers win! All runners tagged.");
@@ -432,6 +540,7 @@ public sealed class RoundController : MonoBehaviour
         DrawTagConversionFlash();
 
         DrawTimer();
+        DrawTrashObjective();
 
         if (_roundOver) DrawEndScreen();
 
@@ -469,6 +578,57 @@ public sealed class RoundController : MonoBehaviour
         DrawPanel(panel, HudPanel);
         _timerStyle!.normal.textColor = color;
         GUI.Label(panel, text, _timerStyle);
+    }
+
+    // Trash objective HUD, just below the timer. Runner-side: TRASH n/target plus a thin fill bar for
+    // the can the local player is currently eating. Tagger-side: a warning banner while any Runner is
+    // mid-eat. No cans and no points scored → nothing draws. (Local player null in headless self-play is
+    // treated as Runner-side, but OnGUI doesn't render there anyway.)
+    private void DrawTrashObjective()
+    {
+        if (_activeCans.Count == 0 && _trashPoints == 0) return;
+
+        bool localIsRunner = _localPlayerAgent == null || _localPlayerAgent.Role == Role.Runner;
+
+        if (localIsRunner)
+        {
+            const float w = 150f, h = 26f;
+            var rect = new Rect((Screen.width - w) * 0.5f, 58f, w, h);
+            DrawPanel(rect, HudPanel);
+            _youStyle!.normal.textColor = HudHorizon;
+            GUI.Label(rect, $"TRASH {_trashPoints}/{_config.trashPointsToWin}", _youStyle);
+
+            float progress = LocalEatingProgress();
+            if (progress > 0f)
+            {
+                var barBg = new Rect(rect.x, rect.yMax + 4f, w, 6f);
+                DrawPanel(barBg, new Color(0f, 0f, 0f, 0.5f));
+                DrawPanel(new Rect(barBg.x, barBg.y, barBg.width * Mathf.Clamp01(progress), barBg.height), HudRimOrange);
+            }
+        }
+        else if (AnyRunnerEating(out _))
+        {
+            const float w = 360f, h = 34f;
+            var rect = new Rect((Screen.width - w) * 0.5f, 58f, w, h);
+            DrawPanel(rect, new Color(HudPanel.r, HudPanel.g, HudPanel.b, 0.82f));
+            _bannerStyle!.normal.textColor = _config.taggerColor;
+            GUI.Label(rect, "THE RACCOON IS EATING", _bannerStyle);
+        }
+    }
+
+    // Highest fill among active cans within eatRadius of the local player — the can their bar tracks.
+    private float LocalEatingProgress()
+    {
+        if (_localPlayerAgent == null) return 0f;
+        float best = 0f;
+        float radiusSqr = _config.eatRadius * _config.eatRadius;
+        foreach (TrashCanInteractable can in _activeCans)
+        {
+            if (can.Progress > best
+                && (can.Position - _localPlayerAgent.transform.position).sqrMagnitude <= radiusSqr)
+                best = can.Progress;
+        }
+        return best;
     }
 
     // Themed win/lose banner. The dark backdrop stays (the golden-hour sky can wash out light text),
@@ -712,6 +872,21 @@ public sealed class RoundController : MonoBehaviour
         // Local player marker — white triangle, always pointing map-up (the map itself rotates to
         // match facing, per rotate-to-facing above), centered.
         DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, mapCenter, 0f, Color.white);
+
+        // Trash cans: a faint amber blip at every active can (always), and a bright pulsing blip at any
+        // can currently being eaten — the "ping" that tells a Tagger a channel is live. Same world→map
+        // plotting as the agent icons below. No active cans → nothing draws.
+        foreach (TrashCanInteractable can in _activeCans)
+        {
+            Vector3 canOffset = Quaternion.Euler(0f, -playerYaw, 0f) * (can.Position - playerPos);
+            Vector2 canMapOffset = new(canOffset.x * worldToMinimapScale, -canOffset.z * worldToMinimapScale);
+            if (canMapOffset.magnitude > clampRadius) canMapOffset = canMapOffset.normalized * clampRadius;
+
+            bool eating = can.Progress > 0f;
+            Color canColor = eating ? new Color(1f, 0.85f, 0.3f) : new Color(0.8f, 0.7f, 0.2f);
+            float canAlpha = eating ? 0.6f + 0.4f * Mathf.Sin(Time.unscaledTime * 8f) : 0.4f;
+            DrawMinimapIcon(_minimapDotTexture!, _minimapDotOutlineTexture!, mapCenter + canMapOffset, 0f, canColor, canAlpha);
+        }
 
         foreach (TagAgent agent in _agents)
         {

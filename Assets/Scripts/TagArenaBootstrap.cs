@@ -123,7 +123,17 @@ public sealed class TagArenaBootstrap : MonoBehaviour
 
         foreach (InteractableMarker marker in FindObjectsByType<InteractableMarker>(FindObjectsInactive.Exclude))
         {
-            if (marker.kind == InteractableMarker.Kind.Ladder)
+            if (marker.kind == InteractableMarker.Kind.TrashCan)
+            {
+                // Literal duration/value mirror TagRulesConfig.eatDuration* defaults — this
+                // bootstrap has no config access yet, and RoundController re-drives progress with
+                // its own config at runtime anyway, so these are just the component's static
+                // value/duration.
+                GameObject? glow = marker.transform.Find("TrashCanGlow")?.gameObject;
+                marker.gameObject.AddComponent<TrashCanInteractable>()
+                    .Initialize(marker.tier, marker.tier == 2 ? 5f : 2.5f, marker.tier == 2 ? 2 : 1, glow);
+            }
+            else if (marker.kind == InteractableMarker.Kind.Ladder)
             {
                 LadderInteractable ladder = marker.gameObject.AddComponent<LadderInteractable>();
                 ladder.Initialize(marker.pointA!, marker.pointB!, marker.outwardDirection);

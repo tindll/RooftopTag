@@ -99,61 +99,55 @@ public static class TagArenaMapGeometry
     }
 
     /// <summary>
-    /// Procedural ladder VISUAL: two vertical side rails + evenly spaced horizontal rungs spanning the
-    /// climb line from <paramref name="bottom"/> to <paramref name="top"/>. Pure dressing — every piece
-    /// is a thin emissive (Interactable-orange) box with its collider STRIPPED, so it never touches
-    /// movement/physics (the climb line, the trigger volume and the wall behind stay the gameplay). The
-    /// rails/rungs now carry the "you can use this" colour language, so the wall behind can be plain
-    /// concrete (<see cref="SurfaceRole.WallBody"/>). Shared by the Editor scene path
+    /// Procedural climb-pipe VISUAL: a single large vertical pipe running the climb line from
+    /// <paramref name="bottom"/> to <paramref name="top"/>, tied to the wall behind by a few slim
+    /// mounting brackets. Pure dressing — every piece has its collider STRIPPED, so it never touches
+    /// movement/physics (the climb line, the trigger volume and the wall behind stay the gameplay).
+    /// Uses the building palette (a cool metal grey) so the pipe reads as part of the architecture —
+    /// its round silhouette, not a colour tint, marks it as climbable. Shared by the Editor scene path
     /// (PlaygroundBuilder.BuildRoofLadder / BuildLadder) and the runtime/self-play path
-    /// (RooftopInteractableBuilder.BuildLadder) so every ladder in the game looks identical.
+    /// (RooftopInteractableBuilder.BuildLadder) so every climb pipe in the game looks identical.
     /// </summary>
     /// <param name="outward">Horizontal unit vector pointing away from the wall (toward open air); the
-    /// ladder plane is perpendicular to it, so rails/rungs face this way.</param>
-    /// <param name="width">Rail-centre separation. Default 0.9m — just wider than the 0.8m agent capsule
-    /// that climbs between the rails (the 2m grab trigger is deliberately oversized for catch tolerance
-    /// and would not read as a ladder).</param>
-    public static void BuildLadderVisual(Transform? parent, Vector3 bottom, Vector3 top, Vector3 outward, float width = 0.9f)
+    /// pipe sits proud of the wall face along this direction and the brackets reach back toward the wall.</param>
+    /// <param name="radius">Pipe radius. Default 0.16m — a slim but clearly-climbable pipe that sits
+    /// inside the oversized 2m grab trigger.</param>
+    public static void BuildClimbPipeVisual(Transform? parent, Vector3 bottom, Vector3 top, Vector3 outward, float radius = 0.16f)
     {
         Vector3 fwd = outward.sqrMagnitude > 1e-6f ? outward.normalized : Vector3.forward;
-        // Local axes of every rail/rung box: x = along the ladder's width, y = up, z = outward.
-        Quaternion rot = Quaternion.LookRotation(fwd, Vector3.up);
-        Vector3 side = rot * Vector3.right;
 
         float height = Mathf.Max(0.05f, top.y - bottom.y);
         Vector3 baseXZ = new(bottom.x, 0f, bottom.z);
-        Vector3 mid = new(baseXZ.x, bottom.y + height * 0.5f, baseXZ.z);
-        // Nudge the whole visual a touch outward of the climb line so rails/rungs sit clearly proud of
-        // the wall face rather than z-fighting it.
-        Vector3 faceOffset = fwd * 0.06f;
+        // Push the pipe a touch outward of the climb line so it sits clearly proud of the wall face.
+        Vector3 faceOffset = fwd * (radius + 0.04f);
+        Vector3 mid = new(baseXZ.x + faceOffset.x, bottom.y + height * 0.5f, baseXZ.z + faceOffset.z);
 
-        const float railThickness = 0.08f; // along width
-        const float railDepth = 0.08f;     // along outward
-        const float rungThickness = 0.05f; // vertical
-        const float rungDepth = 0.10f;     // along outward — slightly prouder than the rails
-
-        var group = new GameObject("LadderVisual");
+        var group = new GameObject("ClimbPipeVisual");
         if (parent != null) group.transform.SetParent(parent, false);
 
-        // Two vertical side rails.
-        for (int s = -1; s <= 1; s += 2)
-        {
-            GameObject rail = CreateBox("LadderRail", group.transform, mid + faceOffset + side * (s * width * 0.5f),
-                new Vector3(railThickness, height, railDepth), SurfaceRole.Interactable);
-            rail.transform.rotation = rot;
-            StripCollider(rail);
-        }
+        // Main vertical pipe. Unity's Cylinder primitive is 2m tall (radius 0.5) centred on its origin,
+        // so scale x/z to the diameter and y to half the height.
+        GameObject pipe = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        pipe.name = "ClimbPipe";
+        pipe.transform.SetParent(group.transform, false);
+        pipe.transform.position = mid;
+        pipe.transform.localScale = new Vector3(radius * 2f, height * 0.5f, radius * 2f);
+        ApplyMaterial(pipe, BlueGrey);
+        StripCollider(pipe);
 
-        // Evenly spaced rungs, ~0.32m apart (human-scale), from bottom to top inclusive.
-        int steps = Mathf.Max(1, Mathf.RoundToInt(height / 0.32f));
-        float rungLength = width + railThickness; // reach the rail centres
-        for (int i = 0; i <= steps; i++)
+        // A few slim brackets clamp the pipe back to the wall (~every 2.5m), giving the "runs along the
+        // building exterior" read without extra joints or bends.
+        int brackets = Mathf.Max(2, Mathf.RoundToInt(height / 2.5f));
+        Quaternion rot = Quaternion.LookRotation(fwd, Vector3.up); // local z = outward
+        float bracketDepth = radius + 0.12f;                       // spans from the pipe back into the wall face
+        for (int i = 0; i < brackets; i++)
         {
-            float y = bottom.y + height * (i / (float)steps);
-            GameObject rung = CreateBox("LadderRung", group.transform, new Vector3(baseXZ.x, y, baseXZ.z) + faceOffset,
-                new Vector3(rungLength, rungThickness, rungDepth), SurfaceRole.Interactable);
-            rung.transform.rotation = rot;
-            StripCollider(rung);
+            float y = bottom.y + height * ((i + 0.5f) / brackets);
+            Vector3 center = new Vector3(baseXZ.x, y, baseXZ.z) + faceOffset - fwd * (bracketDepth * 0.5f);
+            GameObject bracket = CreateBox("ClimbPipeBracket", group.transform, center,
+                new Vector3(0.1f, 0.1f, bracketDepth), BlueGrey);
+            bracket.transform.rotation = rot;
+            StripCollider(bracket);
         }
     }
 
@@ -162,6 +156,94 @@ public static class TagArenaMapGeometry
     private static void StripCollider(GameObject go)
     {
         if (go.TryGetComponent(out Collider col)) Object.DestroyImmediate(col);
+    }
+
+    /// <summary>
+    /// Trash can prop: a solid-collider BODY (cans are physical obstacles, so unlike
+    /// <see cref="BuildClimbPipeVisual"/> its collider is kept, not stripped) plus a small emissive
+    /// GLOW marker on top that RoundController toggles as a findability cue. The body prefers a
+    /// rigged mesh from Resources, bounds-scaled to a target height exactly like
+    /// <see cref="Game.Movement.CharacterModelAttacher.Attach"/> scales character models; if the
+    /// mesh is missing, a primitive fallback keeps headless self-play from ever depending on art
+    /// assets being present.
+    /// </summary>
+    /// <param name="tier">2 = big dumpster (big_bin.fbx, 1.3m tall); anything else = small can
+    /// (small_bin.fbx, 0.9m tall).</param>
+    public static (GameObject root, GameObject glow) BuildTrashCanVisual(Transform? parent, Vector3 pos, int tier)
+    {
+        var root = new GameObject("TrashCan");
+        if (parent != null) root.transform.SetParent(parent, false);
+        root.transform.position = pos;
+
+        float targetHeight = tier == 2 ? 1.3f : 0.9f;
+        float bodyTop; // body height above `pos`, so the glow can sit flush on top of it
+
+        var prefab = Resources.Load<GameObject>(tier == 2 ? "big_bin" : "small_bin");
+        if (prefab != null)
+        {
+            GameObject model = Object.Instantiate(prefab, root.transform);
+            model.name = "Body";
+            model.transform.localPosition = Vector3.zero;
+            model.transform.localRotation = Quaternion.identity;
+
+            Renderer[] rends = model.GetComponentsInChildren<Renderer>();
+            if (rends.Length > 0)
+            {
+                // Tripo-style exports need a bounds-scale to hit a target height (same pattern as
+                // CharacterModelAttacher.Attach's ~1.8m character scale).
+                Bounds mb = rends[0].bounds;
+                foreach (Renderer r in rends) mb.Encapsulate(r.bounds);
+                if (mb.size.y > 0.01f) model.transform.localScale *= targetHeight / mb.size.y;
+
+                // Recompute post-scale bounds and lift the model so its mesh BASE (not necessarily
+                // its pivot) sits on `pos`, then size a physical collider to match.
+                mb = rends[0].bounds;
+                foreach (Renderer r in rends) mb.Encapsulate(r.bounds);
+                float lift = pos.y - mb.min.y;
+                model.transform.position += Vector3.up * lift;
+                mb.center += Vector3.up * lift;
+
+                if (model.GetComponentInChildren<Collider>() == null)
+                {
+                    BoxCollider col = root.AddComponent<BoxCollider>();
+                    col.center = mb.center - pos;
+                    col.size = mb.size;
+                }
+                bodyTop = mb.max.y - pos.y;
+            }
+            else
+            {
+                bodyTop = targetHeight; // no renderers to measure; trust the requested height
+            }
+        }
+        else if (tier == 2)
+        {
+            // Fallback dumpster box — headless/self-play must never depend on the mesh.
+            Vector3 size = new(1.4f, 1.3f, 1.0f);
+            CreateBox("Body", root.transform, pos + Vector3.up * (size.y * 0.5f), size, SurfaceRole.WallBody);
+            bodyTop = size.y;
+        }
+        else
+        {
+            // Fallback small can — a cylinder primitive (CreateBox only makes cubes), same
+            // material path and kept-collider treatment as the dumpster fallback above.
+            const float diameter = 0.5f, height = 0.9f;
+            GameObject can = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            can.name = "Body";
+            can.transform.SetParent(root.transform, false);
+            can.transform.position = pos + Vector3.up * (height * 0.5f);
+            can.transform.localScale = new Vector3(diameter, height * 0.5f, diameter);
+            can.GetComponent<Renderer>().sharedMaterial = GetMaterial(SurfaceRole.WallBody);
+            // Cylinder's auto-added CapsuleCollider is left in place (solid, not a trigger).
+            bodyTop = height;
+        }
+
+        Vector3 glowSize = new(0.4f, 0.15f, 0.4f);
+        Vector3 glowCenter = pos + Vector3.up * (bodyTop + glowSize.y * 0.5f);
+        GameObject glow = CreateBox("TrashCanGlow", root.transform, glowCenter, glowSize, SurfaceRole.Interactable);
+        StripCollider(glow);
+
+        return (root, glow);
     }
 
     public static void CreateRamp(Transform parent, string name, float zStart, float yStart, float length, float deltaY, float width, SurfaceRole role)

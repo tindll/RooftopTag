@@ -27,6 +27,7 @@ public sealed class MatchMetrics
     public string Winner = "";
     public int StuckAgentCount;
     public int FallCount;
+    public int CansEaten;
     public float MatchDuration;
     /// <summary>Farthest straight-line distance any agent reached from the spawn roof this match — RooftopArena's branching topology spreads agents radially in both X and Z, not along a single corridor axis.</summary>
     public float MaxDistanceFromSpawn;

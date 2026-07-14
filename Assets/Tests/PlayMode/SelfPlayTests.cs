@@ -183,6 +183,7 @@ public sealed class SelfPlayTests
 
         metrics.MatchDuration = elapsed;
         metrics.Winner = controller.ResultMessage;
+        metrics.CansEaten = controller.CansEatenThisMatch; // RoundController owns the objective; observe its per-match count
         // A Runner who fell off the map is converted to a Tagger (the map "tags" them), so it no
         // longer reads as Role.Runner — counting those still holding Role.Runner already excludes
         // both tagged and fallen runners from the survivor count.
@@ -242,10 +243,13 @@ public sealed class SelfPlayTests
 
         int totalStuck = results.Sum(m => m.StuckAgentCount);
         int totalFallen = results.Sum(m => m.FallCount);
+        int totalCansEaten = results.Sum(m => m.CansEaten);
+        int trashWins = results.Count(m => m.Winner == "Runners win! The trash has been eaten.");
 
         Debug.Log($"METRIC selfplay_batch matches={results.Count} runner_win_rate={runnerWinRate:0.00} " +
                   $"runner_avg_survival={avgRunnerSurvival:0.00} " +
                   $"speed_p50={p50:0.00} speed_p90={p90:0.00} total_stuck={totalStuck} total_fallen={totalFallen} " +
+                  $"cans_eaten={totalCansEaten} trash_wins={trashWins} " +
                   $"total_edge_usage=[{edgeUsageSummary}] total_edge_attempts=[{edgeAttemptSummary}] " +
                   $"max_distance_from_spawn={results.Max(m => m.MaxDistanceFromSpawn):0.0} " +
                   $"jump_takeoff_speed_avg={AverageOrZero(results.SelectMany(m => m.JumpTakeoffSpeeds)):0.00} " +

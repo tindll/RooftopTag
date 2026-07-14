@@ -50,9 +50,14 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
     const int SlideFirstFrame = 10; // first frame of the low-glide plateau (settled deep crouch)
     const int SlideLastFrame = 22;  // last plateau frame before the stand-up recovery (f23+) begins
 
+    // Static prop bins living under the Characters folder — no skeleton/animation, must stay
+    // Generic or Unity throws trying to build a Humanoid avatar for them.
+    static readonly HashSet<string> StaticPropBins = new() { "big_bin", "small_bin" };
+
     void OnPreprocessAnimation()
     {
         if (!assetPath.StartsWith(CharacterFolder)) return;
+        if (StaticPropBins.Contains(Path.GetFileNameWithoutExtension(assetPath))) return;
 
         var importer = (ModelImporter)assetImporter;
         string fileName = Path.GetFileNameWithoutExtension(assetPath);
@@ -81,6 +86,15 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
         if (!assetPath.StartsWith(CharacterFolder)) return;
 
         var importer = (ModelImporter)assetImporter;
+
+        // Static prop bins (trash cans) sit in this folder but have no rig — leave them Generic
+        // and skip before the Humanoid avatar setup below, which would fail/misbuild for them.
+        if (StaticPropBins.Contains(Path.GetFileNameWithoutExtension(assetPath)))
+        {
+            importer.animationType = ModelImporterAnimationType.Generic;
+            return;
+        }
+
         importer.animationType = ModelImporterAnimationType.Human;
         // Each FBX builds its own Humanoid avatar. Copy-From-Other-Avatar is NOT usable here: the
         // Tripo models and the Mixamo clips have different transform hierarchies (model root under

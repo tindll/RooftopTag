@@ -65,4 +65,12 @@ public sealed class TagRulesConfig : ScriptableObject
     public float runnerEmissiveIntensity = 0f;
     public float graceEmissiveIntensity = 1.2f;
     public float gracePulseHz = 2.5f;
+
+    [Header("Trash")]
+    public int trashPointsToWin = 3;    // team trash points for an instant runner win
+    public int activeCanCount = 3;      // random subset of CanAnchors activated per round
+    public float eatRadius = 1.6f;      // runner must be within this of a can to eat
+    public float eatMaxSpeed = 0.6f;    // and moving slower than this (stand-still channel)
+    public float eatDurationSmall = 2.5f; // tier-1 small can eat time (+1 pt)
+    public float eatDurationLarge = 5f;   // tier-2 dumpster eat time (+2 pts)
 }

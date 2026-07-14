@@ -16,6 +16,7 @@ public sealed class InteractableMarker : MonoBehaviour
     {
         Ladder,
         Swing,
+        TrashCan,
     }
 
     public Kind kind;
@@ -23,4 +24,5 @@ public sealed class InteractableMarker : MonoBehaviour
     public Transform? pointB;
     public float length;
     public Vector3 outwardDirection = Vector3.forward;
+    public int tier;
 }

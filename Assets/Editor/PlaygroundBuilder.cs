@@ -105,6 +105,7 @@ public static class PlaygroundBuilder
         RooftopArena.ArenaInteractables interactables = RooftopArena.Build(movementConfig, out Light sun);
         foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward);
         foreach (var s in interactables.Swings) BuildRoofSwing(s.pivot, s.length, s.exitDir);
+        foreach (var c in interactables.Cans) BuildRoofTrashCan(c.pos, c.tier);
         TagArenaMapGeometry.BuildFallCatchPlane();
 
         Vector3[] spawnPoints = RooftopArena.SpawnPoints(TagArenaAgentCount);
@@ -148,6 +149,7 @@ public static class PlaygroundBuilder
         RooftopArena.ArenaInteractables interactables = RooftopArena.Build(movementConfig, out Light sun);
         foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward);
         foreach (var s in interactables.Swings) BuildRoofSwing(s.pivot, s.length, s.exitDir);
+        foreach (var c in interactables.Cans) BuildRoofTrashCan(c.pos, c.tier);
 
         // Extra hand-placed swings — they're fun to use, so seed a few more across real roof gaps.
         // These are player-only: unlike the interactables from RooftopArena.Build (which carry graph
@@ -193,16 +195,15 @@ public static class PlaygroundBuilder
         float height = top.y - bottom.y;
         Vector3 midXZ = new(bottom.x, (bottom.y + top.y) * 0.5f, bottom.z);
 
-        // Backing wall sits just inside the ladder line (on the +outward side is open air; the wall is
-        // the building face, so offset it slightly toward the building, i.e. -outward). Now plain
-        // concrete (WallBody): the safety-orange "you can use this" colour language is carried by the
-        // rail/rung ladder visual below, not the wall.
+        // Backing wall sits just inside the climb line (on the +outward side is open air; the wall is
+        // the building face, so offset it slightly toward the building, i.e. -outward). Plain concrete
+        // (WallBody): the building exterior the climb pipe runs along.
         Vector3 wallCenter = midXZ - outward * 0.4f;
         TagArenaMapGeometry.CreateBox("RoofLadderWall", root.transform, wallCenter, new Vector3(2f, height, 0.5f), TagArenaMapGeometry.SurfaceRole.WallBody);
 
-        // Rails + rungs (collider-free dressing) along the actual climb line — shared helper, so this
-        // matches the runtime/self-play ladder built by RooftopInteractableBuilder.
-        TagArenaMapGeometry.BuildLadderVisual(root.transform, bottom, top, outward);
+        // Climb pipe (collider-free dressing) along the actual climb line — shared helper, so this
+        // matches the runtime/self-play climb pipe built by RooftopInteractableBuilder.
+        TagArenaMapGeometry.BuildClimbPipeVisual(root.transform, bottom, top, outward);
 
         var bottomGo = new GameObject("RoofLadderBottom");
         bottomGo.transform.SetParent(root.transform);
@@ -224,6 +225,18 @@ public static class PlaygroundBuilder
         marker.pointA = bottomGo.transform;
         marker.pointB = topGo.transform;
         marker.outwardDirection = outward;
+    }
+
+    // Rooftop trash can: the shared visual (body + glow) plus an InteractableMarker (namespace-free,
+    // so built here not in Game.MapGeometry) instead of a live TrashCanInteractable — same
+    // custom-asmdef serialization constraint as BuildRoofLadder. The glow child is found by name
+    // ("TrashCanGlow", from BuildTrashCanVisual) when the bootstrap converts this marker at runtime.
+    private static void BuildRoofTrashCan(Vector3 pos, int tier)
+    {
+        (GameObject canRoot, _) = TagArenaMapGeometry.BuildTrashCanVisual(null, pos, tier);
+        InteractableMarker marker = canRoot.AddComponent<InteractableMarker>();
+        marker.kind = InteractableMarker.Kind.TrashCan;
+        marker.tier = tier;
     }
 
     // Rooftop swing: an overhead pivot + a trigger sphere at the chain's grab point, with the
@@ -270,6 +283,22 @@ public static class PlaygroundBuilder
         // out of the enclosed construction Yard up to the Gate (the route back into the urban zone),
         // besides the existing ramp 17->18.
         (new Vector3(-17.4f, 1.7f, -13f), new Vector3(-17.4f, 4f, -13f), new Vector3(-1f, 0f, 0f)),
+        // Up Roof_N1EE (idx6, h6, 26,13) south face from Roof_E2 (idx2, h3). Face z=9 -> climb z=8.6,
+        // ~4.6m off E2's north edge (z4). A second NE-corner climb besides jump 5->6, straight up onto
+        // the tall N1EE vantage from the low eastern strip.
+        (new Vector3(26f, 3.2f, 8.6f), new Vector3(26f, 6f, 8.6f), new Vector3(0f, 0f, -1f)),
+        // Up Con_ScafHi (idx24, h4, -30,-32 — SW corner) north face from Con_Deck (idx19, h2). Face
+        // z=-28 -> climb z=-27.6, off Deck's south edge. Vertical route out of the low SW construction
+        // flats up onto the scaffold high roof, the SW mirror of the NE E2->N1EE pipe.
+        (new Vector3(-30f, 2.2f, -27.6f), new Vector3(-30f, 4f, -27.6f), new Vector3(0f, 0f, 1f)),
+        // Short accent pipe up Roof_N1E (idx5, h5, 13,13) south face from Roof_E1 (idx1, h4). Face z=9
+        // -> climb z=8.6, off E1's north edge. A quick 1m hop-up on the east-central seam, filling the
+        // gap between the spawn strip and the north row.
+        (new Vector3(13f, 4.2f, 8.6f), new Vector3(13f, 5f, 8.6f), new Vector3(0f, 0f, -1f)),
+        // Short accent pipe up Roof_S2E (idx25, h4, 13,-26) west face from Roof_S2 (idx14, h3). Face
+        // x=9 -> climb x=8.6, off S2's east edge. A 1m climb on the south row, adding a pipe to the
+        // otherwise sparse southern rooftops.
+        (new Vector3(8.6f, 3.2f, -26f), new Vector3(8.6f, 4f, -26f), new Vector3(-1f, 0f, 0f)),
     };
 
     private static void BuildRoofSwing(Vector3 pivot, float length, Vector3 exitDir)
@@ -331,8 +360,8 @@ public static class PlaygroundBuilder
         TagArenaMapGeometry.CreateBox("LadderRunway", root.transform, new Vector3(0f, -0.5f, z + runway * 0.5f), new Vector3(5f, 1f, runway), TagArenaMapGeometry.SurfaceRole.Floor);
         z += runway;
 
-        // Plain concrete backing wall (WallBody): the orange "you can use this" colour is now carried
-        // by the rail/rung ladder visual added below, not the wall.
+        // Plain concrete backing wall (WallBody): the building exterior the climb pipe added below
+        // runs along.
         TagArenaMapGeometry.CreateBox("LadderWall", root.transform, new Vector3(0f, ladderHeight * 0.5f, z + 0.5f), new Vector3(5f, ladderHeight, 1f), TagArenaMapGeometry.SurfaceRole.WallBody);
 
         // The wall's near face sits at z. The climb line needs enough clearance that the
@@ -365,9 +394,9 @@ public static class PlaygroundBuilder
         // runway (-Z), away from the wall. The default (+Z) pushed straight into it.
         marker.outwardDirection = Vector3.back;
 
-        // Rail/rung ladder visual along the climb line (bottomGo -> topGo), collider-free — shared
-        // helper so the playground ladder matches every rooftop ladder.
-        TagArenaMapGeometry.BuildLadderVisual(root.transform, bottomGo.transform.position, topGo.transform.position, Vector3.back);
+        // Climb pipe along the climb line (bottomGo -> topGo), collider-free — shared helper so the
+        // playground climb pipe matches every rooftop climb pipe.
+        TagArenaMapGeometry.BuildClimbPipeVisual(root.transform, bottomGo.transform.position, topGo.transform.position, Vector3.back);
 
         TagArenaMapGeometry.CreateBox("LadderTopLanding", root.transform, new Vector3(0f, ladderHeight + 0.5f, z + 2.5f), new Vector3(5f, 1f, 5f), TagArenaMapGeometry.SurfaceRole.Floor);
 

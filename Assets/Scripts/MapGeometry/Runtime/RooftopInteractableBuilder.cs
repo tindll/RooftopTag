@@ -46,6 +46,9 @@ public static class RooftopInteractableBuilder
         foreach ((Vector3 pivot, float length, Vector3 exitDir) in interactables.Swings)
             BuildSwing(root.transform, pivot, length, exitDir);
 
+        foreach ((Vector3 pos, int tier) in interactables.Cans)
+            BuildTrashCan(root.transform, pos, tier);
+
         return root;
     }
 
@@ -56,16 +59,15 @@ public static class RooftopInteractableBuilder
         float height = top.y - bottom.y;
         Vector3 midXZ = new(bottom.x, (bottom.y + top.y) * 0.5f, bottom.z);
 
-        // Backing wall sits just inside the ladder line, offset toward the building (-outward). It is
-        // now plain concrete (WallBody): the safety-orange "you can use this" colour language is
-        // carried by the rail/rung ladder visual built below, not the wall.
+        // Backing wall sits just inside the climb line, offset toward the building (-outward): the
+        // plain-concrete (WallBody) building face the climb pipe runs along.
         Vector3 wallCenter = midXZ - outward * 0.4f;
         TagArenaMapGeometry.CreateBox("RoofLadderWall", root, wallCenter,
             new Vector3(2f, height, 0.5f), TagArenaMapGeometry.SurfaceRole.WallBody);
 
-        // Rails + rungs (collider-free dressing) along the actual climb line — inert in headless
+        // Climb pipe (collider-free dressing) along the actual climb line — inert in headless
         // self-play, so movement/tag physics stay identical.
-        TagArenaMapGeometry.BuildLadderVisual(root, bottom, top, outward);
+        TagArenaMapGeometry.BuildClimbPipeVisual(root, bottom, top, outward);
 
         var bottomGo = new GameObject("RoofLadderBottom");
         bottomGo.transform.SetParent(root, false);
@@ -110,5 +112,17 @@ public static class RooftopInteractableBuilder
         // grab trigger on this same GameObject (so a self-play bot can grab it exactly as a player does).
         ChainSwingInteractable swing = chainGo.AddComponent<ChainSwingInteractable>();
         swing.Initialize(pivotGo.transform, length, exitDir);
+    }
+
+    /// <summary>Mirrors PlaygroundBuilder.BuildRoofLadder's marker wiring (via the shared
+    /// BuildTrashCanVisual), but attaches a live <see cref="TrashCanInteractable"/> instead of an
+    /// InteractableMarker. Duration/value literals mirror TagRulesConfig.eatDuration* defaults —
+    /// this builder has no config access, and RoundController re-drives progress with its own
+    /// config at runtime anyway, so these are just the component's static value/duration.</summary>
+    private static void BuildTrashCan(Transform root, Vector3 pos, int tier)
+    {
+        (GameObject canRoot, GameObject glow) = TagArenaMapGeometry.BuildTrashCanVisual(root, pos, tier);
+        canRoot.AddComponent<TrashCanInteractable>()
+            .Initialize(tier, tier == 2 ? 5f : 2.5f, tier == 2 ? 2 : 1, glow);
     }
 }
