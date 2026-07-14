@@ -46,7 +46,7 @@ public sealed class PlaygroundBootstrap : MonoBehaviour
         _cameraRig = cameraRig.AddComponent<ThirdPersonCameraRig>();
         _cameraRig.Configure(_motor, mainCamera, cameraYawPivot, groundMask);
 
-        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, _cameraRig);
+        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, _cameraRig, null);
 
         foreach (InteractableMarker marker in FindObjectsByType<InteractableMarker>(FindObjectsInactive.Exclude))
         {

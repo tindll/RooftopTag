@@ -3,16 +3,23 @@
 using Game.AI;
 using Game.CameraSystem;
 using Game.Movement;
+using Game.Rules;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
 /// <summary>
-/// Minimal IMGUI settings overlay: lets the local player rebind Jump/Slide/Sprint/Interact and
-/// adjust mouse/keyboard camera sensitivity, persisted to PlayerPrefs. Toggled with F1 — chosen
-/// because it's untouched by every other binding in this project (WASD/mouse/space/left-ctrl/
-/// left-shift/E in <see cref="PlayerInputProvider"/>, Escape/arrow-keys in
+/// IMGUI settings + pause overlay. F1 toggles a rebind/sensitivity window: rebind Jump/Slide/
+/// Sprint/Interact and adjust mouse/keyboard camera sensitivity, persisted to PlayerPrefs. Escape
+/// toggles a pause menu (Resume / Restart round / Settings / Quit) that freezes gameplay via
+/// <c>Time.timeScale = 0</c> and frees the cursor so the buttons are clickable. F1 was chosen for
+/// the settings window because it's untouched by every other binding in this project (WASD/mouse/
+/// space/left-ctrl/left-shift/E in <see cref="PlayerInputProvider"/>, arrow-keys in
 /// <see cref="ThirdPersonCameraRig"/>, R for playground/round reset), so it can never shadow an
-/// existing control.
+/// existing control. Escape is owned exclusively here now — <see cref="ThirdPersonCameraRig"/>
+/// used to read Escape directly to free the cursor; it now exposes
+/// <see cref="ThirdPersonCameraRig.CursorUnlocked"/> and
+/// <see cref="ThirdPersonCameraRig.SuppressAutoRelock"/> for this class to drive instead, so
+/// Escape is read in exactly one place.
 ///
 /// Deliberately has no namespace and lives outside any custom asmdef (compiles into
 /// Assembly-CSharp), same as <see cref="PlaygroundBootstrap"/>/<see cref="TagArenaBootstrap"/>
@@ -36,6 +43,7 @@ public sealed class SettingsMenu : MonoBehaviour
 
     private PlayerInputProvider _input = null!;
     private ThirdPersonCameraRig _cameraRig = null!;
+    private RoundController? _roundController;
 
     // Null when this menu is attached by PlaygroundBootstrap (no bots exist there) — the bot
     // difficulty row is only drawn when a bootstrap callback is actually wired up.
@@ -43,6 +51,12 @@ public sealed class SettingsMenu : MonoBehaviour
 
     private bool _open;
     private Rect _windowRect = new(20, 20, 320, 10);
+
+    private bool _paused;
+
+    // Fixed id: only one local player (and therefore one SettingsMenu instance) exists per scene,
+    // so there's no risk of colliding with another IMGUI window in this project's OnGUI-only HUD.
+    private const int PauseWindowId = 847022;
 
     // RebindingOperation is a nested type of InputActionRebindingExtensions, not a top-level type
     // in UnityEngine.InputSystem — hence the qualified name here despite the `using` above.
@@ -54,14 +68,17 @@ public sealed class SettingsMenu : MonoBehaviour
 
     /// <summary>
     /// Wires the menu to the local player's concrete input provider and camera rig. Must be called
-    /// once, right after both are created. <paramref name="botDifficultyBootstrap"/> is optional —
-    /// pass it only when bots exist (Tag Arena / Rooftop Arena) to enable the live "Bot difficulty"
-    /// row; PlaygroundBootstrap has no bots and omits it, so the row stays hidden there.
+    /// once, right after they are created. <paramref name="roundController"/> is null in scenes with
+    /// no round (e.g. the movement playground) — the pause menu's Restart button is disabled there.
+    /// <paramref name="botDifficultyBootstrap"/> is optional — pass it only when bots exist (Tag
+    /// Arena / Rooftop Arena) to enable the live "Bot difficulty" row; PlaygroundBootstrap has no
+    /// bots and omits it, so the row stays hidden there.
     /// </summary>
-    public void Configure(PlayerInputProvider input, ThirdPersonCameraRig cameraRig, TagArenaBootstrap? botDifficultyBootstrap = null)
+    public void Configure(PlayerInputProvider input, ThirdPersonCameraRig cameraRig, RoundController? roundController, TagArenaBootstrap? botDifficultyBootstrap = null)
     {
         _input = input;
         _cameraRig = cameraRig;
+        _roundController = roundController;
         _botDifficultyBootstrap = botDifficultyBootstrap;
     }
 
@@ -77,11 +94,17 @@ public sealed class SettingsMenu : MonoBehaviour
     {
         if (Keyboard.current != null && Keyboard.current.f1Key.wasPressedThisFrame)
             _open = !_open;
+
+        if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
+            TogglePause();
     }
 
     private void OnDestroy()
     {
         _activeRebind?.Dispose();
+
+        // Safety net: never leave a scene unload/round end with gameplay frozen.
+        Time.timeScale = 1f;
     }
 
     // Fixed id: only one local player (and therefore one SettingsMenu instance) exists per scene,
@@ -90,8 +113,60 @@ public sealed class SettingsMenu : MonoBehaviour
 
     private void OnGUI()
     {
-        if (!_open) return;
-        _windowRect = GUILayout.Window(WindowId, _windowRect, DrawWindow, "Settings (F1)");
+        if (_paused)
+        {
+            var pauseRect = new Rect(Screen.width / 2f - 110, Screen.height / 2f - 100, 220, 10);
+            GUILayout.Window(PauseWindowId, pauseRect, DrawPauseWindow, "Paused");
+        }
+
+        if (_open)
+            _windowRect = GUILayout.Window(WindowId, _windowRect, DrawWindow, "Settings (F1)");
+    }
+
+    private void TogglePause()
+    {
+        if (_paused) Resume();
+        else Pause();
+    }
+
+    private void Pause()
+    {
+        _paused = true;
+        Time.timeScale = 0f;
+        _cameraRig.CursorUnlocked = true;
+        _cameraRig.SuppressAutoRelock = true;
+    }
+
+    private void Resume()
+    {
+        _paused = false;
+        Time.timeScale = 1f;
+        _cameraRig.CursorUnlocked = false;
+        _cameraRig.SuppressAutoRelock = false;
+    }
+
+    private void DrawPauseWindow(int id)
+    {
+        if (GUILayout.Button("Resume")) Resume();
+
+        GUI.enabled = _roundController != null;
+        if (GUILayout.Button("Restart round"))
+        {
+            _roundController!.StartRound();
+            _cameraRig.SnapToTarget();
+            Resume();
+        }
+        GUI.enabled = true;
+
+        if (GUILayout.Button("Settings")) _open = true;
+
+        if (GUILayout.Button("Quit"))
+        {
+            Application.Quit();
+#if UNITY_EDITOR
+            UnityEditor.EditorApplication.isPlaying = false;
+#endif
+        }
     }
 
     private void DrawWindow(int id)
