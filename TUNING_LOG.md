@@ -3,6 +3,76 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Merge main's polish work into port-features (2026-07-14)
+
+Cherry-picked / hand-applied the 7 polish commits that existed only on `main`, resolving every
+conflict in favour of port-features' bot/movement/chase-me structure. Skipped the 4 bot commits
+on `main` (superseded by port-features' reworked home-PC bot graph) and did NOT do a full
+`git merge` (would have dragged them in).
+
+**Merged (per commit):**
+- `e145b0f` build settings — hand-applied (its huge `_Recovery` scene-deletion was already done
+  on this branch). EditorBuildSettings now lists the 3 real scenes with **RooftopArena at index 0**
+  (main game on this line), then TagArena, MovementPlayground; deleted the stray `_Recovery.meta`.
+- `39f25b4` Esc pause menu — cherry-picked. `SettingsMenu.Configure` conflict resolved by taking
+  BOTH params: `RoundController?` (main's Restart button) AND `TagArenaBootstrap?`
+  (port-features' live bot-difficulty row); bootstrap passes both.
+- `50261f0` round-end flow — RecordTag/auto-restart/summary. Kept port-features' themed
+  `DrawEndScreen` (YOU WIN/LOSE + `_playerLost` chase-me path) and folded main's summary lines
+  (auto-restart countdown, your tags, runners left, round length) into it; `runnersRemaining`
+  recomputed live from `_agents`.
+- `59d3cfd` tag juice — slow-mo/flash/stingers. `WasTagged` now subscribes BOTH `PlayerCaught`
+  (chase-me end) AND `OnLocalPlayerTagged` (flash). OnGUI kept port-features'
+  `EnsureHudStyles()/DrawTimer()` refactor + `DrawTagConversionFlash()`. Lunge-tag window stays
+  gated on `Role==Tagger`; main's local-player lunge whoosh added alongside.
+- `d68f08f` minimap rotate-to-facing + edge-clamp — cherry-picked clean.
+- `be9a259` tagger-proximity heartbeat + vignette — kept both port-features' `PlayerCaught`/HUD
+  fields and main's `UpdateProximityCue`.
+
+**Skipped `b506fed` (arm pose for OnSwing/OnLadder):** port-features already has a dedicated,
+superior arms-up hang pose (`PlayArmHold(ArmHangDeg=-75°)` at TagAgent ~L248, with release
+handling + lunge-suppression while hanging, from the main-game f359710 work). b506fed only reused
+generic mantle constants — redundant and worse. Not applied.
+
+**Adapted `596cd3b` (swing hang exploit), not blind-merged:** port-features' energy-cap swing had
+**no hang timeout and no swing regrab cooldown** (its `regrabCooldown` is under *ladder* settings),
+so the infinite-hang-to-round-timer exploit was still live. Ported the concept into the current
+swing code:
+- `SwingSettings.maxHangSeconds=8f` + `regrabCooldownSeconds=1.5f`.
+- `TickSwing`: `_swingElapsed` force-releases (momentum-true, no jump bonus) at the cap, after the
+  grace return; `_lastSwingDetachTime` set on every release, swing-branch attach skipped during the
+  cooldown (mirrors the existing ladder `_lastLadderDetachTime` idiom — ladders unaffected). Both
+  reset in `ResetState` + `AttachToSwing`.
+- Beam-roll DID apply: port-features had already shrunk SwingBeam to a compact 1.5×1.5×0.3 stub,
+  but a flat top is still standable, so rolled it 60° about z (top face past `maxSlopeAngle` →
+  GroundDetector rejects it as a camp spot). Scene rebuilt so the roll is baked into the saved
+  RooftopArena.
+- Ported the PlayMode hang-cap regression test.
+
+**Verification:** `BuildRooftopArena` headless → `ROOFTOP_ARENA_BUILD_OK`, 0 `error CS`. Full
+PlayMode suite 50 tests, 47 pass / **3 fail**. The 3 failures
+(`RooftopArenaScene_SpawnsWithCorrectRoleDistribution`, `TagArenaScene_IsChaseMeDebugMode`,
+`Runner_CanLunge_ButOpensNoTagWindowAndTagsNobody`) are **PRE-EXISTING** — verified identical on a
+pristine `7a3f2fb` checkout (8/11 in TagRulesTests there too). They reflect a branch drift: those
+tests assert chase-me role inversion (10/2 taggers) + a runner-can-dash lunge, but the actual
+scenes bake normal-tag roles (1 tagger, 10 runners) and `TryLunge` early-returns for non-taggers.
+My merge touched none of those code paths (TagArena.unity byte-identical to baseline; AssignRoles
+and TryLunge role logic unchanged). Not in scope to fix here — flagged below.
+
+Self-play: 10/10 matches complete (Taggers win each), `total_stuck=44` (≤100), `total_fallen=1`
+(baseline 101 / 0) — in family; bots auto-release swings in ~1-2s so the 8s hang cap never fires
+for them, and the lone fall is normal bot-pathing variance.
+
+**Feel-test pending (all local-player gated, so self-play can't cover them):** pause menu
+freeze/resume + Restart, round-end summary + 8s auto-restart, tag-moment slow-mo + "YOU'RE IT"
+flash + stingers, proximity heartbeat + red vignette, minimap rotate-to-facing, and — most
+importantly — the swing hang cap tuning (does 8s force-drop feel fair mid-chasm? is 1.5s regrab
+cooldown noticeable?) and that the rolled SwingBeam is genuinely un-standable in play.
+
+**Pre-existing issue to raise separately:** the chase-me mode described in the 2026-07-13 entry
+below does not match the shipped scenes (roles are inverted vs the tests) — 3 tests have been red
+since before this merge.
+
 ## RooftopArena "chase me" mode: 1 human Runner vs 10 bot Taggers (2026-07-13)
 
 **Change:** reconfigured the main RooftopArena scene from the 12-agent (2-Tagger/10-Runner,
