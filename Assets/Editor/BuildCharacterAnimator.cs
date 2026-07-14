@@ -65,11 +65,9 @@ public static class BuildCharacterAnimator
 
         // Slide clip missing → dive-roll stopgap (reads as a floor tumble).
         var sliding = Simple(sm, "Sliding", Clip("X Bot@Running Slide", "Running Slide", "X Bot@Stand To Roll"));
-        // Mixamo's Running Slide opens with a multi-stride run-up; in-game slides last well under a
-        // second, so without an offset the player only ever sees the run-up ("still looks like
-        // running", feel-test). Start ~40% in, right at the drop into the slide. Tune if the entry
-        // pose pops.
-        sliding.cycleOffset = 0.4f;
+        // The run-up is trimmed off the clip at import (CharacterImportPostprocessor) and the clip is
+        // one-shot, so no state cycleOffset is needed — the state plays the slide from its first
+        // (already-trimmed) frame and holds the low pose if it outlasts the clip.
         // Wall-run was removed from CharacterMotor on this line, so MotorState has no WallRunning value
         // and everything from Mantling on shifted down by one — the Any() indices below match the live enum.
         var mantling = Simple(sm, "Mantling", Clip("X Bot@Braced Hang To Crouch", "Climbing To Top"));

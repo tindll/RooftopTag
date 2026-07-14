@@ -3,6 +3,57 @@
 Running log of movement/bot/map changes: hypothesis, metric outcome, decision. Append entries
 in the same session-as-iteration format used below.
 
+## Slide flail fix: one-shot clip trim + slide state-thrash hysteresis (2026-07-14)
+
+**Root cause.** The CTRL slide flailed limbs in-game while previewing fine in the editor. The
+`X Bot@Running Slide` clip imported LOOPING (`loopTime:1`, `loopBlend:0` — no loop-pose matching)
+and is 46 frames (~1.5s), but slides run up to `maxSlideDuration=1.75s` and the previous fix set
+`cycleOffset=0.4` on the Sliding *state*. Editor preview ignores per-state `cycleOffset`, so it
+looked clean; in-game, mid-slide the clip wrapped back to frame 0 — the run-up strides — a hard
+snap that read as a flail. Secondary churn: the binary ground probe missing a tick over a roof
+seam bounced Sliding→Airborne→Sliding, stacking 0.08s crossfades, and `minSlideDuration=0.25` was
+dead config (never read).
+
+**1. One-shot, trimmed slide clip.** `CharacterImportPostprocessor`: removed
+`"X Bot@Running Slide"` from `LoopClips` (a slide is one-shot, not continuous — non-looping it
+holds the final frame if the state outlasts it). Added a per-clip trim in `OnPreprocessAnimation`
+(matched by file name) via two knobs: `SlideFirstFrame = 18` (past the ~40% run-up) and
+`SlideLastFrame = 40` (before the stand-up recovery, so the freeze pose is the LOW SLIDE, not the
+stood-up recovery). Clip is 46 frames; tune the two consts if the entry/freeze pose reads wrong.
+
+**2. Removed the `cycleOffset` hack.** Deleted `sliding.cycleOffset = 0.4f` from
+`BuildCharacterAnimator` — the run-up is now trimmed at import and the clip is one-shot, so the
+state needs no offset.
+
+**3. Killed slide state-thrash** in `CharacterMotor.TickSliding`:
+- **Min-duration window (enforces the dead `minSlideDuration=0.25`).** The stand-up exits
+  (`!SlideHeld` release / low-speed stop / `maxSlideDuration`) are now gated behind
+  `_slideElapsed >= minSlideDuration`, so a CTRL release or low-speed reading a tick or two after
+  entry can't churn Sliding→Grounded. `maxSlideDuration` (1.75s) already exceeds the window, so
+  the force-exit is unaffected.
+- **Jump-cancel decision: NOT gated.** The slide-hop is a *jump* exit via `ConsumeBufferedJump`,
+  which runs earlier in `TickSliding` and returns before the exit gate — so it fires any time,
+  the min window touches only the stand-up exits. Bots hop-cancel fast (selfplay `Jump=685`
+  usage / `728` attempts), so blocking the jump exit would have broken their hop; leaving it free
+  keeps slide-hop chaining intact. Commented at the gate.
+- **Ground-probe grace (`SlideProbeGraceSeconds = 0.1`).** On a probe miss during a slide, keep
+  sliding on the last good ground and accumulate `_slideProbeMissElapsed`; only drop to Airborne
+  once the miss persists past 0.1s. Resets whenever ground is regained. `GroundDetector` is
+  shared, so the hysteresis is slide-scoped in `TickSliding`, not in the probe.
+
+**Knobs added:** `SlideFirstFrame=18`, `SlideLastFrame=40` (import trim), `SlideProbeGraceSeconds=0.1`
+(probe grace); `minSlideDuration=0.25` now actually read.
+
+**Verification (Editor closed):**
+- Reimport + controller regen headless — `ANIMATOR_BUILT states=13 params=8`, only the known Vault
+  stopgap remains. Clip meta confirms `loopTime:0`, `firstFrame:18`, `lastFrame:40`.
+- Compile + `BuildRooftopArena` headless: 0 `error CS`, `ROOFTOP_ARENA_BUILD_OK`.
+- Full PlayMode suite: **55/55 green**, no test changes needed — no test asserts a stand-up exit
+  inside the min window (the only CTRL release in tests is preceded by a jump-out, which stays
+  ungated).
+- `Tools/selfplay.sh`: `matches=10 runner_win_rate=0.00 ... total_stuck=15 total_fallen=0`,
+  edge usage `Jump=685` — within the ≤~25 stuck / 0 fallen envelope, bot slide-hop unbroken.
+
 ## Fall = lose, double-jump wall recharge, vignette removal, slide clip offset (2026-07-14)
 
 Two user-requested gameplay fixes plus two touch-ups, all verified headless with the Editor closed.

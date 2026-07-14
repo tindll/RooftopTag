@@ -96,6 +96,13 @@ public sealed class CharacterMotor : MonoBehaviour
     private float _lastSlideEndTime = float.NegativeInfinity;
     private float _slideElapsed;
 
+    // How long the ground probe may keep missing during a slide before we drop to Airborne. A slide
+    // crossing a roof seam can miss the binary probe for a tick or two; without this grace that read
+    // as "left the ground" and churned Sliding→Airborne→Sliding, stacking 0.08s crossfades. Resets
+    // whenever the probe regains ground. See TickSliding.
+    private const float SlideProbeGraceSeconds = 0.1f;
+    private float _slideProbeMissElapsed;
+
     // Set only when a slide is force-ended by hitting maxSlideDuration (holding CTRL indefinitely),
     // not by voluntary release or a slide-hop jump-out — those keep the shorter
     // slideReentryCooldown so legitimate slide-hop chaining (which the rest of the slide tuning is
@@ -287,6 +294,7 @@ public sealed class CharacterMotor : MonoBehaviour
     {
         _state = MotorState.Sliding;
         _slideElapsed = 0f;
+        _slideProbeMissElapsed = 0f;
         Vector3 horizontal = HorizontalVelocity;
         Vector3 dir = horizontal.sqrMagnitude > 0.0001f ? horizontal.normalized : transform.forward;
 
@@ -331,12 +339,24 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void TickSliding(float dt)
     {
-        _ground = ProbeGround();
-        if (!_ground.grounded)
+        // Ground-probe grace: don't bail to Airborne on a single missed probe (a roof seam). Keep
+        // sliding on the last good ground until the miss persists past SlideProbeGraceSeconds. The
+        // probe (GroundDetector) is shared, so the hysteresis lives here, slide-scoped.
+        GroundHit probe = ProbeGround();
+        if (!probe.grounded)
         {
-            ExitSliding();
-            EnterAirborne();
-            return;
+            _slideProbeMissElapsed += dt;
+            if (_slideProbeMissElapsed >= SlideProbeGraceSeconds)
+            {
+                ExitSliding();
+                EnterAirborne();
+                return;
+            }
+        }
+        else
+        {
+            _slideProbeMissElapsed = 0f;
+            _ground = probe;
         }
 
         _lastGroundedTime = Time.time;
@@ -415,8 +435,16 @@ public sealed class CharacterMotor : MonoBehaviour
         // it before gravity kicks in. Also force-exit once maxSlideDuration is hit regardless of
         // continued CTRL hold — a slope previously let you hold CTRL indefinitely, steering with
         // A/D while downhillAccelMultiplier kept adding speed the whole time.
+        // A jump-out (slide-hop) already left above via ConsumeBufferedJump, unconditionally — bots
+        // hop-cancel fast and that must never be blocked, so the min-duration window gates only the
+        // STAND-UP exits, not the jump exit. Within the first minSlideDuration, ignore a CTRL release
+        // / low-speed stop: those firing a tick or two after entry (over a roof seam, or a fumbled
+        // key) were the Sliding→Grounded churn source. maxSlideDuration (1.75s) already exceeds the
+        // min window (0.25s), so the force-exit is unaffected.
+        bool minWindowElapsed = _slideElapsed >= config.slide.minSlideDuration;
         bool durationExceeded = _slideElapsed >= config.slide.maxSlideDuration;
-        bool wantsExit = !_input.SlideHeld || durationExceeded || (speed < config.slide.minEntrySpeed * 0.4f && !IsOnSlope());
+        bool wantsExit = minWindowElapsed &&
+            (!_input.SlideHeld || durationExceeded || (speed < config.slide.minEntrySpeed * 0.4f && !IsOnSlope()));
         if (wantsExit)
         {
             ExitSliding(forcedByMaxDuration: durationExceeded);

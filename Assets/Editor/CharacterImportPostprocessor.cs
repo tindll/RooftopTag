@@ -22,21 +22,41 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
         "X Bot@Left Strafe", "X Bot@Right Strafe",
         "X Bot@Falling Idle", "X Bot@Rope Swinging",
         "X Bot@Climbing Ladder", "X Bot@Freehang Climb",
-        "X Bot@Idle", "X Bot@Running Slide",
+        "X Bot@Idle",
+        // Running Slide is deliberately NOT here: the slide is a one-shot, not continuous motion.
+        // Looping it wrapped the clip back to its run-up mid-slide (the state can outlast the clip),
+        // which snapped the limbs — the in-game "flail". Non-looping, it holds on the final frame.
         // Legacy names kept so older/re-added clips still loop if present.
-        "Idle", "Running", "Running Slide", "Rope Swinging",
+        "Idle", "Running", "Rope Swinging",
         "Climbing Ladder", "Rope Climb", "Falling Idle",
     };
+
+    // Running Slide trim knobs. The Mixamo clip is 46 frames: it opens with a multi-stride run-up
+    // and ends standing back up. In-game slides are brief, so trim at import to just the slide
+    // itself — start past the run-up, end before the stand-up recovery. With the clip non-looping,
+    // a slide that outlasts it then freezes on the LOW SLIDE pose instead of the run-up or the
+    // stood-up recovery. Tune these two if the entry/freeze pose reads wrong.
+    const string SlideClip = "X Bot@Running Slide";
+    const int SlideFirstFrame = 18; // past the ~40% run-up
+    const int SlideLastFrame = 40;  // before the stand-up recovery
 
     void OnPreprocessAnimation()
     {
         if (!assetPath.StartsWith(CharacterFolder)) return;
 
         var importer = (ModelImporter)assetImporter;
-        bool loop = LoopClips.Contains(Path.GetFileNameWithoutExtension(assetPath));
+        string fileName = Path.GetFileNameWithoutExtension(assetPath);
+        bool loop = LoopClips.Contains(fileName);
         var clips = importer.defaultClipAnimations;
         for (int i = 0; i < clips.Length; i++)
+        {
             clips[i].loopTime = loop;
+            if (fileName == SlideClip)
+            {
+                clips[i].firstFrame = SlideFirstFrame;
+                clips[i].lastFrame = SlideLastFrame;
+            }
+        }
         if (clips.Length > 0)
             importer.clipAnimations = clips;
     }
