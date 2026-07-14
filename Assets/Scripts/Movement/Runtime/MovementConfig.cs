@@ -154,8 +154,8 @@ public sealed class MovementConfig : ScriptableObject
 
     public GroundSettings ground = new()
     {
-        walkSpeed = 4f,
-        sprintSpeed = 8f,
+        walkSpeed = 3.5f,
+        sprintSpeed = 7f,
         acceleration = 55f,
         deceleration = 75f,
         airAcceleration = 26f,
@@ -167,7 +167,7 @@ public sealed class MovementConfig : ScriptableObject
         capsuleRadius = 0.4f,
         capsuleHeight = 1.8f,
         skinWidth = 0.05f,
-        maxHorizontalSpeed = 13f,
+        maxHorizontalSpeed = 12f,
         slopeGravityInfluence = 1f,
         steerRateDegrees = 720f,
     };

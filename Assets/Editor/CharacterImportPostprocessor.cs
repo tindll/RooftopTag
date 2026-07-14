@@ -17,8 +17,14 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
     // mantle, vault). Keyed by FBX file name without extension.
     static readonly HashSet<string> LoopClips = new()
     {
-        "Idle", "Walking", "Running", "Running Slide", "Rope Swinging",
-        "Wall Run", "Climbing Ladder", "Rope Climb", "Falling Idle",
+        // New Mixamo X Bot locomotion + hold clips (continuous motion).
+        "Fast Run", "Walking", "X Bot@Walking Backwards",
+        "X Bot@Left Strafe", "X Bot@Right Strafe",
+        "X Bot@Falling Idle", "X Bot@Rope Swinging",
+        "X Bot@Climbing Ladder", "X Bot@Freehang Climb",
+        // Legacy names kept so older/re-added clips still loop if present.
+        "Idle", "Running", "Running Slide", "Rope Swinging",
+        "Climbing Ladder", "Rope Climb", "Falling Idle",
     };
 
     void OnPreprocessAnimation()

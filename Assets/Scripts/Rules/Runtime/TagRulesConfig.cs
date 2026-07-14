@@ -10,8 +10,8 @@ public sealed class TagRulesConfig : ScriptableObject
     [Header("Round")]
     public float roundDuration = 300f;
 
-    /// <summary>Current mode: the player is the runner and 10 bots are the taggers chasing them.</summary>
-    public int taggerCount = 10;
+    /// <summary>Current mode: the player is the runner and a single bot is the tagger chasing them.</summary>
+    public int taggerCount = 1;
     public int runnerCount = 1;
 
     /// <summary>Guarantees the local player is always assigned Tagger (useful while feel-testing tagger-specific mechanics like the lunge). Flip off for a "real" fully-random round.</summary>
@@ -33,9 +33,10 @@ public sealed class TagRulesConfig : ScriptableObject
     public float conversionGraceDuration = 2.5f;
 
     [Header("Lunge")]
-    public float lungeCooldown = 1.5f;
-    public float lungeBaseImpulse = 4f;
-    public float lungeVelocityScale = 0.6f;
+    // Heavily nerfed per feel-test: a short, infrequent hop rather than a big velocity-scaled dash.
+    public float lungeCooldown = 3f;
+    public float lungeBaseImpulse = 1.5f;
+    public float lungeVelocityScale = 0.2f;
 
     /// <summary>Tag reach radius is a binary still-vs-moving check, not a continuous function of speed — sprinting or jumping shouldn't extend it beyond the same "moving" value.</summary>
     [Header("Tag reach")]

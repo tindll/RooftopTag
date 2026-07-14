@@ -91,3 +91,6 @@ Tools/regress_verify_summary.txt
 
 # Unity test-framework scene artifacts (leak from interrupted PlayMode runs)
 Assets/InitTestScene*
+
+# Unity crash-recovery scene artifacts
+Assets/_Recovery/

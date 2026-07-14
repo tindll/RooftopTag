@@ -13,7 +13,12 @@ namespace Game.Movement;
 public sealed class CharacterAnimatorBridge : MonoBehaviour
 {
     private static readonly int SpeedId = Animator.StringToHash("Speed");
+    private static readonly int ForwardSpeedId = Animator.StringToHash("ForwardSpeed");
+    private static readonly int StrafeSpeedId = Animator.StringToHash("StrafeSpeed");
     private static readonly int VerticalSpeedId = Animator.StringToHash("VerticalSpeed");
+
+    // Damping (seconds) on the 2D grounded blend params so direction changes ease instead of snap.
+    private const float LocomotionDamp = 0.08f;
     private static readonly int MotorStateId = Animator.StringToHash("MotorState");
     private static readonly int AirDivingId = Animator.StringToHash("AirDiving");
     private static readonly int FlippingId = Animator.StringToHash("Flipping");
@@ -80,6 +85,14 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         }
 
         _animator.SetFloat(SpeedId, _motor.CurrentSpeed);
+
+        // Local-space horizontal velocity drives the 2D grounded blend: +Z forward, +X right. The
+        // body faces the camera (player) or its steering direction (bot), so this correctly reads as
+        // strafe/backpedal for the player and pure-forward for bots.
+        Vector3 localVel = transform.InverseTransformDirection(_motor.HorizontalVelocity);
+        _animator.SetFloat(ForwardSpeedId, localVel.z, LocomotionDamp, Time.deltaTime);
+        _animator.SetFloat(StrafeSpeedId, localVel.x, LocomotionDamp, Time.deltaTime);
+
         _animator.SetFloat(VerticalSpeedId, _motor.Velocity.y);
         _animator.SetInteger(MotorStateId, (int)state);
         _animator.SetBool(AirDivingId, _motor.AirDiving);

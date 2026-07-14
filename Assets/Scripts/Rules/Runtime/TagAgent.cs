@@ -276,12 +276,14 @@ public sealed class TagAgent : MonoBehaviour
     /// </summary>
     public void TryLunge()
     {
+        // Lunge is a tagger-only ability — a runner pressing it does nothing at all (no dash, no
+        // cooldown, no HUD flash). Only taggers ever reach the cooldown/grace gates below.
+        if (Role != Role.Tagger) return;
+
         if (IsInGrace || _lungeCooldownRemaining > 0f)
         {
-            // Cooldown-only denial — record it so the HUD spinner can flash. BOTH roles lunge now
-            // (Tagger = tag dive, Runner = escape dash) and both share the same cooldown gate above,
-            // so both deserve the feedback. A grace-window denial isn't "waiting on cooldown", so it
-            // stays silent.
+            // Cooldown-only denial — record it so the HUD spinner can flash. A grace-window denial
+            // isn't "waiting on cooldown", so it stays silent.
             if (!IsInGrace && _lungeCooldownRemaining > 0f)
                 LastDeniedLungeTime = Time.time;
             return;

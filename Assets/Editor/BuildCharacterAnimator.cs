@@ -29,6 +29,11 @@ public static class BuildCharacterAnimator
 
         var ctrl = AnimatorController.CreateAnimatorControllerAtPath(OutPath);
         ctrl.AddParameter("Speed", AnimatorControllerParameterType.Float);
+        // Local-space velocity components (m/s): + forward / + right. Drive the 2D grounded blend so
+        // strafing (A/D) and backpedalling (S) animate correctly even though the player body stays
+        // locked to the camera facing (see CharacterMotor.UpdateFacing).
+        ctrl.AddParameter("ForwardSpeed", AnimatorControllerParameterType.Float);
+        ctrl.AddParameter("StrafeSpeed", AnimatorControllerParameterType.Float);
         ctrl.AddParameter("VerticalSpeed", AnimatorControllerParameterType.Float);
         ctrl.AddParameter("MotorState", AnimatorControllerParameterType.Int);
         ctrl.AddParameter("AirDiving", AnimatorControllerParameterType.Bool);
@@ -37,39 +42,50 @@ public static class BuildCharacterAnimator
 
         var sm = ctrl.layers[0].stateMachine;
 
-        // Grounded: 1D blend on horizontal speed.
+        // Grounded: 2D freeform-directional blend over local velocity (strafe X, forward Z). Idle at
+        // the centre, forward walk→run up +Z, backpedal down -Z, strafes on ±X.
         var grounded = ctrl.CreateBlendTreeInController("Grounded", out BlendTree groundTree, 0);
-        groundTree.blendType = BlendTreeType.Simple1D;
-        groundTree.blendParameter = "Speed";
-        groundTree.AddChild(Clip("Idle"), 0f);
-        groundTree.AddChild(Clip("Walking"), 4f);
-        groundTree.AddChild(Clip("Running"), 8f);
+        groundTree.blendType = BlendTreeType.FreeformDirectional2D;
+        groundTree.blendParameter = "StrafeSpeed";
+        groundTree.blendParameterY = "ForwardSpeed";
+        // Thresholds track MovementConfig walk (3.5) / sprint (7) so a clip is fully weighted at its speed.
+        groundTree.AddChild(Clip("Idle", "Walking"), new Vector2(0f, 0f)); // Idle missing → Walking stopgap
+        groundTree.AddChild(Clip("Walking"), new Vector2(0f, 3.5f));
+        groundTree.AddChild(Clip("Fast Run", "Running"), new Vector2(0f, 7f));
+        groundTree.AddChild(Clip("X Bot@Walking Backwards", "Walking Backwards"), new Vector2(0f, -3.5f));
+        groundTree.AddChild(Clip("X Bot@Left Strafe", "Left Strafe"), new Vector2(-3.5f, 0f));
+        groundTree.AddChild(Clip("X Bot@Right Strafe", "Right Strafe"), new Vector2(3.5f, 0f));
 
         // Airborne: 1D blend on vertical speed (rising = jump, falling = fall).
         var airborne = ctrl.CreateBlendTreeInController("Airborne", out BlendTree airTree, 0);
         airTree.blendType = BlendTreeType.Simple1D;
         airTree.blendParameter = "VerticalSpeed";
-        airTree.AddChild(Clip("Falling Idle"), -3f);
-        airTree.AddChild(Clip("Jump"), 3f);
+        airTree.AddChild(Clip("X Bot@Falling Idle", "Falling Idle"), -3f);
+        airTree.AddChild(Clip("X Bot@Jumping", "Jump", "Jumping"), 3f);
 
-        var sliding = Simple(sm, "Sliding", Clip("Running Slide"));
+        // Slide clip missing → dive-roll stopgap (reads as a floor tumble).
+        var sliding = Simple(sm, "Sliding", Clip("Running Slide", "X Bot@Stand To Roll"));
         // Wall-run was removed from CharacterMotor on this line, so MotorState has no WallRunning value
         // and everything from Mantling on shifted down by one — the Any() indices below match the live enum.
-        var mantling = Simple(sm, "Mantling", Clip("Climbing Up Wall"));
-        var vaulting = Simple(sm, "Vaulting", Clip("Climbing To Top"));
-        vaulting.speed = 1.5f; // stand-in for a real vault — sped up so the climb reads as a quick hop
-        var climbing = Simple(sm, "Climbing", Clip("Rope Climb"));
-        var ladder = Simple(sm, "OnLadder", Clip("Climbing Ladder"));
-        var swing = Simple(sm, "OnSwing", Clip("Rope Swinging"));
-        var wallHook = Simple(sm, "WallHook", Clip("Rope Swinging")); // reuse hang pose
+        var mantling = Simple(sm, "Mantling", Clip("X Bot@Braced Hang To Crouch", "Climbing To Top"));
+        // Vault clip missing → sped-up braced-hang mantle stopgap so it reads as a quick hop-over.
+        var vaulting = Simple(sm, "Vaulting", Clip("X Bot@Braced Hang To Crouch", "Climbing To Top"));
+        vaulting.speed = 1.5f;
+        var climbing = Simple(sm, "Climbing", Clip("X Bot@Freehang Climb", "Climbing Up Wall", "Rope Climb"));
+        var ladder = Simple(sm, "OnLadder", Clip("X Bot@Climbing Ladder", "Climbing Ladder"));
+        var swing = Simple(sm, "OnSwing", Clip("X Bot@Rope Swinging", "Rope Swinging"));
+        // Wall grab = brace/hang on the wall (Freehang Climb hold reads far better than the rope pose).
+        var wallHook = Simple(sm, "WallHook", Clip("X Bot@Freehang Climb", "Rope Swinging"));
 
         // Front flip: replaces the normal jump/fall pose while airborne. Driven by CharacterAnimatorBridge,
         // which sets the Flipping bool the moment a runner double-jumps (and holds it for the clip length).
-        var frontFlip = Simple(sm, "FrontFlip", Clip("Front Flip"));
+        var frontFlip = Simple(sm, "FrontFlip", Clip("X Bot@Front Flip", "Front Flip"));
+        frontFlip.speed = 2f; // sped up so the flip snaps to the double-jump instead of lazily rolling
 
         // Dive roll: a tagger's committed lunge. Driven by the bridge's Diving bool (held for the clip
         // length) so the grounded/airborne AnyState transitions can't yank it back mid-roll.
-        var diveRoll = Simple(sm, "DiveRoll", Clip("Dive Roll"));
+        var diveRoll = Simple(sm, "DiveRoll", Clip("X Bot@Stand To Roll", "Dive Roll"));
+        diveRoll.speed = 2f; // sped up so the stand-to-roll reads as a quick committed lunge
 
         sm.defaultState = grounded;
 
@@ -133,13 +149,23 @@ public static class BuildCharacterAnimator
         t.AddCondition(flipping ? AnimatorConditionMode.If : AnimatorConditionMode.IfNot, 0, "Flipping");
     }
 
-    static AnimationClip Clip(string fileNoExt)
+    // Returns the first candidate clip that exists on disk. Later candidates are stopgaps for a
+    // preferred clip that hasn't been imported yet; using a fallback logs a warning so missing
+    // source clips stay visible in the build output.
+    static AnimationClip Clip(params string[] candidates)
     {
-        string path = $"{AnimFolder}/{fileNoExt}.fbx";
-        foreach (var o in AssetDatabase.LoadAllAssetsAtPath(path))
-            if (o is AnimationClip c && !c.name.StartsWith("__preview"))
-                return c;
-        Debug.LogError($"ANIMATOR_MISSING_CLIP {path}");
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            string path = $"{AnimFolder}/{candidates[i]}.fbx";
+            foreach (var o in AssetDatabase.LoadAllAssetsAtPath(path))
+                if (o is AnimationClip c && !c.name.StartsWith("__preview"))
+                {
+                    if (i > 0)
+                        Debug.LogWarning($"ANIMATOR_CLIP_STOPGAP '{candidates[0]}' missing → using '{candidates[i]}'");
+                    return c;
+                }
+        }
+        Debug.LogError($"ANIMATOR_MISSING_CLIP {string.Join(" | ", candidates)}");
         return null;
     }
 }
