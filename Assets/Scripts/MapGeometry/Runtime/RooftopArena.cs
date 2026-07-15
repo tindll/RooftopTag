@@ -98,6 +98,13 @@ public static class RooftopArena
 
         // --- Urban south, cont'd: placed last to keep array order == index order (see plan). ---
         new("Roof_S2E",   13f, -26f, 4f,   8f,  8f),  // 25
+
+        // --- East pier zone (26-30): a new cluster off the E2/N1EE east edge, on the 13m grid. ---
+        new("East_Pier",  39f,   0f, 4f, 8f, 8f),  // 26 — 4-way hub, 13E of E2
+        new("East_PierN", 39f,  13f, 5f, 8f, 8f),  // 27 — 13N of 26, also 13E of N1EE(6)
+        new("East_PierS", 39f, -13f, 3f, 8f, 8f),  // 28 — 13S of 26
+        new("East_High",  52f,  -6f, 6f, 9f, 9f),  // 29 — tall landmark, ramp-reached from 26 & 28
+        new("East_Annex", 39f,  32f, 5f, 8f, 8f),  // 30 — swing-only annex across an 11m N-S chasm from 27
     };
 
     // LinkKind.Jump between roofs ≤2m apart in height; Ramp for the +3m climb to Roof_N1EE; Ladder up
@@ -206,6 +213,29 @@ public static class RooftopArena
         new(4, 8, LinkKind.Ramp),    // N1 h4  -> N2 h5      (central north spine)
         new(9, 10, LinkKind.Ramp),   // N2E h5 -> N2EE h7    (up onto the tall NE roof, +2m)
         new(15, 16, LinkKind.Ramp),  // W2 h4  -> N1WW h6    (up onto the tall NW roof, +2m)
+
+        // --- East pier zone links (roofs 26-30) ---
+        new(2, 26, LinkKind.Jump),    // E2 h3 -> East_Pier h4  (~5m gap, +1)
+        new(2, 26, LinkKind.Ramp),    // walking route parallel to the jump
+        new(26, 27, LinkKind.Jump),   // Pier h4 -> PierN h5    (+1)
+        new(6, 27, LinkKind.Jump),    // N1EE h6 -> PierN h5     (-1, 13E)
+        new(26, 28, LinkKind.Jump),   // Pier h4 -> PierS h3     (-1)
+        new(26, 29, LinkKind.Ramp),   // Pier h4 -> East_High h6 (+2, ramp)
+        new(28, 29, LinkKind.Ramp),   // PierS h3 -> East_High h6 (+3, ramp) — PierS's 2nd route
+        new(10, 30, LinkKind.Jump),   // N2EE h7 -> East_Annex h5 (-2, ~13.6m centres) — Annex's 2nd route
+        new(27, 30, LinkKind.Swing, param: 5f), // PierN h5 -> East_Annex h5 across the 11m N-S chasm
+        new(10, 30, LinkKind.Ramp),   // N2EE h7 -> East_Annex h5: walkable route parallel to the jump —
+                                      // gives the annex a 2nd OUTBOUND (the swing is one-way IN), so it's
+                                      // not a soft dead-end. Verify the foot lands on the annex (~5m gap
+                                      // vs 4.95m run at +2m rise is borderline — nudge annex toward N2EE
+                                      // if the headless build floats the foot or warns ROOFTOP_RAMP_STEEP).
+
+        // More walkable ramps parallel to existing jumps (small rises only, full 22-degree grade).
+        // NOTE: the plan's (8,9) "level ramp" was dropped — rise 0 makes BuildRamp degenerate
+        // (run=0, LookRotation(zero), zero-length box); 8<->9 already has a flat Jump.
+        new(1, 5, LinkKind.Ramp),    // E1 h4  -> N1E h5   (+1)
+        new(5, 6, LinkKind.Ramp),    // N1E h5 -> N1EE h6  (+1)
+        new(13, 25, LinkKind.Ramp),  // E1S h3 -> S2E h4   (+1)
     };
 
     // Trash-can objective spawn spots (see the Bins feature). (world pos, tier): tier 1 = small can
@@ -225,6 +255,8 @@ public static class RooftopArena
         (new Vector3(-29f, 1.7f,-14f), 1),  // Con_Yard — construction pit (enclosed, low) — small can for now
         (new Vector3(-35f, 2.2f,-27f), 1),  // Con_Alley — long SW alley — small can for now
         (new Vector3(  2.5f, 3.2f,-26f), 1), // Roof_S2 — south row
+        (new Vector3( 39f,   4.2f,  2.5f), 1), // East_Pier — new east hub
+        (new Vector3( 52f,   6.2f, -8.5f), 1), // East_High — tall east landmark
     };
 
     // Long vertical "climb pipes" on the exposed OUTER faces of the perimeter roofs — placed where
@@ -262,6 +294,11 @@ public static class RooftopArena
         new(22, new Vector3(-1f, 0f,  0f), -7f), // Con_West    west  face (h3.5) — construction-zone edge
         new(24, new Vector3( 0f, 0f, -1f), -7f), // Con_ScafHi  south face (h4) — SW corner
         new(14, new Vector3( 0f, 0f, -1f), -7f), // Roof_S2     south face (h3) — south edge
+
+        new(29, new Vector3( 1f, 0f,  0f), -7f), // East_High   east  face (h6) — outer edge of the new zone
+        new(29, new Vector3( 0f, 0f, -1f), -7f), // East_High   south face
+        new(28, new Vector3( 0f, 0f, -1f), -7f), // East_PierS  south face (h3)
+        new(30, new Vector3( 0f, 0f,  1f), -7f), // East_Annex  north face (h5) — escape off the swing annex
     };
 
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
@@ -355,15 +392,12 @@ public static class RooftopArena
     /// Overhead beam + hanging chain a runner grabs to swing across an un-jumpable N-S chasm, mirroring
     /// PlaygroundBuilder.BuildSwingChasm's look (CreateBox WallBody beam + a thin chain visual). Returns
     /// the (pivot, chainLength, exitDir) tuple the interactable builders spawn the live trigger from.
-    ///
-    /// <para>Pivot is (x=-37.5, y=9, z=-9): x is the midpoint of the two roofs' x-overlap
-    /// (Con_West x[-42,-34] ∩ Con_Alley x[-41,-33] = [-41,-34] → -37.5), y=9 clears the h3.5/h2 roofs
-    /// for a tall beam, z=-9 is the midpoint of the crossing (Con_West south edge z-4 → Con_Alley north
-    /// edge z-14). exitDir is the horizontal unit vector from the From roof toward the To roof.</para>
+    /// Pivot is derived generically by <see cref="SwingPivot"/> (no hardcoded coordinates); exitDir is
+    /// the horizontal unit vector from the From roof toward the To roof.
     /// </summary>
     private static (Vector3 pivot, float length, Vector3 exitDir) BuildSwing(Transform parent, Roof from, Roof to, float length)
     {
-        var pivot = new Vector3(-37.5f, 9f, -9f);
+        Vector3 pivot = SwingPivot(from, to, length);
         Vector3 exitDir = new Vector3(to.Center.x - from.Center.x, 0f, to.Center.z - from.Center.z).normalized;
 
         // Solid beam-hub the chain hangs from, at the pivot. It is a COMPACT 1.5x1.5 stub, NOT the old
@@ -388,6 +422,47 @@ public static class RooftopArena
         // follows the swinger), so no static chain visual is emitted here — only the overhead beam.
 
         return (pivot, length, exitDir);
+    }
+
+    /// <summary>
+    /// Derives the overhead beam pivot for a swing between two roofs, generically (no hardcoded
+    /// coordinates). The grab point (pivot.y - length) is hung at the taller roof's surface height so a
+    /// runner leaping the chasm at roof height meets the chain; the pivot sits over the midpoint of the
+    /// gap on the crossing axis and over the midpoint of the roofs' footprint overlap on the other axis.
+    /// Verified to reproduce the original hand-tuned Con_West->Con_Alley pivot (-37.5, 9, -9) exactly.
+    /// </summary>
+    public static Vector3 SwingPivot(Roof from, Roof to, float length)
+    {
+        float dx = to.Center.x - from.Center.x;
+        float dz = to.Center.z - from.Center.z;
+        float pivotY = Mathf.Max(from.Center.y, to.Center.y) + length;
+
+        if (Mathf.Abs(dz) >= Mathf.Abs(dx))
+        {
+            // N-S crossing: pivot.z at the chasm midpoint (between the two facing Z edges),
+            // pivot.x at the midpoint of the roofs' X-footprint overlap.
+            float fromEdgeZ = from.Center.z + Mathf.Sign(dz) * from.SizeZ * 0.5f;
+            float toEdgeZ   = to.Center.z   - Mathf.Sign(dz) * to.SizeZ   * 0.5f;
+            float pz = (fromEdgeZ + toEdgeZ) * 0.5f;
+            float px = OverlapMidpoint(from.Center.x, from.SizeX, to.Center.x, to.SizeX);
+            return new Vector3(px, pivotY, pz);
+        }
+
+        // E-W crossing: mirror the axes.
+        float fromEdgeX = from.Center.x + Mathf.Sign(dx) * from.SizeX * 0.5f;
+        float toEdgeX   = to.Center.x   - Mathf.Sign(dx) * to.SizeX   * 0.5f;
+        float pxEW = (fromEdgeX + toEdgeX) * 0.5f;
+        float pzEW = OverlapMidpoint(from.Center.z, from.SizeZ, to.Center.z, to.SizeZ);
+        return new Vector3(pxEW, pivotY, pzEW);
+    }
+
+    /// <summary>Midpoint of the overlap of two 1D spans [c1±s1/2] and [c2±s2/2]; if the spans don't
+    /// overlap, falls back to the midpoint of the two centres (keeps the pivot between the roofs).</summary>
+    private static float OverlapMidpoint(float c1, float s1, float c2, float s2)
+    {
+        float lo = Mathf.Max(c1 - s1 * 0.5f, c2 - s2 * 0.5f);
+        float hi = Mathf.Min(c1 + s1 * 0.5f, c2 + s2 * 0.5f);
+        return lo <= hi ? (lo + hi) * 0.5f : (c1 + c2) * 0.5f;
     }
 
     /// <summary>
@@ -469,6 +544,15 @@ public static class RooftopArena
                          + Mathf.Min(lower.SizeX, lower.SizeZ) - 1f; // stay ≥1m inside the far edge
         if (run > maxReach) { run = maxReach; footFlat = new Vector3(top.x, 0f, top.z) - dir * run; }
         Vector3 foot = new(footFlat.x, lower.Center.y, footFlat.z);
+
+        // "All ramps connect" guardrail: the clamp above keeps the foot on the lower roof, but a lower
+        // roof too small to host the full 22-degree run yields a steeper ramp. Warn so it's caught here,
+        // not in a feel-test. gradeDeg = atan(rise / run); 22deg is the design target, 34deg is the
+        // steepest we consider comfortably sprint-able.
+        float gradeDeg = Mathf.Atan2(rise, run) * Mathf.Rad2Deg;
+        if (gradeDeg > 34f)
+            Debug.LogWarning($"ROOFTOP_RAMP_STEEP: ramp {lower.Name} -> {upper.Name} is {gradeDeg:F0} deg " +
+                $"(target 22) — lower roof too small to host the run; widen it or use a Ladder.");
 
         var rampGo = new GameObject("Ramp");
         rampGo.transform.SetParent(parent, false);
@@ -577,7 +661,7 @@ public static class RooftopArena
     // 0.00 speed_p50 and empty edge usage) gives real physical separation using the branching
     // topology itself, rather than trying to out-tune one small platform. The construction zone is
     // deliberately spawn-free — it's a destination one hop away via Con_Gate, not a start point.
-    private static readonly int[] SpawnRoofIndices = { 0, 1, 3, 4, 8, 12, 13 };
+    private static readonly int[] SpawnRoofIndices = { 0, 1, 3, 4, 8, 12, 13, 26 };
 
     /// <summary>Spawn points spread across the spawn roof and its immediate neighbours.</summary>
     public static Vector3[] SpawnPoints(int count)

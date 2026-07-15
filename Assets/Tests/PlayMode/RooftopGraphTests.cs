@@ -148,4 +148,63 @@ public class RooftopGraphTests
         IReadOnlyList<ParkourEdge>? path = graph.FindPath(fromYard, conWest);
         Assert.That(path, Is.Not.Null);
     }
+
+    [Test]
+    public void SwingPivot_ReproducesHandTunedPivot_For22To23()
+    {
+        // The old hardcoded pivot for the Con_West(22)->Con_Alley(23) swing was (-37.5, 9, -9).
+        // The generic derivation must reproduce it exactly (chain length 5.5 as declared in Links[]).
+        Vector3 p = RooftopArena.SwingPivot(RooftopArena.Roofs[22], RooftopArena.Roofs[23], 5.5f);
+        Assert.AreEqual(-37.5f, p.x, 0.001f, "pivot.x = midpoint of the roofs' X-overlap");
+        Assert.AreEqual(9f,     p.y, 0.001f, "pivot.y = max(roof heights) + chain length");
+        Assert.AreEqual(-9f,    p.z, 0.001f, "pivot.z = midpoint of the N-S chasm");
+    }
+
+    [Test]
+    public void SwingPivot_SitsAboveBothRoofs_AndBetweenThem()
+    {
+        // A synthetic E-W crossing: two 8x8 roofs at h4 and h6, 20m apart on X, same Z.
+        var a = new RooftopArena.Roof("A", 0f, 0f, 4f, 8f, 8f);
+        var b = new RooftopArena.Roof("B", 20f, 0f, 6f, 8f, 8f);
+        Vector3 p = RooftopArena.SwingPivot(a, b, 5f);
+        Assert.AreEqual(10f, p.x, 0.001f, "x = midpoint of the two facing edges (4 and 16) => 10");
+        Assert.AreEqual(11f, p.y, 0.001f, "y = max(4,6) + 5");
+        Assert.AreEqual(0f,  p.z, 0.001f, "z = overlap midpoint (roofs share Z) => 0");
+    }
+
+    [Test]
+    public void Links_EveryEastZoneRoofHasTwoRoutesEachWay()
+    {
+        // New roofs 26-30 must each have >=2 inbound and >=2 outbound routes (one-way Swing/Drop
+        // counted only in their declared direction, via the same InboundRouteCount/OutboundRouteCount
+        // helpers WP3 already established above), so none is a soft dead-end.
+        for (int roof = 26; roof <= 30; roof++)
+        {
+            Assert.That(OutboundRouteCount(roof), Is.GreaterThanOrEqualTo(2),
+                $"roof {roof} ({RooftopArena.Roofs[roof].Name}) needs >=2 ways out");
+            Assert.That(InboundRouteCount(roof), Is.GreaterThanOrEqualTo(2),
+                $"roof {roof} ({RooftopArena.Roofs[roof].Name}) needs >=2 ways in");
+        }
+    }
+
+    [Test]
+    public void Graph_EastAnnexSwingEdgeIsOneDirectional()
+    {
+        // The 27->30 swing must be traversable 27->30 via a Swing edge, and 30->27 must NOT use a Swing.
+        ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
+
+        int roof27 = graph.NearestNode(RooftopArena.Roofs[27].Walk);
+        int roof30 = graph.NearestNode(RooftopArena.Roofs[30].Walk);
+
+        IReadOnlyList<ParkourEdge>? forward = graph.FindPath(roof27, roof30);
+        Assert.That(forward, Is.Not.Null);
+        Assert.That(forward!.Any(e => e.Type == ParkourEdgeType.Swing), Is.True, "27->30 should have a Swing edge");
+
+        IReadOnlyList<ParkourEdge>? reverse = graph.FindPath(roof30, roof27);
+        if (reverse is not null)
+        {
+            Assert.That(reverse.Any(e => e.Type == ParkourEdgeType.Swing), Is.False,
+                "30->27 must not use the Swing (one-way); it should route the long way.");
+        }
+    }
 }

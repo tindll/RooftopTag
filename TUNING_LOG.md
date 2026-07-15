@@ -2262,3 +2262,22 @@ gameplay bugs but are worth knowing about before any future automation work in t
    is assigned. A human can still create a real tunable `MovementConfig`/`CameraConfig` asset via
    `Assets > Create > RooftopTag` in their own Editor session and assign it in the Inspector —
    that path is expected to work normally since it doesn't go through headless batch mode.
+
+---
+
+## RooftopArena east-pier expansion (2026-07-15)
+
+Implemented `docs/superpowers/plans/2026-07-15-rooftop-arena-expansion.md` (Tasks 1-7).
+
+**Change:**
+- **SwingPivot** derived generically from the two linked roofs (was hardcoded `(-37.5,9,-9)`); reproduces the old 22->23 pivot exactly (2 unit tests).
+- **East pier zone** roofs 26-30 (`East_Pier/PierN/PierS/High/Annex`), +9 links; roofs 26->31, links ->63. Spawn index 26 added; +2 can anchors (8->10).
+- **Void pipes** 10->14 (4 new on the east zone's outer faces).
+- **Ramps**: +3 walkable ramps parallel to jumps (1<->5, 5<->6, 13<->25). Plan's `(8,9)` "level ramp" DROPPED — rise 0 makes `BuildRamp` degenerate (`LookRotation(zero)`, zero-length box); 8<->9 already has a flat Jump.
+- **Ramp-grade guard** `ROOFTOP_RAMP_STEEP` (>34 deg) added to `BuildRamp`.
+- **Roof-30 fix**: `East_Annex` had only 1 bot outbound route (swing IN one-way + jump). Added a parallel `(10,30)` Ramp for a real 2nd outbound (user call). No soft dead-end.
+
+**Metrics:**
+- Headless build: `ROOFTOP_BUILD: 31 roofs, 63 links`; ZERO of SKIPPED/STEEP/CLIP/REDUNDANT; `TRASHCAN_ANCHORS: 10`; BUILD_OK.
+- PlayMode: RooftopGraphTests 13/13 (incl. 4 new); Movement/Rules/Prop 41/42 — sole fail `Swing_EnergyCapBoundsSwingHeight` (~4.99 vs >5.5), a self-contained pre-existing marginal test with NO code path to this change (out-of-scope per plan).
+- Self-play (10 matches): stuck=4 (<< ~17 baseline), fallen=0, cans_eaten=12, trash_wins=2, runner_win_rate=0.20, avg_survival=0.10, max_distance_from_spawn=55.2 (east zone reached). Edge usage exercises Run/Jump/Ladder/Drop/Vault/Swing/Climb. Ramp shows 0 by design — `RooftopGraphBuilder` emits Ramp links as `ParkourEdgeType.Run` (bots walk ramps as Run), so the plan's "Ramp>0" expectation was never achievable; the added ramps feed the Run count (1005).
