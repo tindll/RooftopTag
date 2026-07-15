@@ -25,7 +25,9 @@ using UnityEngine;
 /// </summary>
 public sealed class MainMenuOverlay : MonoBehaviour
 {
-    private static readonly int[] ChaserCounts = { 1, 3, 5, 10 };
+    // 0 is a valid choice: with no chasers (and typically Unlimited time) the arena becomes a
+    // free-roam space for testing movement/animation with nothing hunting the player.
+    private static readonly int[] ChaserCounts = { 0, 1, 3, 5, 10 };
 
     // Fixed id: only one local player (and therefore one MainMenuOverlay instance) exists per
     // scene, so there's no risk of colliding with another IMGUI window in this project's OnGUI-only HUD.
@@ -37,6 +39,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
 
     private bool _open;
     private int _chaserIndex;
+    private bool _unlimitedTime;
     private GUIStyle? _titleStyle;
 
     public void Configure(TagArenaBootstrap bootstrap, RoundController roundController, ThirdPersonCameraRig cameraRig)
@@ -46,6 +49,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
         _cameraRig = cameraRig;
         _chaserIndex = System.Array.IndexOf(ChaserCounts, bootstrap.TaggerCount);
         if (_chaserIndex < 0) _chaserIndex = 0;
+        _unlimitedTime = bootstrap.UnlimitedTime;
     }
 
     private void Start() => ShowMenu();
@@ -86,6 +90,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
 
         DrawDifficultyRow();
         DrawChaserCountRow();
+        DrawTimeRow();
         DrawSceneRow();
 
         GUILayout.Space(8);
@@ -116,6 +121,15 @@ public sealed class MainMenuOverlay : MonoBehaviour
         GUILayout.EndHorizontal();
     }
 
+    private void DrawTimeRow()
+    {
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Round time", GUILayout.Width(90));
+        if (GUILayout.Button(_unlimitedTime ? "Unlimited" : "Timed", GUILayout.Width(130)))
+            _unlimitedTime = !_unlimitedTime;
+        GUILayout.EndHorizontal();
+    }
+
     private void DrawSceneRow()
     {
         GUILayout.BeginHorizontal();
@@ -131,6 +145,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
     private void Play()
     {
         _bootstrap.ApplyTaggerCount(ChaserCounts[_chaserIndex]);
+        _bootstrap.ApplyUnlimitedTime(_unlimitedTime);
         _open = false;
         Time.timeScale = 1f;
         _cameraRig.CursorUnlocked = false;

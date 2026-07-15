@@ -233,7 +233,7 @@ public static class PlaygroundBuilder
     // ("TrashCanGlow", from BuildTrashCanVisual) when the bootstrap converts this marker at runtime.
     private static void BuildRoofTrashCan(Vector3 pos, int tier)
     {
-        (GameObject canRoot, _) = TagArenaMapGeometry.BuildTrashCanVisual(null, pos, tier);
+        (GameObject canRoot, _, _) = TagArenaMapGeometry.BuildTrashCanVisual(null, pos, tier);
         InteractableMarker marker = canRoot.AddComponent<InteractableMarker>();
         marker.kind = InteractableMarker.Kind.TrashCan;
         marker.tier = tier;

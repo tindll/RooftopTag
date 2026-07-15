@@ -26,6 +26,10 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private Rigidbody _rb = null!;
     private CapsuleCollider _capsule = null!;
+    // The real input source (player/bot/net). All motor code reads through _input, which normally
+    // aliases _realInput but is swapped for a DiveInputFilter that swallows jump/slide/interact while
+    // a committed dive is locked in — so the lock applies to every ICharacterInput impl identically.
+    private ICharacterInput _realInput = null!;
     private ICharacterInput _input = null!;
 
     private MotorState _state = MotorState.Airborne;
@@ -136,12 +140,79 @@ public sealed class CharacterMotor : MonoBehaviour
     /// <summary>Generic world-space velocity impulse — a hook for systems outside movement (e.g. a tag lunge) to affect the Rigidbody without reaching into its internals.</summary>
     public void AddImpulse(Vector3 worldImpulse) => _rb.linearVelocity += worldImpulse;
 
+    // ---------------------------------------------------------------- Committed dive
+    // A motor-owned "committed dive" (drives the tag lunge, but parameterised so Game.Movement stays
+    // free of Game.Rules/TagRulesConfig): it redirects the momentum you already have onto your facing,
+    // locks you in briefly, and can NEVER net speed — the redirected burst is capped back down to the
+    // speed you entered with by the end of recovery. The lock itself is the rate limiter (no cooldown).
+    private float _diveActiveRemaining;   // > 0 while the committed, locked-in dive window runs
+    private float _diveRecoveryRemaining; // > 0 while easing the speed cap back down after the active window
+    private float _diveRecoveryDuration;  // captured recovery length, for the recovery-progress lerp
+    private float _divePreSpeed;          // horizontal speed at the instant the dive began (the floor to decay to)
+    private float _diveBurstSpeed;        // max(preSpeed, diveSpeed) — the redirected burst the active window holds
+    private float _diveSteeringScale = 1f;
+
+    /// <summary>True only during the active (locked-in) dive window — NOT during recovery. Systems
+    /// outside movement (e.g. TagAgent's contact-tag window / re-lunge block) key off this.</summary>
+    public bool IsDiving => _diveActiveRemaining > 0f;
+
+    /// <summary>Steering authority multiplier applied to move/steer acceleration: cut to the dive's
+    /// steering scale while the active window runs (a committed dive allows only minimal correction),
+    /// full authority otherwise. Recovery restores full control — only the speed cap keeps easing down.</summary>
+    private float DiveSteerScale => IsDiving ? _diveSteeringScale : 1f;
+
+    /// <summary>
+    /// Begin a committed dive: redirect current horizontal momentum onto planar facing (preserving
+    /// vertical velocity), lock the character in for <paramref name="duration"/> (suppressing jump/
+    /// slide/interact and cutting steering to <paramref name="steeringScale"/>), then ease the speed
+    /// cap from the redirected burst back to the pre-dive speed over <paramref name="recovery"/>.
+    /// No-op if already diving. Never nets speed: entering faster than <paramref name="diveSpeed"/>
+    /// is preserved end to end; a standstill dive bursts to diveSpeed then decays back to ~0.
+    /// </summary>
+    public void BeginDive(float diveSpeed, float duration, float recovery, float steeringScale)
+    {
+        if (IsDiving) return; // already committed — no re-entry, no stacking
+
+        _divePreSpeed = CurrentSpeed;
+        _diveBurstSpeed = Mathf.Max(_divePreSpeed, diveSpeed);
+        _diveSteeringScale = Mathf.Clamp01(steeringScale);
+        _diveActiveRemaining = duration;
+        _diveRecoveryRemaining = recovery; // only ticks down once the active window ends (see TickDive)
+        _diveRecoveryDuration = Mathf.Max(recovery, 0.0001f);
+
+        // Redirect onto planar facing at the burst speed, keeping vertical velocity untouched.
+        Vector3 planarForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
+        if (planarForward.sqrMagnitude < 0.0001f) // guard a straight-up/down facing
+            planarForward = HorizontalVelocity.sqrMagnitude > 0.0001f ? HorizontalVelocity.normalized : Vector3.forward;
+        Vector3 redirected = planarForward * _diveBurstSpeed;
+        _rb.linearVelocity = new Vector3(redirected.x, _rb.linearVelocity.y, redirected.z);
+    }
+
+    // Ticks the dive windows in FixedUpdate (deterministic, fixed-timestep) and enforces the
+    // zero-net-momentum cap. Active window holds the burst; recovery eases the cap down to preSpeed.
+    private void TickDive(float dt)
+    {
+        if (_diveActiveRemaining > 0f)
+        {
+            _diveActiveRemaining -= dt;
+            CapHorizontalSpeed(_diveBurstSpeed);
+        }
+        else if (_diveRecoveryRemaining > 0f)
+        {
+            _diveRecoveryRemaining -= dt;
+            float recoveryProgress = 1f - Mathf.Clamp01(_diveRecoveryRemaining / _diveRecoveryDuration);
+            CapHorizontalSpeed(Mathf.Lerp(_diveBurstSpeed, _divePreSpeed, recoveryProgress));
+        }
+    }
+
     private void Awake()
     {
         _rb = GetComponent<Rigidbody>();
         _capsule = GetComponent<CapsuleCollider>();
-        _input = GetComponent<ICharacterInput>()
+        _realInput = GetComponent<ICharacterInput>()
             ?? throw new InvalidOperationException($"{nameof(CharacterMotor)} requires a component implementing {nameof(ICharacterInput)}.");
+        // Always read through the dive filter — it's fully transparent when not diving.
+        _input = new DiveInputFilter(this);
 
         if (config == null)
             config = ScriptableObject.CreateInstance<MovementConfig>();
@@ -200,6 +271,10 @@ public sealed class CharacterMotor : MonoBehaviour
         _slideElapsed = 0f;
         _airborneStartTime = Time.time;
 
+        // Clear any in-flight dive so a hard reset can't strand the character locked/capped.
+        _diveActiveRemaining = 0f;
+        _diveRecoveryRemaining = 0f;
+
         _rb.linearVelocity = Vector3.zero;
         _rb.angularVelocity = Vector3.zero;
         _rb.position = position;
@@ -239,15 +314,19 @@ public sealed class CharacterMotor : MonoBehaviour
         _previousState = _state;
 
         ClampHorizontalSpeed();
+        TickDive(dt); // after the global clamp so the dive cap is the final word on horizontal speed
         UpdateFacing(dt);
     }
 
-    private void ClampHorizontalSpeed()
+    private void ClampHorizontalSpeed() => CapHorizontalSpeed(config.ground.maxHorizontalSpeed);
+
+    // Clamps horizontal speed to maxSpeed while preserving vertical velocity and travel direction.
+    private void CapHorizontalSpeed(float maxSpeed)
     {
         Vector3 horizontal = HorizontalVelocity;
-        if (horizontal.magnitude <= config.ground.maxHorizontalSpeed) return;
+        if (horizontal.magnitude <= maxSpeed) return;
 
-        Vector3 clamped = horizontal.normalized * config.ground.maxHorizontalSpeed;
+        Vector3 clamped = horizontal.normalized * maxSpeed;
         _rb.linearVelocity = new Vector3(clamped.x, _rb.linearVelocity.y, clamped.z);
     }
 
@@ -552,8 +631,9 @@ public sealed class CharacterMotor : MonoBehaviour
             }
             else
             {
-                Vector3 steeredDir = Vector3.RotateTowards(dir, wishDir, config.ground.steerRateDegrees * Mathf.Deg2Rad * dt, 0f).normalized;
-                float newSpeed = Mathf.MoveTowards(speed, targetSpeed, config.ground.acceleration * dt);
+                // DiveSteerScale cuts steer rate + acceleration during a committed dive (minimal correction).
+                Vector3 steeredDir = Vector3.RotateTowards(dir, wishDir, config.ground.steerRateDegrees * DiveSteerScale * Mathf.Deg2Rad * dt, 0f).normalized;
+                float newSpeed = Mathf.MoveTowards(speed, targetSpeed, config.ground.acceleration * DiveSteerScale * dt);
                 newHorizontal = steeredDir * newSpeed;
             }
         }
@@ -684,7 +764,8 @@ public sealed class CharacterMotor : MonoBehaviour
 
         Vector3 horizontal = HorizontalVelocity;
         float speedBefore = horizontal.magnitude;
-        Vector3 added = wishDir * (config.ground.airAcceleration * config.ground.airControlMultiplier * dt);
+        // DiveSteerScale cuts air control during a committed dive (minimal mid-air correction).
+        Vector3 added = wishDir * (config.ground.airAcceleration * config.ground.airControlMultiplier * DiveSteerScale * dt);
         Vector3 newHorizontal = horizontal + added;
 
         // Air control redirects momentum you already have; it must never manufacture free speed
@@ -1275,5 +1356,32 @@ public sealed class CharacterMotor : MonoBehaviour
         Quaternion target = Quaternion.LookRotation(faceDir.normalized, Vector3.up);
         Quaternion next = Quaternion.RotateTowards(_rb.rotation, target, turnSpeedDegreesPerSecond * dt);
         _rb.MoveRotation(next);
+    }
+
+    /// <summary>
+    /// Wraps the real input during a committed dive: the dive locks the character in, so jump, slide
+    /// and interact are swallowed for the active window (neither player nor bot can cancel the
+    /// commitment). Applied here — the single chokepoint every Tick* method reads through — so the
+    /// lock works for every <see cref="ICharacterInput"/> impl (player, bot, future net) identically.
+    /// Move/Look/Sprint pass through unchanged; steering authority is reduced separately via
+    /// <see cref="DiveSteerScale"/> (scaling Move here would be undone by ComputeWishDirection's normalize).
+    /// </summary>
+    private sealed class DiveInputFilter : ICharacterInput
+    {
+        private readonly CharacterMotor _motor;
+        public DiveInputFilter(CharacterMotor motor) => _motor = motor;
+
+        private ICharacterInput Inner => _motor._realInput;
+        private bool Locked => _motor.IsDiving;
+
+        public Vector2 Move => Inner.Move;
+        public Vector2 Look => Inner.Look;
+        public bool JumpHeld => !Locked && Inner.JumpHeld;
+        public bool JumpPressed => !Locked && Inner.JumpPressed;
+        public bool SlideHeld => !Locked && Inner.SlideHeld;
+        public bool SprintHeld => Inner.SprintHeld;
+        public bool InteractPressed => !Locked && Inner.InteractPressed;
+
+        public void Tick(float deltaTime) => Inner.Tick(deltaTime);
     }
 }

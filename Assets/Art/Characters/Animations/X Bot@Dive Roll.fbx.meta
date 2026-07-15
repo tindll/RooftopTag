@@ -35,8 +35,8 @@ ModelImporter:
       name: Dive Roll
       takeName: mixamo.com
       internalID: -203655887218126122
-      firstFrame: 0
-      lastFrame: 118
+      firstFrame: 41
+      lastFrame: 108
       wrapMode: 0
       orientationOffsetY: 0
       level: 0

@@ -13,6 +13,11 @@ public sealed class TagRulesConfig : ScriptableObject
     // once a tag cascade starts) — 2 minutes keeps timer-survival a real, reachable win state.
     public float roundDuration = 120f;
 
+    /// <summary>When true the round timer never counts down or expires — a free-roam mode for testing
+    /// movement/animation. Combined with 0 chasers (see <see cref="taggerCount"/>) it lets the player
+    /// wander the arena indefinitely with nothing hunting them. Toggled from the main menu.</summary>
+    public bool unlimitedTime = false;
+
     /// <summary>Current mode: the player is the runner and a single bot is the tagger chasing them.</summary>
     public int taggerCount = 1;
     public int runnerCount = 1;
@@ -36,10 +41,15 @@ public sealed class TagRulesConfig : ScriptableObject
     public float conversionGraceDuration = 2.5f;
 
     [Header("Lunge")]
-    // Heavily nerfed per feel-test: a short, infrequent hop rather than a big velocity-scaled dash.
-    public float lungeCooldown = 3f;
-    public float lungeBaseImpulse = 1.5f;
-    public float lungeVelocityScale = 0.2f;
+    // The lunge is now a COMMITTED DIVE owned by CharacterMotor.BeginDive: it redirects existing
+    // momentum forward, locks the player in briefly, and never nets speed. The dive-lock is the rate
+    // limiter, so there is no cooldown timer any more.
+    public float lungeCooldown = 0f;   // dormant: the dive-lock (see CharacterMotor.BeginDive) is the limiter now, not a timer. Kept at 0 so the existing cooldown gate/HUD plumbing is a harmless no-op.
+    // Committed dive tuning (consumed by TagAgent.TryLunge -> CharacterMotor.BeginDive):
+    public float diveSpeed = 9f;          // horizontal speed the dive redirects momentum to (sprint is 7); arriving faster is preserved instead
+    public float diveDuration = 0.8f;     // locked-in dive window; also the tagger contact-tag window (kept == CharacterAnimatorBridge.DiveHoldSeconds so the roll animation and the lock end together)
+    public float diveRecovery = 0.35f;    // ease speed back down to pre-dive speed over this — zero net momentum gain
+    public float diveSteeringScale = 0.15f; // steering authority during the dive (committed, minimal correction)
 
     /// <summary>Tag reach radius is a binary still-vs-moving check, not a continuous function of speed — sprinting or jumping shouldn't extend it beyond the same "moving" value.</summary>
     [Header("Tag reach")]
@@ -69,8 +79,8 @@ public sealed class TagRulesConfig : ScriptableObject
     [Header("Trash")]
     public int trashPointsToWin = 3;    // team trash points for an instant runner win
     public int activeCanCount = 3;      // random subset of CanAnchors activated per round
-    public float eatRadius = 1.6f;      // runner must be within this of a can to eat
-    public float eatMaxSpeed = 0.6f;    // and moving slower than this (stand-still channel)
+    public float canMinSpacing = 12f;   // min XZ distance between two active bins each round
+    public float eatRadius = 1.6f;      // runner must be within this of a can to eat (proximity only — no stand-still gate)
     public float eatDurationSmall = 2.5f; // tier-1 small can eat time (+1 pt)
     public float eatDurationLarge = 5f;   // tier-2 dumpster eat time (+2 pts)
 }

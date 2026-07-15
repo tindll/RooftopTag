@@ -50,6 +50,29 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
     const int SlideFirstFrame = 10; // first frame of the low-glide plateau (settled deep crouch)
     const int SlideLastFrame = 22;  // last plateau frame before the stand-up recovery (f23+) begins
 
+    // Dive Roll trim knobs. The Mixamo clip is 118 frames (30fps). Per-frame Hips/Head world-Y and
+    // Hips world-Z forward displacement, measured by CharacterPreviewShot.DiveFrames (humanoid-
+    // retargeted onto the raccoon, raw untrimmed clip):
+    //   frames   0- 19  frozen standing idle    (hipsY 0.430, headY 0.75, fwdDisp ~0.000 — no motion)
+    //   frames  20- 41  coil/windup crouch      (hipsY 0.43 -> 0.30, slight BACKWARD lean, fwdDisp
+    //                                            down to -0.098 at f28-30, back to -0.013 at f41)
+    //   frames  42- 84  explosive launch + roll (fwdDisp 0.01 -> 1.52; hips bottom out ~0.04-0.07 at
+    //                                            f70-75, the tucked mid-roll; forward travel plateaus
+    //                                            by f84 — velocity/frame ~0 from here on)
+    //   frames  85-108  stand-up recovery       (hipsY 0.09 -> 0.425, headY 0.09 -> 0.746, rising to
+    //                                            the idle pose)
+    //   frames 108- 118  frozen idle-settle tail (hipsY/headY static ~0.425/0.746 — dead time)
+    // The naive "prep ends ~20" guess lands on the frozen-idle boundary, but frames 20-41 are a
+    // windup coil that still has ~zero (even slightly NEGATIVE) forward displacement — including it
+    // burns budget on a backward lean with no dive motion. Cut instead at the BOTTOM of the coil
+    // (f41, the deepest crouch, right before fwdDisp turns positive and the launch fires) so the
+    // trim opens on a loaded launch pose, not a standing idle. Cut the tail at f108 where hips/head
+    // height and forward travel have fully plateaued (matches f108-118 numbers) — the frames after
+    // that are a dead idle hold, not part of the roll. Re-render via DiveFrames if retuning.
+    const string DiveClip = "X Bot@Dive Roll";
+    const int DiveFirstFrame = 41;  // bottom of the launch coil, just before forward motion begins
+    const int DiveLastFrame = 108;  // upright recovery complete, before the dead idle-settle tail
+
     // Static prop bins living under the Characters folder — no skeleton/animation, must stay
     // Generic or Unity throws trying to build a Humanoid avatar for them.
     static readonly HashSet<string> StaticPropBins = new() { "big_bin", "small_bin" };
@@ -75,6 +98,13 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
                 // (loopPose serializes as loopBlend in the .meta). See SlideFirst/LastFrame notes.
                 clips[i].loopTime = true;
                 clips[i].loopPose = true;
+            }
+            else if (fileName == DiveClip)
+            {
+                clips[i].firstFrame = DiveFirstFrame;
+                clips[i].lastFrame = DiveLastFrame;
+                // ONE-SHOT: the dive is a committed lunge, not a cycle — do NOT set loopTime/loopPose.
+                // loop is already false here (Dive Roll isn't in LoopClips).
             }
         }
         if (clips.Length > 0)

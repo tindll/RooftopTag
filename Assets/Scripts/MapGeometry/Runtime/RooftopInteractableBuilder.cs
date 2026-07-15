@@ -121,8 +121,8 @@ public static class RooftopInteractableBuilder
     /// config at runtime anyway, so these are just the component's static value/duration.</summary>
     private static void BuildTrashCan(Transform root, Vector3 pos, int tier)
     {
-        (GameObject canRoot, GameObject glow) = TagArenaMapGeometry.BuildTrashCanVisual(root, pos, tier);
+        (GameObject canRoot, GameObject body, GameObject zone) = TagArenaMapGeometry.BuildTrashCanVisual(root, pos, tier);
         canRoot.AddComponent<TrashCanInteractable>()
-            .Initialize(tier, tier == 2 ? 5f : 2.5f, tier == 2 ? 2 : 1, glow);
+            .Initialize(tier, tier == 2 ? 5f : 2.5f, tier == 2 ? 2 : 1, body, zone);
     }
 }

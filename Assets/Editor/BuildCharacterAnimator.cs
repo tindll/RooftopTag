@@ -85,16 +85,21 @@ public static class BuildCharacterAnimator
         // Front flip: replaces the normal jump/fall pose while airborne. Driven by CharacterAnimatorBridge,
         // which sets the Flipping bool the moment a runner double-jumps (and holds it for the clip length).
         var frontFlip = Simple(sm, "FrontFlip", Clip("X Bot@Front Flip", "Front Flip"));
-        frontFlip.speed = 2f; // sped up so the flip snaps to the double-jump instead of lazily rolling
+        frontFlip.speed = 1.6f; // sped up so the flip snaps to the double-jump, but eased back a touch from 2x per feel-test
 
         // Dive roll: a tagger's committed lunge. Driven by the bridge's Diving bool (held for the clip
         // length) so the grounded/airborne AnyState transitions can't yank it back mid-roll.
         // Prefer the dedicated "X Bot@Dive Roll" clip (a real forward dive) over the old
         // Stand-To-Roll stopgap; the stopgaps stay as fallbacks so Clip() self-heals if it's removed.
         var diveRoll = Simple(sm, "DiveRoll", Clip("X Bot@Dive Roll", "X Bot@Stand To Roll", "Dive Roll"));
-        // Dive Roll already launches forward, so it needs far less speed-up than the from-standing
-        // Stand-To-Roll did (2f). 1.4x keeps it a snappy committed lunge without looking frantic.
-        diveRoll.speed = 1.4f;
+        // Dive Roll is import-trimmed (CharacterImportPostprocessor: DiveFirstFrame=41, DiveLastFrame=108,
+        // 67 frames @30fps = 2.233s) to the launch-coil-bottom through upright-recovery window, cutting
+        // the frozen standing wind-up (f0-19) and the dead idle-settle tail (f108-118). The motor's
+        // committed dive window is a fixed 0.8s (diveDuration / CharacterAnimatorBridge.DiveHoldSeconds),
+        // so the trimmed clip must be played back at trimmedSeconds/0.8 to land the whole roll inside
+        // that window: 2.233s / 0.8s ≈ 2.79x. (If the trim length or the dive window changes, recompute
+        // this from the new frame range / window — it is NOT a fixed constant.)
+        diveRoll.speed = 2.233f / 0.8f;
 
         sm.defaultState = grounded;
 
@@ -144,6 +149,8 @@ public static class BuildCharacterAnimator
         t.duration = 0.08f;
         t.canTransitionToSelf = false;
         t.AddCondition(AnimatorConditionMode.Equals, stateValue, "MotorState");
+        // Never interrupt a committed dive roll — same guard as groundT (Bug C).
+        t.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
     }
 
     // Airborne (MotorState == 2) split by the Flipping bool so the flip and the normal fall/jump
@@ -156,6 +163,9 @@ public static class BuildCharacterAnimator
         t.canTransitionToSelf = false;
         t.AddCondition(AnimatorConditionMode.Equals, 2, "MotorState");
         t.AddCondition(flipping ? AnimatorConditionMode.If : AnimatorConditionMode.IfNot, 0, "Flipping");
+        // Never interrupt a committed dive roll — same guard as groundT (Bug C). A dive that goes
+        // airborne (e.g. off a ledge) must finish its roll pose, not snap to the jump/fall blend.
+        t.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
     }
 
     // Returns the first candidate clip that exists on disk. Later candidates are stopgaps for a

@@ -81,9 +81,9 @@ public sealed class TagAgent : MonoBehaviour
     private float _lungeCooldownRemaining;
     private float _graceRemaining;
 
-    // Contact tagging is enabled only during the brief window after a lunge, and only for the first
-    // runner touched — a committed dive that connects tags, but merely brushing someone otherwise does not.
-    private const float LungeTagWindow = 0.45f;
+    // Contact tagging is enabled only during the committed-dive window after a lunge (armed to
+    // _config.diveDuration), and only for the first runner touched — a dive that connects tags, but
+    // merely brushing someone otherwise does not.
     private float _lungeTagWindowRemaining;
     private bool _lungeTagUsed;
 
@@ -95,7 +95,6 @@ public sealed class TagAgent : MonoBehaviour
     private LineRenderer? _reachRing;
     private static AudioClip? _boopClip;
     private static AudioClip? _convertedClip;
-    private static AudioClip? _lungeWhooshClip;
 
     // Landing feedback: a brief squash-and-stretch pulse on the body plus a soft thump, gated by
     // CharacterMotor's own minAirTimeForLandingEffects (the same gate camera shake uses) so tiny
@@ -346,7 +345,13 @@ public sealed class TagAgent : MonoBehaviour
         // start-grace window without touching normal mid-round lunging.
         if (_roundController != null && !_roundController.IsPastStartGrace) return;
 
-        // Any role may lunge — it's a movement/escape dash (same impulse + cooldown for a Runner as a
+        // The dive locks the character in for its whole active window (CharacterMotor.IsDiving), and
+        // that lock — not a cooldown timer — is the rate limiter now. Block re-entry while it runs so
+        // neither player nor bot can stack dives (BeginDive also no-ops, this just short-circuits the
+        // arm gesture / audio / tag-window re-arm too).
+        if (_motor.IsDiving) return;
+
+        // Any role may lunge — it's a movement/escape dash (a committed dive for a Runner as much as a
         // Tagger). Only a Tagger's lunge arms the contact-tag window below, so a Runner's dash can
         // never tag anyone. Both roles still pass through the cooldown/grace gates here.
         if (IsInGrace || _lungeCooldownRemaining > 0f)
@@ -358,9 +363,11 @@ public sealed class TagAgent : MonoBehaviour
             return;
         }
 
-        float impulseMagnitude = _config.lungeBaseImpulse + _motor.CurrentSpeed * _config.lungeVelocityScale;
-        _motor.AddImpulse(_motor.transform.forward * impulseMagnitude);
-        _lungeCooldownRemaining = _config.lungeCooldown;
+        // Committed dive: CharacterMotor redirects existing momentum forward, locks the character in
+        // for diveDuration, then eases the speed cap back to the pre-dive speed over diveRecovery —
+        // never netting speed. The dive-lock replaces the old cooldown as the rate limiter.
+        _motor.BeginDive(_config.diveSpeed, _config.diveDuration, _config.diveRecovery, _config.diveSteeringScale);
+        _lungeCooldownRemaining = _config.lungeCooldown; // 0 now — harmless no-op, keeps the HUD/gate plumbing wired
         Lunged?.Invoke(); // drives the dive-roll animation on the model (no-op for the capsule fallback)
 
         // Dive gesture: both arms thrust fully forward and hold out through the lunge before easing
@@ -374,14 +381,9 @@ public sealed class TagAgent : MonoBehaviour
 
         if (Role == Role.Tagger)
         {
-            _lungeTagWindowRemaining = LungeTagWindow; // arm contact-tag for the dive
+            _lungeTagWindowRemaining = _config.diveDuration; // arm contact-tag for exactly the dive's locked-in window
             _lungeTagUsed = false;
         }
-
-        // Local player's lunge whoosh — rising pitch-sweep. Bots also call TryLunge in the headless
-        // harness, so gate on local-player + graphics (same guard as OnLanded ~:171).
-        if (_isLocalPlayer && SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
-            AudioSource.PlayClipAtPoint(GetLungeWhooshClip(), transform.position);
     }
 
     // Contact tag — active ONLY during the lunge window, and only the first runner touched per lunge.
@@ -733,28 +735,4 @@ public sealed class TagAgent : MonoBehaviour
 
     /// <summary>Local player's lunge "whoosh": a rising pitch-SWEEP sine (phase-accumulated like the
     /// landing thump's sweep, not noise). Static-cached like GetBoopClip.</summary>
-    private static AudioClip GetLungeWhooshClip()
-    {
-        if (_lungeWhooshClip != null) return _lungeWhooshClip;
-
-        const int sampleRate = 44100;
-        const float duration = 0.2f;
-        const float startFrequency = 300f;
-        const float endFrequency = 1200f; // pitch rises through the clip for a "whoosh"
-        int sampleCount = Mathf.CeilToInt(sampleRate * duration);
-        var samples = new float[sampleCount];
-        float phase = 0f;
-        for (int i = 0; i < sampleCount; i++)
-        {
-            float t = i / (float)sampleCount;
-            float frequency = Mathf.Lerp(startFrequency, endFrequency, t);
-            phase += frequency / sampleRate;
-            float envelope = Mathf.Sin(Mathf.PI * t); // fade in/out so it doesn't click
-            samples[i] = Mathf.Sin(2f * Mathf.PI * phase) * envelope * 0.4f;
-        }
-
-        _lungeWhooshClip = AudioClip.Create("LungeWhoosh", sampleCount, 1, sampleRate, false);
-        _lungeWhooshClip.SetData(samples, 0);
-        return _lungeWhooshClip;
-    }
 }

@@ -4,17 +4,27 @@ using UnityEngine;
 
 namespace Game.Movement;
 
-/// <summary>Per-can state holder for a trash can pickup: tier/value/eat-duration plus round state (active/eaten/progress) and its glow visual.</summary>
+/// <summary>Per-can state holder for a trash can pickup: tier/value/eat-duration plus round state
+/// (active/eaten/progress) and its visuals. The bin body + ground eat-zone disc are shown ONLY while
+/// this can is an active objective, so a bin appears only where there is a live objective — inactive
+/// and eaten cans hide entirely (body, zone, and the solid root collider).</summary>
 public sealed class TrashCanInteractable : MonoBehaviour
 {
-    private GameObject? _glowVisual;
+    private GameObject? _body;
+    private GameObject? _zone;
+    private Collider? _rootCollider;
 
-    public void Initialize(int tier, float eatDuration, int value, GameObject? glowVisual)
+    public void Initialize(int tier, float eatDuration, int value, GameObject? body, GameObject? zone)
     {
         Tier = tier;
         EatDuration = eatDuration;
         Value = value;
-        _glowVisual = glowVisual;
+        _body = body;
+        _zone = zone;
+        // Prefab-path bins carry their solid collider on this root object; primitive fallbacks carry
+        // it on the body child (hidden with the body). Grabbing it here lets SetVisible drop the
+        // physical obstacle too, so a hidden inactive can is not an invisible wall.
+        _rootCollider = GetComponent<Collider>();
     }
 
     public bool IsActive { get; private set; }
@@ -30,7 +40,7 @@ public sealed class TrashCanInteractable : MonoBehaviour
         IsActive = true;
         IsEaten = false;
         Progress = 0f;
-        SetGlow(true);
+        SetVisible(true);
     }
 
     public void ResetForRound()
@@ -38,7 +48,7 @@ public sealed class TrashCanInteractable : MonoBehaviour
         IsActive = false;
         IsEaten = false;
         Progress = 0f;
-        SetGlow(false);
+        SetVisible(false);
     }
 
     public void MarkEaten()
@@ -46,11 +56,13 @@ public sealed class TrashCanInteractable : MonoBehaviour
         IsActive = false;
         IsEaten = true;
         Progress = 1f;
-        SetGlow(false);
+        SetVisible(false);
     }
 
-    private void SetGlow(bool on)
+    private void SetVisible(bool on)
     {
-        if (_glowVisual != null) _glowVisual.SetActive(on);
+        if (_body != null) _body.SetActive(on);
+        if (_zone != null) _zone.SetActive(on);
+        if (_rootCollider != null) _rootCollider.enabled = on;
     }
 }

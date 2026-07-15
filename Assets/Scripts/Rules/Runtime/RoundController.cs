@@ -2,6 +2,7 @@
 
 using System.Collections.Generic;
 using Game.CameraSystem;
+using Game.MapGeometry;
 using Game.Movement;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -229,10 +230,13 @@ public sealed class RoundController : MonoBehaviour
         AssignRoles();
     }
 
-    // Rebuild the trash objective for the round: find every can, reset them all, then activate a random
-    // subset of size min(activeCanCount, canCount). A plain Fisher-Yates over the found list before taking
-    // the first N gives a tier mix for free. Scenes with no cans leave _activeCans empty → the objective
-    // no-ops everywhere it's read.
+    // Rebuild the trash objective for the round: find every can, reset them all, then pick a random
+    // subset of size min(activeCanCount, canCount) — a plain Fisher-Yates over the found list before
+    // taking the first N gives a tier mix for free. Each picked can is then TELEPORTED to a freshly
+    // sampled position (TrashCanPlacement.SampleSpots — min-spaced, clear of link corridors/spawns)
+    // before being shown, so active bins land at fresh spots across the rooftops every round instead
+    // of the same fixed RooftopArena.CanAnchors positions. Scenes with no cans leave _activeCans
+    // empty → the objective no-ops everywhere it's read.
     private void SetupTrashCans()
     {
         _trashPoints = 0;
@@ -249,8 +253,10 @@ public sealed class RoundController : MonoBehaviour
         }
 
         int activateCount = Mathf.Min(_config.activeCanCount, _cans.Count);
+        List<Vector3> spots = TrashCanPlacement.SampleSpots(activateCount, _config.canMinSpacing);
         for (int i = 0; i < activateCount; i++)
         {
+            _cans[i].transform.position = spots[i];
             _cans[i].Activate();
             _activeCans.Add(_cans[i]);
         }
@@ -359,7 +365,9 @@ public sealed class RoundController : MonoBehaviour
             return;
         }
 
-        _timeRemaining -= Time.deltaTime;
+        // Unlimited-time mode (free-roam testing): freeze the clock at its start value so it never
+        // expires AND never crosses into the late-game speed ramp below — the HUD shows it as ∞.
+        if (!_config.unlimitedTime) _timeRemaining -= Time.deltaTime;
 
         float multiplier = 1f;
         if (_timeRemaining <= _config.lateGamePhaseDuration)
@@ -411,7 +419,8 @@ public sealed class RoundController : MonoBehaviour
         }
 
         // Trash-can objective, checked BEFORE the tag/timer win checks. Per active can, the single nearest
-        // eligible Runner standing still (speed < eatMaxSpeed) within eatRadius fills it — going per-can
+        // eligible Runner within eatRadius fills it — no stand-still requirement, just proximity (per
+        // feel-test: having to stop dead at a can felt bad; being near it is enough). Going per-can
         // means two Runners can never both fill the same can (the nearest owns it). Reaching
         // trashPointsToWin is an instant Runner win. No cans → the loop is empty and this is a no-op.
         // Iterate backwards so an eaten can can be removed from _activeCans in place.
@@ -434,8 +443,8 @@ public sealed class RoundController : MonoBehaviour
                     }
                 }
 
-                // No runner in range, or the owner is moving too fast: channel breaks, reset it.
-                if (nearestRunner == null || nearestRunner.Motor.CurrentSpeed >= _config.eatMaxSpeed)
+                // No runner in range: channel breaks, reset it.
+                if (nearestRunner == null)
                 {
                     can.Progress = 0f;
                     continue;
@@ -463,7 +472,7 @@ public sealed class RoundController : MonoBehaviour
             return;
         }
 
-        if (_timeRemaining <= 0f)
+        if (!_config.unlimitedTime && _timeRemaining <= 0f)
             EndRound($"Runners win! {runnersRemaining} survived.");
 
         if (_minimapCamera != null && _localPlayerAgent != null)
@@ -564,7 +573,7 @@ public sealed class RoundController : MonoBehaviour
     private void DrawTimer()
     {
         int clamped = Mathf.Max(0, Mathf.FloorToInt(_timeRemaining));
-        string text = $"{clamped / 60:00}:{clamped % 60:00}";
+        string text = _config.unlimitedTime ? "∞" : $"{clamped / 60:00}:{clamped % 60:00}";
 
         Color color = HudCream;
         if (!_roundOver && _config.lateGamePhaseDuration > 0f && _timeRemaining <= _config.lateGamePhaseDuration)
@@ -580,10 +589,12 @@ public sealed class RoundController : MonoBehaviour
         GUI.Label(panel, text, _timerStyle);
     }
 
-    // Trash objective HUD, just below the timer. Runner-side: TRASH n/target plus a thin fill bar for
-    // the can the local player is currently eating. Tagger-side: a warning banner while any Runner is
-    // mid-eat. No cans and no points scored → nothing draws. (Local player null in headless self-play is
-    // treated as Runner-side, but OnGUI doesn't render there anyway.)
+    // Trash objective HUD, next to the timer. Runner-side: a row of small bin icons — one per point
+    // needed to win (_config.trashPointsToWin) — greyed-out when unfilled and turning HudCream as
+    // points are captured (filled count = _trashPoints), plus a thin fill bar under the row for the
+    // can the local player is currently eating. Tagger-side: a warning banner while any Runner is
+    // mid-eat (unchanged). No cans and no points scored → nothing draws. (Local player null in
+    // headless self-play is treated as Runner-side, but OnGUI doesn't render there anyway.)
     private void DrawTrashObjective()
     {
         if (_activeCans.Count == 0 && _trashPoints == 0) return;
@@ -592,16 +603,30 @@ public sealed class RoundController : MonoBehaviour
 
         if (localIsRunner)
         {
-            const float w = 150f, h = 26f;
-            var rect = new Rect((Screen.width - w) * 0.5f, 58f, w, h);
-            DrawPanel(rect, HudPanel);
-            _youStyle!.normal.textColor = HudHorizon;
-            GUI.Label(rect, $"TRASH {_trashPoints}/{_config.trashPointsToWin}", _youStyle);
+            // Anchored off DrawTimer's panel (Rect((Screen.width - 150) * 0.5f, 8f, 150f, 46f)) —
+            // nothing else draws near top-center (the minimap sits top-RIGHT with its own margin, the
+            // lunge spinner is screen-center vertically, not top), so the icon row sits immediately to
+            // its right, vertically centered against the timer panel's height.
+            const float timerW = 150f, timerH = 46f;
+            var timerPanel = new Rect((Screen.width - timerW) * 0.5f, 8f, timerW, timerH);
+
+            const float iconW = 20f, iconH = 24f, iconGap = 6f;
+            int target = _config.trashPointsToWin;
+            float rowWidth = target * iconW + Mathf.Max(0, target - 1) * iconGap;
+            float startX = timerPanel.xMax + 12f;
+            float rowY = timerPanel.y + (timerPanel.height - iconH) * 0.5f;
+
+            for (int i = 0; i < target; i++)
+            {
+                var iconRect = new Rect(startX + i * (iconW + iconGap), rowY, iconW, iconH);
+                Color color = i < _trashPoints ? HudCream : new Color(1f, 1f, 1f, 0.22f);
+                DrawBinIcon(iconRect, color);
+            }
 
             float progress = LocalEatingProgress();
             if (progress > 0f)
             {
-                var barBg = new Rect(rect.x, rect.yMax + 4f, w, 6f);
+                var barBg = new Rect(startX, rowY + iconH + 4f, rowWidth, 6f);
                 DrawPanel(barBg, new Color(0f, 0f, 0f, 0.5f));
                 DrawPanel(new Rect(barBg.x, barBg.y, barBg.width * Mathf.Clamp01(progress), barBg.height), HudRimOrange);
             }
@@ -614,6 +639,22 @@ public sealed class RoundController : MonoBehaviour
             _bannerStyle!.normal.textColor = _config.taggerColor;
             GUI.Label(rect, "THE RACCOON IS EATING", _bannerStyle);
         }
+    }
+
+    /// <summary>Small bin glyph — a thin, full-width "lid" rect over a narrower, inset "body" rect
+    /// (the width difference reads as a taper hint) — drawn with the same DrawPanel (GUI.color +
+    /// Texture2D.whiteTexture) idiom as the rest of this IMGUI HUD, no bespoke texture needed for a
+    /// shape this simple.</summary>
+    private static void DrawBinIcon(Rect rect, Color color)
+    {
+        float lidHeight = Mathf.Round(rect.height * 0.22f);
+        var lid = new Rect(rect.x, rect.y, rect.width, lidHeight);
+        DrawPanel(lid, color);
+
+        const float bodyInset = 2f;
+        var body = new Rect(rect.x + bodyInset * 0.5f, rect.y + lidHeight + 1f,
+            rect.width - bodyInset, rect.height - lidHeight - 1f);
+        DrawPanel(body, color);
     }
 
     // Highest fill among active cans within eatRadius of the local player — the can their bar tracks.

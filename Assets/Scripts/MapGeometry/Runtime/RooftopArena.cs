@@ -222,8 +222,8 @@ public static class RooftopArena
         (new Vector3(  2.5f, 4.1f, 13f), 1), // Roof_N1 — central, exposed (spawn roof → offset +x)
         (new Vector3(-26f, 4.2f,  2.5f), 1), // Roof_W2 — west street
         (new Vector3( 15f, 3.2f,-13f), 1),  // Roof_E1S — southeast (spawn roof → offset +x)
-        (new Vector3(-29f, 1.7f,-14f), 2),  // Con_Yard — construction pit dumpster (enclosed, low)
-        (new Vector3(-35f, 2.2f,-27f), 2),  // Con_Alley — long SW alley dumpster
+        (new Vector3(-29f, 1.7f,-14f), 1),  // Con_Yard — construction pit (enclosed, low) — small can for now
+        (new Vector3(-35f, 2.2f,-27f), 1),  // Con_Alley — long SW alley — small can for now
         (new Vector3(  2.5f, 3.2f,-26f), 1), // Roof_S2 — south row
     };
 

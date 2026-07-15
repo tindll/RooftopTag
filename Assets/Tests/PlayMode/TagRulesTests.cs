@@ -61,10 +61,12 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator Runner_CanLunge_ButOpensNoTagWindowAndTagsNobody()
     {
-        // The lunge is now available to Runners too, as a pure movement/escape dash — but a
-        // Runner's lunge must never be able to tag: it should apply the same velocity impulse
-        // (proving the dash itself works for a Runner) while leaving the contact-tag window closed,
-        // so colliding with another Runner mid-dive tags nobody.
+        // The lunge is now available to Runners too, as a pure movement/escape dash — a committed
+        // dive (CharacterMotor.BeginDive) that redirects momentum forward. A Runner's dive must never
+        // be able to tag: it redirects speed (proving the dash works for a Runner, here from a
+        // standstill the burst goes to diveSpeed) while leaving the contact-tag window closed, so
+        // colliding with another Runner mid-dive tags nobody. It also locks the character in — a
+        // second lunge while already diving is a no-op (the dive-lock is the rate limiter now).
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
 
@@ -78,11 +80,16 @@ public sealed class TagRulesTests
         runnerA.TryLunge();
         float speedAfter = aMotor.CurrentSpeed;
 
+        // Re-lunge while the dive is still locked in must be a full no-op (velocity unchanged).
+        Assert.IsTrue(aMotor.IsDiving, "A lunge should begin a committed dive window.");
+        runnerA.TryLunge();
+        Assert.AreEqual(speedAfter, aMotor.CurrentSpeed, 0.0001f, "Re-lunging while already diving must be a no-op — the dive-lock is the rate limiter.");
+
         yield return new WaitForFixedUpdate();
         yield return new WaitForFixedUpdate();
 
         Debug.Log($"METRIC runner_lunge_speed_delta={speedAfter - speedBefore:0.00} runner_b_role={runnerB.Role}");
-        Assert.Greater(speedAfter - speedBefore, 0f, "A Runner's lunge should still apply a velocity impulse — it's a movement dash, not a no-op.");
+        Assert.Greater(speedAfter - speedBefore, 0f, "A Runner's dive should redirect momentum to the dive speed — it's a movement dash, not a no-op.");
         Assert.AreEqual(Role.Runner, runnerB.Role, "A Runner's lunge must never tag another Runner it collides with.");
         Assert.AreEqual(Role.Runner, runnerA.Role, "Lunging does not change the lunging agent's own role.");
         Assert.IsFalse(runnerB.IsInGrace, "No conversion grace should start — nobody was tagged.");

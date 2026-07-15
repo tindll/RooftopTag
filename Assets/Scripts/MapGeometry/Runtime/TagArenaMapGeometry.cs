@@ -160,23 +160,25 @@ public static class TagArenaMapGeometry
 
     /// <summary>
     /// Trash can prop: a solid-collider BODY (cans are physical obstacles, so unlike
-    /// <see cref="BuildClimbPipeVisual"/> its collider is kept, not stripped) plus a small emissive
-    /// GLOW marker on top that RoundController toggles as a findability cue. The body prefers a
-    /// rigged mesh from Resources, bounds-scaled to a target height exactly like
+    /// <see cref="BuildClimbPipeVisual"/> its collider is kept, not stripped) plus a flat ZONE disc
+    /// on the ground marking the eat radius — the "stay in the zone to eat" area made visible.
+    /// RoundController shows the body+zone only on the cans it activates as objectives (and hides them
+    /// again when eaten), so a bin appears only where there is a live objective. The body prefers a
+    /// mesh from Resources, bounds-scaled to a target height exactly like
     /// <see cref="Game.Movement.CharacterModelAttacher.Attach"/> scales character models; if the
     /// mesh is missing, a primitive fallback keeps headless self-play from ever depending on art
     /// assets being present.
     /// </summary>
     /// <param name="tier">2 = big dumpster (big_bin.fbx, 1.3m tall); anything else = small can
     /// (small_bin.fbx, 0.9m tall).</param>
-    public static (GameObject root, GameObject glow) BuildTrashCanVisual(Transform? parent, Vector3 pos, int tier)
+    public static (GameObject root, GameObject body, GameObject zone) BuildTrashCanVisual(Transform? parent, Vector3 pos, int tier)
     {
         var root = new GameObject("TrashCan");
         if (parent != null) root.transform.SetParent(parent, false);
         root.transform.position = pos;
 
         float targetHeight = tier == 2 ? 1.3f : 0.9f;
-        float bodyTop; // body height above `pos`, so the glow can sit flush on top of it
+        GameObject body;
 
         var prefab = Resources.Load<GameObject>(tier == 2 ? "big_bin" : "small_bin");
         if (prefab != null)
@@ -185,20 +187,29 @@ public static class TagArenaMapGeometry
             model.name = "Body";
             model.transform.localPosition = Vector3.zero;
             model.transform.localRotation = Quaternion.identity;
+            body = model;
 
-            Renderer[] rends = model.GetComponentsInChildren<Renderer>();
-            if (rends.Length > 0)
+            // Measure from mesh geometry, NOT Renderer.bounds: this runs at scene-build time in
+            // BATCHMODE, where Renderer.bounds reads back near-zero (renderer bounds are only valid
+            // after a render frame, which a headless -quit build never runs). That near-zero read
+            // previously slipped under the size.y > 0.01f guard, skipped the scale-to-height step,
+            // and baked the bin at its ~1cm native scale — an invisible can. Mesh bounds are valid
+            // immediately, so the target-height scale is correct headlessly.
+            if (TryComputeMeshWorldBounds(model, out Bounds mb))
             {
                 // Tripo-style exports need a bounds-scale to hit a target height (same pattern as
-                // CharacterModelAttacher.Attach's ~1.8m character scale).
-                Bounds mb = rends[0].bounds;
-                foreach (Renderer r in rends) mb.Encapsulate(r.bounds);
-                if (mb.size.y > 0.01f) model.transform.localScale *= targetHeight / mb.size.y;
+                // CharacterModelAttacher.Attach's ~1.8m character scale). The bin FBXs import at a
+                // ~1cm native size, so the guard here must be a tiny divide-by-zero epsilon, NOT the
+                // old 0.01f — that threshold sat ABOVE the model's real height (~0.00998), skipped
+                // the scale-up, and baked an invisible 1cm can. Only a truly degenerate (zero) mesh
+                // is now rejected.
+                if (mb.size.y > 1e-4f) model.transform.localScale *= targetHeight / mb.size.y;
 
                 // Recompute post-scale bounds and lift the model so its mesh BASE (not necessarily
-                // its pivot) sits on `pos`, then size a physical collider to match.
-                mb = rends[0].bounds;
-                foreach (Renderer r in rends) mb.Encapsulate(r.bounds);
+                // its pivot) sits on `pos`, then size a physical collider to match. The collider goes
+                // on ROOT (unscaled, at pos) so it is not warped by the model's bounds-scale — and so
+                // RoundController can toggle it via the root Collider when hiding an inactive can.
+                TryComputeMeshWorldBounds(model, out mb);
                 float lift = pos.y - mb.min.y;
                 model.transform.position += Vector3.up * lift;
                 mb.center += Vector3.up * lift;
@@ -209,19 +220,13 @@ public static class TagArenaMapGeometry
                     col.center = mb.center - pos;
                     col.size = mb.size;
                 }
-                bodyTop = mb.max.y - pos.y;
-            }
-            else
-            {
-                bodyTop = targetHeight; // no renderers to measure; trust the requested height
             }
         }
         else if (tier == 2)
         {
             // Fallback dumpster box — headless/self-play must never depend on the mesh.
             Vector3 size = new(1.4f, 1.3f, 1.0f);
-            CreateBox("Body", root.transform, pos + Vector3.up * (size.y * 0.5f), size, SurfaceRole.WallBody);
-            bodyTop = size.y;
+            body = CreateBox("Body", root.transform, pos + Vector3.up * (size.y * 0.5f), size, SurfaceRole.WallBody);
         }
         else
         {
@@ -235,15 +240,76 @@ public static class TagArenaMapGeometry
             can.transform.localScale = new Vector3(diameter, height * 0.5f, diameter);
             can.GetComponent<Renderer>().sharedMaterial = GetMaterial(SurfaceRole.WallBody);
             // Cylinder's auto-added CapsuleCollider is left in place (solid, not a trigger).
-            bodyTop = height;
+            body = can;
         }
 
-        Vector3 glowSize = new(0.4f, 0.15f, 0.4f);
-        Vector3 glowCenter = pos + Vector3.up * (bodyTop + glowSize.y * 0.5f);
-        GameObject glow = CreateBox("TrashCanGlow", root.transform, glowCenter, glowSize, SurfaceRole.Interactable);
-        StripCollider(glow);
+        GameObject zone = BuildEatZoneDisc(root.transform, pos);
+        return (root, body, zone);
+    }
 
-        return (root, glow);
+    // Eat-zone visual radius. Mirrors TagRulesConfig.eatRadius's default — this geometry has no config
+    // access (RoundController drives the actual eat check with its own config value), so keep the two
+    // in sync so the drawn zone matches the range that really counts as "eating".
+    private const float EatZoneRadius = 1.6f;
+
+    /// <summary>Flat emissive disc on the ground marking a can's eat radius — the "stay in the zone to
+    /// eat" area made visible, replacing the old floating glow box. Collider stripped (pure telegraph,
+    /// never physics).</summary>
+    private static GameObject BuildEatZoneDisc(Transform parent, Vector3 groundPos)
+    {
+        GameObject zone = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        zone.name = "TrashCanZone";
+        zone.transform.SetParent(parent, false);
+        // Unity's Cylinder is radius 0.5, 2m tall, origin-centred: scale x/z to the eat DIAMETER
+        // (radius/0.5 = radius*2) and y to a thin slab, lifted a hair off the roof so it never
+        // z-fights the surface it sits on.
+        zone.transform.position = groundPos + Vector3.up * 0.02f;
+        zone.transform.localScale = new Vector3(EatZoneRadius * 2f, 0.02f, EatZoneRadius * 2f);
+        zone.GetComponent<Renderer>().sharedMaterial = GetMaterial(SurfaceRole.Interactable);
+        StripCollider(zone);
+        return zone;
+    }
+
+    /// <summary>
+    /// World-space AABB of every mesh under <paramref name="go"/>, computed from mesh geometry
+    /// (<c>MeshFilter.sharedMesh</c> / <c>SkinnedMeshRenderer.sharedMesh</c>) rather than
+    /// <c>Renderer.bounds</c>. Renderer bounds are only computed after a render frame, so they read
+    /// back near-zero in BATCHMODE (headless scene builds that never render) — mesh bounds are
+    /// valid immediately, so this stays correct there. Returns false if no measurable mesh is found.
+    /// </summary>
+    private static bool TryComputeMeshWorldBounds(GameObject go, out Bounds bounds)
+    {
+        bounds = default;
+        bool any = false;
+
+        foreach (MeshFilter mf in go.GetComponentsInChildren<MeshFilter>())
+        {
+            if (mf.sharedMesh == null) continue;
+            Bounds world = TransformBounds(mf.transform.localToWorldMatrix, mf.sharedMesh.bounds);
+            if (!any) { bounds = world; any = true; } else bounds.Encapsulate(world);
+        }
+
+        foreach (SkinnedMeshRenderer smr in go.GetComponentsInChildren<SkinnedMeshRenderer>())
+        {
+            if (smr.sharedMesh == null) continue;
+            Bounds world = TransformBounds(smr.transform.localToWorldMatrix, smr.sharedMesh.bounds);
+            if (!any) { bounds = world; any = true; } else bounds.Encapsulate(world);
+        }
+
+        return any;
+    }
+
+    /// <summary>Transforms a local-space <see cref="Bounds"/> by <paramref name="m"/> into a world-space
+    /// AABB (extents summed via absolute per-axis contributions so rotation is handled correctly).</summary>
+    private static Bounds TransformBounds(Matrix4x4 m, Bounds local)
+    {
+        Vector3 center = m.MultiplyPoint3x4(local.center);
+        Vector3 e = local.extents;
+        Vector3 worldExtents = new(
+            Mathf.Abs(m.m00) * e.x + Mathf.Abs(m.m01) * e.y + Mathf.Abs(m.m02) * e.z,
+            Mathf.Abs(m.m10) * e.x + Mathf.Abs(m.m11) * e.y + Mathf.Abs(m.m12) * e.z,
+            Mathf.Abs(m.m20) * e.x + Mathf.Abs(m.m21) * e.y + Mathf.Abs(m.m22) * e.z);
+        return new Bounds(center, worldExtents * 2f);
     }
 
     public static void CreateRamp(Transform parent, string name, float zStart, float yStart, float length, float deltaY, float width, SurfaceRole role)

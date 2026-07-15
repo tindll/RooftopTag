@@ -62,6 +62,14 @@ public sealed class TagArenaBootstrap : MonoBehaviour
     /// </summary>
     public void ApplyTaggerCount(int newTaggerCount) => _tagConfig.taggerCount = newTaggerCount;
 
+    /// <summary>Current unlimited-time (free-roam) state — the main menu reads it to show the live value.</summary>
+    public bool UnlimitedTime => _tagConfig.unlimitedTime;
+
+    /// <summary>Toggles the free-roam "unlimited time" mode on the shared runtime config. Like
+    /// <see cref="ApplyTaggerCount"/>, RoundController reads the flag fresh each frame / on StartRound,
+    /// so the caller just follows this with StartRound().</summary>
+    public void ApplyUnlimitedTime(bool unlimited) => _tagConfig.unlimitedTime = unlimited;
+
     private void Awake()
     {
         var tagConfig = ScriptableObject.CreateInstance<TagRulesConfig>();
@@ -129,9 +137,10 @@ public sealed class TagArenaBootstrap : MonoBehaviour
                 // bootstrap has no config access yet, and RoundController re-drives progress with
                 // its own config at runtime anyway, so these are just the component's static
                 // value/duration.
-                GameObject? glow = marker.transform.Find("TrashCanGlow")?.gameObject;
+                GameObject? body = marker.transform.Find("Body")?.gameObject;
+                GameObject? zone = marker.transform.Find("TrashCanZone")?.gameObject;
                 marker.gameObject.AddComponent<TrashCanInteractable>()
-                    .Initialize(marker.tier, marker.tier == 2 ? 5f : 2.5f, marker.tier == 2 ? 2 : 1, glow);
+                    .Initialize(marker.tier, marker.tier == 2 ? 5f : 2.5f, marker.tier == 2 ? 2 : 1, body, zone);
             }
             else if (marker.kind == InteractableMarker.Kind.Ladder)
             {
