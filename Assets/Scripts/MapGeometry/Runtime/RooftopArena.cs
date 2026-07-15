@@ -286,8 +286,9 @@ public static class RooftopArena
     {
         new(11, new Vector3(-1f, 0f,  0f), -8f), // Roof_Tower  west  face (h9) — longest, ~17m into the void
         new(11, new Vector3( 0f, 0f,  1f), -8f), // Roof_Tower  north face — Tower's second exposed void face
-        new(10, new Vector3( 0f, 0f,  1f), -7f), // Roof_N2EE   north face (h7) — NE corner
-        new(10, new Vector3( 1f, 0f,  0f), -7f), // Roof_N2EE   east  face
+        new(10, new Vector3( 0f, 0f,  1f), -7f), // Roof_N2EE   north face (h7) — NE corner. (East face
+                                                 // pipe removed: the 10->30 ramp to East_Annex now runs
+                                                 // down that edge; north face keeps N2EE's void escape.)
         new( 6, new Vector3( 1f, 0f,  0f), -7f), // Roof_N1EE   east  face (h6)
         new(16, new Vector3(-1f, 0f,  0f), -7f), // Roof_N1WW   west  face (h6)
         new( 8, new Vector3( 0f, 0f,  1f), -7f), // Roof_N2     north face (h5)
@@ -361,6 +362,22 @@ public static class RooftopArena
             ladders.Add(VoidPipeAnchors(pipe));
 
         ValidateLadderRampClearance(ladders, ramps);
+
+        // Void pipes that run down a roof face a ramp also occupies clip visibly through the ramp
+        // (user report). The generic ladder/ramp check above loses which roof a pipe belongs to, so
+        // report it by roof + face here (2.0m catches edge-of-ramp clips the 1.5m half-width check
+        // misses) — each hit names a VoidPipes[] entry to relocate to a clear face or drop.
+        foreach (VoidPipe pipe in VoidPipes)
+        {
+            (_, Vector3 pipeTop, _) = VoidPipeAnchors(pipe);
+            foreach ((Vector3 foot, Vector3 top) ramp in ramps)
+            {
+                float d = DistancePointToSegmentXZ(pipeTop, ramp.foot, ramp.top);
+                if (d < 2.0f)
+                    Debug.LogWarning($"ROOFTOP_VOIDPIPE_RAMP_CLIP: pipe on {Roofs[pipe.Roof].Name} " +
+                        $"face ({pipe.Face.x:F0},{pipe.Face.z:F0}) is {d:F2}m from a ramp centre-line — relocate or remove.");
+            }
+        }
 
         // Physical props (AC units, vents) plus visual-only dressing — placement gated by the
         // nav-clearance rule so link corridors, graph anchors and spawn points stay free (see
@@ -528,20 +545,21 @@ public static class RooftopArena
         Vector3 upperEdge = RectEdgePoint(upper, -dir);
         Vector3 top = new(upperEdge.x, upper.Center.y, upperEdge.z);
 
-        // Fixed ~22° grade: run = rise / tan(22°) ≈ rise * 2.475. Shallower than the previous 30°
-        // (feel-test: 30° was noticeably harder to sprint up than the movement playground's ~22°
-        // corridor ramps, which walk up fine) — this is a geometry-only fix, no motor/slope-limit
-        // changes. Clamp so the ramp's foot stays over the lower roof (margin inside its far edge)
-        // — steeper than 22° only if the lower roof is too small to host the full run. Checked
-        // against every current ramp (2↔6, 17↔18, 18↔21, plus the new 0↔3, 20↔21, 23↔24 below):
-        // none hit the clamp, all six get the full 22° grade.
+        // Run length is the LONGER of two requirements:
+        //   1. Grade: run = rise / tan(22°) ≈ rise * 2.475 for the comfortable ~22° design grade.
+        //   2. Bridging: the ramp must physically REACH the lower roof. The top sits at the upper
+        //      roof's lip; if the gap to the lower roof is wider than the grade run, the foot lands
+        //      in the void short of the lower building — "ramps that just don't connect" (user). So
+        //      the run must span the inter-building gap plus ~1m onto the lower roof.
+        // Taking the max means bridging can only make a ramp SHALLOWER (longer), never steeper, and
+        // it always touches both buildings.
         const float maxSlopeRun = 2.475f; // 1/tan(22°)
-        float run = rise * maxSlopeRun;
+        Vector3 lowerEdge = RectEdgePoint(lower, dir);       // lower roof's near edge, toward the upper roof
+        Vector2 topXZ = new(top.x, top.z);
+        float gap = Vector2.Distance(topXZ, new Vector2(lowerEdge.x, lowerEdge.z)); // upper lip -> lower near edge
+        float run = Mathf.Max(rise * maxSlopeRun, gap + 1f); // +1m so the foot sits ON the lower roof
         Vector3 footFlat = new Vector3(top.x, 0f, top.z) - dir * run;
-        Vector3 lowerEdge = RectEdgePoint(lower, dir);
-        float maxReach = Vector3.Distance(new Vector3(lowerEdge.x, 0f, lowerEdge.z),
-                                          new Vector3(top.x, 0f, top.z))
-                         + Mathf.Min(lower.SizeX, lower.SizeZ) - 1f; // stay ≥1m inside the far edge
+        float maxReach = gap + Mathf.Min(lower.SizeX, lower.SizeZ) - 1f; // stay ≥1m inside the far edge
         if (run > maxReach) { run = maxReach; footFlat = new Vector3(top.x, 0f, top.z) - dir * run; }
         Vector3 foot = new(footFlat.x, lower.Center.y, footFlat.z);
 

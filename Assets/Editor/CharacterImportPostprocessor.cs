@@ -22,7 +22,7 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
         "X Bot@Left Strafe", "X Bot@Right Strafe",
         "X Bot@Falling Idle", "X Bot@Rope Swinging",
         "X Bot@Climbing Ladder", "X Bot@Freehang Climb",
-        "X Bot@Idle",
+        "X Bot@Idle", "Hanging Idle", "Crouching Idle",
         // Running Slide is NOT here — its loop flags are set explicitly in the slide branch below
         // (loopTime + loopPose on the tight low-glide window), not via this whole-clip loop set.
         // The old "never loop the slide" note stood because looping the whole 46-frame clip wrapped

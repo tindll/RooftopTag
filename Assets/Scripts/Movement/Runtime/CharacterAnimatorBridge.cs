@@ -23,10 +23,16 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     private static readonly int AirDivingId = Animator.StringToHash("AirDiving");
     private static readonly int FlippingId = Animator.StringToHash("Flipping");
     private static readonly int DivingId = Animator.StringToHash("Diving");
+    private static readonly int EatingId = Animator.StringToHash("Eating");
+    private static readonly int EatStopId = Animator.StringToHash("EatStop");
+    private static readonly int EatStartId = Animator.StringToHash("EatStart");
 
     // How long to hold the Flipping bool once a double-jump fires (a touch under the clip length so
     // it clears before landing). The flip now means exactly "double-jumped", not a random roll.
     private const float FlipHoldSeconds = 1.0f;
+    // Only front-flip on SOME double-jumps — with the lunge roll and landing roll, flipping every
+    // double-jump was too much rolling (user). Feel knob.
+    private const float FlipChance = 0.25f;
     // How long to hold the Diving bool after a lunge, so the dive-roll clip plays through. Must match
     // TagRulesConfig.diveDuration (the motor's committed-dive window) so the roll and the lock end together.
     private const float DiveHoldSeconds = 0.8f;
@@ -39,23 +45,38 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     private bool _diving;
     private float _diveTimer;
 
+    // Eating (bin objective): SetEating(true) is pushed each frame the agent fills a can. Eating is
+    // held true through the stand-up clip (EatStandUpHold) so the exit plays without the locomotion
+    // AnyState (guarded IfNot Eating) snatching it; EatStop pulses the loop→stand-up transition.
+    private const float EatStandUpHold = 0.7f; // ~ Crouched To Standing clip length
+    private bool _eatingTarget;
+    private bool _wasEatingTarget;
+    private bool _eatExiting;
+    private float _eatExitTimer;
+
     public void Configure(CharacterMotor motor, Animator animator)
     {
         _motor = motor;
         _animator = animator;
         _animator.applyRootMotion = false;
         _motor.DoubleJumped += OnDoubleJumped;
+        _motor.HardLanded += TriggerDiveRoll; // cosmetic parkour roll on a big landing (animation only)
     }
 
     private void OnDestroy()
     {
-        if (_motor != null) _motor.DoubleJumped -= OnDoubleJumped;
+        if (_motor != null)
+        {
+            _motor.DoubleJumped -= OnDoubleJumped;
+            _motor.HardLanded -= TriggerDiveRoll;
+        }
     }
 
     // Front-flip the moment a double-jump fires (runner-only, gated by the motor). The flip now maps
     // exactly to "double-jumped" instead of a random roll on every jump.
     private void OnDoubleJumped()
     {
+        if (Random.value > FlipChance) return; // flip only sometimes — avoid roll overload (user)
         _flipping = true;
         _flipTimer = FlipHoldSeconds;
     }
@@ -66,6 +87,10 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         _diving = true;
         _diveTimer = DiveHoldSeconds;
     }
+
+    /// <summary>Pushed each frame by RoundController (via TagAgent): true while this agent is filling a
+    /// trash can. Drives the crouch/rummage eat animation.</summary>
+    public void SetEating(bool eating) => _eatingTarget = eating;
 
     private void Update()
     {
@@ -84,6 +109,20 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
             _diveTimer -= Time.deltaTime;
             if (_diveTimer <= 0f) _diving = false;
         }
+        // Eating: a ONE-SHOT EatStart trigger drives the crouch-down on the rising edge — a trigger,
+        // NOT the held bool, because an AnyState transition gated on the bool re-fires every frame and
+        // loops Standing To Crouched forever. Eating stays true through the stand-up window
+        // (EatStandUpHold) so the exit clip isn't snatched by locomotion; EatStop drives loop→stand-up.
+        // Re-eating during the stand-up re-triggers a fresh crouch (rising edge again).
+        if (_eatingTarget && !_wasEatingTarget) _animator.SetTrigger(EatStartId);
+        if (_eatingTarget) { _eatExiting = false; _eatExitTimer = 0f; }
+        else if (_wasEatingTarget) { _eatExiting = true; _eatExitTimer = 0f; }
+        else if (_eatExiting)
+        {
+            _eatExitTimer += Time.deltaTime;
+            if (_eatExitTimer >= EatStandUpHold) _eatExiting = false;
+        }
+        _wasEatingTarget = _eatingTarget;
 
         _animator.SetFloat(SpeedId, _motor.CurrentSpeed);
 
@@ -99,5 +138,7 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         _animator.SetBool(AirDivingId, _motor.AirDiving);
         _animator.SetBool(FlippingId, _flipping);
         _animator.SetBool(DivingId, _diving);
+        _animator.SetBool(EatingId, _eatingTarget || _eatExiting); // held true through the stand-up
+        _animator.SetBool(EatStopId, _eatExiting);
     }
 }

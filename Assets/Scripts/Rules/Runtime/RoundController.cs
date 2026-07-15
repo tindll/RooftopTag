@@ -20,6 +20,8 @@ public sealed class RoundController : MonoBehaviour
 {
     private TagRulesConfig _config = null!;
     private readonly List<TagAgent> _agents = new();
+    // Agents filling a can this frame — drives their crouch/eat animation (broadcast after the eat loop).
+    private readonly HashSet<TagAgent> _eatersThisFrame = new();
     private readonly Dictionary<TagAgent, (Vector3 position, Quaternion rotation)> _spawnStates = new();
 
     // An agent below this height has fallen off the map: it respawns at its start, and a Runner is
@@ -294,8 +296,21 @@ public sealed class RoundController : MonoBehaviour
 
         for (int i = 0; i < shuffled.Count; i++)
         {
-            (Vector3 position, Quaternion rotation) = _spawnStates[shuffled[i]];
+            TagAgent agent = shuffled[i];
+            bool isPlayer = agent == _localPlayerAgent;
             bool isTagger = i < effectiveTaggerCount;
+
+            // Chase-me (forceRunner): the local player is the SOLE Runner. Any bot beyond the tagger
+            // count is BENCHED — deactivated, pulled out of play — instead of left as a Runner, so
+            // lowering the Chasers count actually removes bots from the map rather than turning the
+            // surplus into fellow runners (user: "changing the taggers changes the runners too").
+            // Every agent passes through SetActive here, so raising the count again re-activates the
+            // benched bots on the next round. Outside chase-me nothing benches (bench stays false).
+            bool bench = forceRunner && !isPlayer && !isTagger;
+            agent.gameObject.SetActive(!bench);
+            if (bench) continue;
+
+            (Vector3 position, Quaternion rotation) = _spawnStates[agent];
 
             // Found via self-play diagnostics: every single tag in a batch landed within ~8m of
             // spawn, all within a couple seconds of the round-start grace ending. Roles were
@@ -307,9 +322,9 @@ public sealed class RoundController : MonoBehaviour
             // Taggers, who already have distinct X from the spawn grid, still can't overlap.
             if (isTagger) position += TaggerSpawnBackOffset;
 
-            shuffled[i].Motor.ResetState(position, rotation);
-            shuffled[i].Motor.ExternalSpeedMultiplier = 1f;
-            shuffled[i].SetRole(isTagger ? Role.Tagger : Role.Runner, startGrace: false);
+            agent.Motor.ResetState(position, rotation);
+            agent.Motor.ExternalSpeedMultiplier = 1f;
+            agent.SetRole(isTagger ? Role.Tagger : Role.Runner, startGrace: false);
         }
     }
 
@@ -379,6 +394,10 @@ public sealed class RoundController : MonoBehaviour
         int runnersRemaining = 0;
         foreach (TagAgent agent in _agents)
         {
+            // Benched surplus bots (chase-me with fewer than max Chasers) are inactive and out of
+            // play — skip so they neither fall-respawn nor count toward runnersRemaining.
+            if (!agent.isActiveAndEnabled) continue;
+
             if (agent.transform.position.y < FallResetY
                 && _spawnStates.TryGetValue(agent, out (Vector3 pos, Quaternion rot) spawn))
             {
@@ -424,6 +443,7 @@ public sealed class RoundController : MonoBehaviour
         // means two Runners can never both fill the same can (the nearest owns it). Reaching
         // trashPointsToWin is an instant Runner win. No cans → the loop is empty and this is a no-op.
         // Iterate backwards so an eaten can can be removed from _activeCans in place.
+        _eatersThisFrame.Clear();
         if (IsPastStartGrace)
         {
             for (int i = _activeCans.Count - 1; i >= 0; i--)
@@ -450,6 +470,7 @@ public sealed class RoundController : MonoBehaviour
                     continue;
                 }
 
+                _eatersThisFrame.Add(nearestRunner); // drives this agent's crouch/eat animation
                 can.Progress += Time.deltaTime / can.EatDuration;
                 if (can.Progress >= 1f)
                 {
@@ -465,6 +486,10 @@ public sealed class RoundController : MonoBehaviour
                 }
             }
         }
+
+        // Push each agent's eating state to its animator bridge (crouch/rummage while filling a can).
+        foreach (TagAgent agent in _agents)
+            agent.SetEating(_eatersThisFrame.Contains(agent));
 
         if (runnersRemaining == 0)
         {
@@ -932,6 +957,7 @@ public sealed class RoundController : MonoBehaviour
         foreach (TagAgent agent in _agents)
         {
             if (agent == _localPlayerAgent) continue;
+            if (!agent.isActiveAndEnabled) continue; // benched chase-me surplus bots aren't on the map
 
             // Rotate the world-space offset into map space by -playerYaw so it matches the
             // rotated camera render: with the player facing world yaw θ, an agent directly ahead

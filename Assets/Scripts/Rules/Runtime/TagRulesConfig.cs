@@ -18,8 +18,12 @@ public sealed class TagRulesConfig : ScriptableObject
     /// wander the arena indefinitely with nothing hunting them. Toggled from the main menu.</summary>
     public bool unlimitedTime = false;
 
-    /// <summary>Current mode: the player is the runner and a single bot is the tagger chasing them.</summary>
-    public int taggerCount = 1;
+    /// <summary>Chase-me mode: the local player is the SOLE Runner and every bot is a Tagger. For the
+    /// 11-agent RooftopArena that's 10 chasers (1v10, matching roundDuration's design note). AssignRoles
+    /// clamps this to roster-1 on smaller scenes; the main menu's Chasers row can lower it (fewer
+    /// chasers leaves the surplus bots as fellow runners). Was briefly 1 during free-roam work, which
+    /// left 9 stray bot-runners — the "there are other runners" bug. Free-roam is 0 chasers via the menu.</summary>
+    public int taggerCount = 10;
     public int runnerCount = 1;
 
     /// <summary>Guarantees the local player is always assigned Tagger (useful while feel-testing tagger-specific mechanics like the lunge). Flip off for a "real" fully-random round.</summary>

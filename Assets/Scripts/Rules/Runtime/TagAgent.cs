@@ -81,6 +81,13 @@ public sealed class TagAgent : MonoBehaviour
     private float _lungeCooldownRemaining;
     private float _graceRemaining;
 
+    // Swallow a lunge press only for this long after spawn — kills the leaked main-menu PLAY /
+    // R-restart leftButton click on the round's first frame WITHOUT blocking the lunge for the whole
+    // round-start grace (which made the movement dash unavailable for ~3s, felt bad). An actual TAG
+    // still can't land during grace: OnCollisionEnter re-checks IsPastStartGrace independently.
+    private const float SpawnLungeSwallowSeconds = 0.25f;
+    private float _spawnTime = float.NegativeInfinity;
+
     // Contact tagging is enabled only during the committed-dive window after a lunge (armed to
     // _config.diveDuration), and only for the first runner touched — a dive that connects tags, but
     // merely brushing someone otherwise does not.
@@ -130,6 +137,7 @@ public sealed class TagAgent : MonoBehaviour
         _motor = motor;
         _bodyRenderer = bodyRenderer;
         _isLocalPlayer = isLocalPlayer;
+        _spawnTime = Time.time; // start the spawn-click swallow window (see SpawnLungeSwallowSeconds)
         _proceduralBody = proceduralBody;
         _bridge = bridge;
         _animController = animController;
@@ -335,15 +343,14 @@ public sealed class TagAgent : MonoBehaviour
     /// </summary>
     public void TryLunge()
     {
-        // Round-start grace: no lunge until past it, matching tags (TryTagInRange ~:460 and
-        // OnCollisionEnter ~:384 both gate on IsPastStartGrace). Root cause of the "lunge on spawn"
-        // bug: the local player's lunge is bound to <Mouse>/leftButton, so the main-menu PLAY click
-        // (or an R-restart click) leaks a leftButton press that fires TryLunge on the round's first
-        // frame. AssignRoles spawns with startGrace:false, so the IsInGrace gate below doesn't catch
-        // it. Harmless while runners couldn't dash; WP1 gave runners a dash, so it became a visible
-        // spawn-lunge. Gating here (a full no-op, like a grace denial) disallows it during the whole
-        // start-grace window without touching normal mid-round lunging.
-        if (_roundController != null && !_roundController.IsPastStartGrace) return;
+        // Swallow only the spawn-frame click, not the whole round-start grace. Root cause of the
+        // "lunge on spawn" bug: the local player's lunge is bound to <Mouse>/leftButton, so the
+        // main-menu PLAY click (or an R-restart click) leaks a leftButton press that fires TryLunge on
+        // the round's first frame. The old fix blocked lunging for the entire start grace (~3s), which
+        // also blocked the legitimate movement dash for that whole time (user: "can't lunge until ~4s
+        // in"). A brief post-spawn swallow eats the leaked click while leaving the dash available
+        // immediately after. A real TAG still can't land in grace — OnCollisionEnter re-checks it.
+        if (Time.time - _spawnTime < SpawnLungeSwallowSeconds) return;
 
         // The dive locks the character in for its whole active window (CharacterMotor.IsDiving), and
         // that lock — not a cooldown timer — is the rate limiter now. Block re-entry while it runs so
@@ -459,6 +466,10 @@ public sealed class TagAgent : MonoBehaviour
     }
 
     /// <summary>Explicit ranged tag attempt (right click / left trigger), tagging the nearest opposing agent if it's within <see cref="CurrentReachRadius"/> — no physical collision required.</summary>
+    /// <summary>Relays this agent's eating state to its animator bridge each frame (RoundController
+    /// drives it from the trash-can channel). Null-safe: a headless agent may have no bridge.</summary>
+    public void SetEating(bool eating) => _bridge?.SetEating(eating);
+
     public void TryTagInRange()
     {
         if (Role != Role.Tagger || IsInGrace) return;

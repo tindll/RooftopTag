@@ -56,6 +56,13 @@ public sealed class MovementConfig : ScriptableObject
         public float airDiveDownBoost;    // ...and a downward kick, to dive across/into gaps
         public float maxSlideDuration;    // force-exit a slide held this long, regardless of CTRL
         public float forcedExitCooldown;  // longer re-entry lockout specifically after a maxSlideDuration force-exit
+        // Anti-exploit chain limits (hold CTRL + jump-spam forever). maxSlideHops: consecutive slide-hops
+        // allowed before the next hop is denied and force-exited with forcedExitCooldown. slideChainResetGap:
+        // time (s) without sliding that counts as a genuine run and resets the hop chain. Must sit above a
+        // single hop's air time (so chained hops keep counting) and below forcedExitCooldown (so the chain
+        // resets after a forced cooldown). See CharacterMotor.TickSliding / EnterSliding.
+        public int maxSlideHops;
+        public float slideChainResetGap;
     }
 
     [Serializable]
@@ -186,7 +193,7 @@ public sealed class MovementConfig : ScriptableObject
     {
         jumpSpeed = 6.5f,
         doubleJumpSpeed = 5f,
-        coyoteTime = 0.1f,
+        coyoteTime = 0.12f, // small forgiveness bump — a hair more grace after leaving a ledge
         jumpBufferTime = 0.15f,
         fallGravityMultiplier = 1.6f,
         bunnyHopWindow = 0.15f,
@@ -213,6 +220,8 @@ public sealed class MovementConfig : ScriptableObject
         airDiveDownBoost = 1f,
         maxSlideDuration = 1.75f,
         forcedExitCooldown = 1.5f,
+        maxSlideHops = 5,        // reward a few chained hops; deny the infinite CTRL-hold pump past this
+        slideChainResetGap = 1.3f, // > one hop's ~1.2s air time, < forcedExitCooldown (1.5s)
     };
 
     public WallHookSettings wallHook = new()
@@ -232,12 +241,16 @@ public sealed class MovementConfig : ScriptableObject
         vaultMaxHeight = 1.1f,
         vaultMinApproachSpeed = 3f,
         vaultMinExplicitSpeed = 0.5f,  // deliberate E-press vaults from near-standstill
-        vaultMinExplicitHeight = 0.3f, // ...and reaches down onto knee-high lips below mantle's minimum
-        forwardCheckDistance = 1f,     // reach a bit further for the wall so E doesn't need you touching it
+        // Near-zero floor (was 0.3): with feet a hair below a ledge top, a 0.3 floor made EVERY get-up
+        // gate fail and the E fell through to a wall-hang AT the lip (user: "pressed E too late backing
+        // off a ledge → hang where a vault was obviously right"). An explicit E onto a barely-higher
+        // top is just a small hop-up — harmless.
+        vaultMinExplicitHeight = 0.05f,
+        forwardCheckDistance = 0.7f,   // tightened from 1.0 (user: vault zone a bit smaller) — E still doesn't need wall contact
         lowProbeHeight = 0.25f,        // second forward ray height; catches low walls the chest ray passes over
 
-        mantleDuration = 0.35f,
-        vaultDuration = 0.22f,
+        mantleDuration = 0.3f,  // snappier pull-up (was 0.35) — less animation-lock
+        vaultDuration = 0.18f,  // cap for the now speed-scaled vault (was 0.22) — see StartVault
     };
 
     public ClimbSettings climb = new()

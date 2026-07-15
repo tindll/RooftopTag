@@ -68,6 +68,14 @@ public sealed class CharacterMotor : MonoBehaviour
     private float _transitionElapsed;
     private float _transitionDuration;
     private Vector3 _transitionExitVelocity;
+    // Floor on the momentum-scaled vault duration so a fast approach can't collapse it to a
+    // teleport — below this the pull-across stops reading as a physical motion.
+    private const float MinTransitionDuration = 0.08f;
+    // Short lockout after a mantle/vault/climb ends before another can auto-start. Without it a
+    // transition that drops you back near the wall (a narrow or sloped top) instantly re-triggered, so
+    // the character read as stuck "trying to vault" at a wall base. See TryMantleOrVaultOrClimb.
+    private const float TransitionReentryCooldown = 0.2f;
+    private float _lastTransitionEndTime = float.NegativeInfinity;
 
     private LadderInteractable? _currentLadder;
     private float _ladderT;
@@ -79,6 +87,12 @@ public sealed class CharacterMotor : MonoBehaviour
     // Approach direction captured when a climb-to-ledge starts, handed to StartMantle at the top.
     // (Formerly overloaded onto the now-removed _swingPlaneAxis field; the swing no longer needs it.)
     private Vector3 _climbApproachDir;
+    // When the current climb started — drives TickClimbing's stuck-climb timeout. The old abort
+    // check compared two positions one tick apart (always ~climbSpeed*dt, never > climbMaxHeight),
+    // so a climb whose ledge could never be reached (overhang, depenetration pushing the body back
+    // down each step) climbed in place forever — THE "stuck on the wall like he's trying to vault,
+    // but I'm at the bottom" bug.
+    private float _climbStartTime;
 
     private ChainSwingInteractable? _currentSwing;
     // World-space velocity of the bob on the swing (the full simulation state — see TickSwing). The
@@ -99,6 +113,10 @@ public sealed class CharacterMotor : MonoBehaviour
     private float _airborneStartTime = float.NegativeInfinity;
     private float _lastSlideEndTime = float.NegativeInfinity;
     private float _slideElapsed;
+    // Consecutive slide-hops in the current chain. A rapid hop re-entry keeps counting; a genuine run
+    // (gap past slideChainResetGap) resets it. Once it hits maxSlideHops the next slide-hop is denied
+    // (forced stand-up + cooldown) — the fix for "hold CTRL + jump forever to pump max speed".
+    private int _slideHopCount;
 
     // How long the ground probe may keep missing during a slide before we drop to Airborne. A slide
     // crossing a roof seam can miss the binary probe for a tick or two; without this grace that read
@@ -116,6 +134,9 @@ public sealed class CharacterMotor : MonoBehaviour
     private MotorState _previousState = MotorState.Airborne;
 
     public event Action? Landed;
+    /// <summary>Fired on a big/fast landing (impact speed past a threshold) — the bridge plays a
+    /// cosmetic parkour roll. Does NOT engage the motor dive-lock, so control/momentum are retained.</summary>
+    public event Action? HardLanded;
     public event Action? Jumped;
     public event Action? DoubleJumped;
     public event Action? MantleStarted;
@@ -188,6 +209,16 @@ public sealed class CharacterMotor : MonoBehaviour
         _rb.linearVelocity = new Vector3(redirected.x, _rb.linearVelocity.y, redirected.z);
     }
 
+    /// <summary>Cancels any in-flight committed dive (active window AND recovery). Called when the
+    /// character attaches to something mid-dive (wall grab, mantle/vault/climb, ladder, swing) — the
+    /// grab overrides the dive commitment, restoring jump/slide input and full steering immediately,
+    /// so a lunge at a wall chains straight into wall movement instead of locking you out.</summary>
+    private void CancelDive()
+    {
+        _diveActiveRemaining = 0f;
+        _diveRecoveryRemaining = 0f;
+    }
+
     // Ticks the dive windows in FixedUpdate (deterministic, fixed-timestep) and enforces the
     // zero-net-momentum cap. Active window holds the burst; recovery eases the cap down to preSpeed.
     private void TickDive(float dt)
@@ -195,6 +226,13 @@ public sealed class CharacterMotor : MonoBehaviour
         if (_diveActiveRemaining > 0f)
         {
             _diveActiveRemaining -= dt;
+            // Diving/rolling down a ramp should build speed like sliding down it (user). The downhill
+            // slope assist added in ApplyGroundedAcceleration would otherwise be clamped straight back
+            // to the entry burst — ratchet the cap up to whatever the slope grants so the gain sticks.
+            // Only a genuine downhill gain raises CurrentSpeed past the burst; flat/uphill can't, so
+            // this is a no-op anywhere but a downslope.
+            if (_ground.grounded && IsOnSlope())
+                _diveBurstSpeed = Mathf.Max(_diveBurstSpeed, CurrentSpeed);
             CapHorizontalSpeed(_diveBurstSpeed);
         }
         else if (_diveRecoveryRemaining > 0f)
@@ -269,6 +307,7 @@ public sealed class CharacterMotor : MonoBehaviour
         _lastSlideEndTime = float.NegativeInfinity;
         _forcedSlideCooldownDeadline = float.NegativeInfinity;
         _slideElapsed = 0f;
+        _slideHopCount = 0;
         _airborneStartTime = Time.time;
 
         // Clear any in-flight dive so a hard reset can't strand the character locked/capped.
@@ -374,6 +413,11 @@ public sealed class CharacterMotor : MonoBehaviour
         _state = MotorState.Sliding;
         _slideElapsed = 0f;
         _slideProbeMissElapsed = 0f;
+        // Reset the slide-hop chain only when this slide follows a genuine run (a real gap since the
+        // last slide ended), not a hop. A rapid hop re-entry keeps the count so the chain can fatigue.
+        // First-ever slide: _lastSlideEndTime is -inf, so the gap is huge and the count starts at 0.
+        if (Time.time - _lastSlideEndTime > config.slide.slideChainResetGap)
+            _slideHopCount = 0;
         Vector3 horizontal = HorizontalVelocity;
         Vector3 dir = horizontal.sqrMagnitude > 0.0001f ? horizontal.normalized : transform.forward;
 
@@ -486,9 +530,26 @@ public sealed class CharacterMotor : MonoBehaviour
         // than eating the press for a hop that can't happen.
         if (Time.time <= _jumpBufferDeadline)
         {
-            if (ExitSliding())
+            // Anti-exploit (hold CTRL + jump forever): a slide-hop chain never trips the single-slide
+            // maxSlideDuration (each hop resets _slideElapsed) and re-entry refills speed, so mindless
+            // CTRL-hold + jump-spam sustained the max-speed cap indefinitely. Cap the CHAIN: once
+            // maxSlideHops consecutive hops are used, deny the next slide-hop — force a stand-up with
+            // the forced-exit cooldown (slide locked out) so the player drops to normal running and
+            // grounded deceleration bleeds the speed back down until a genuine run resets the chain.
+            // The buffered jump is left intact: it fires as an ordinary ground jump next tick.
+            if (_slideHopCount >= config.slide.maxSlideHops)
+            {
+                if (ExitSliding(forcedByMaxDuration: true))
+                {
+                    _state = MotorState.Grounded;
+                    return;
+                }
+                // else: ceiling-blocked — keep sliding until it clears (can't stand up here anyway).
+            }
+            else if (ExitSliding())
             {
                 ConsumeBufferedJump();
+                _slideHopCount++;
                 PerformJump(config.slide.slideHopRetention, config.jump.jumpSpeed);
                 return;
             }
@@ -589,10 +650,15 @@ public sealed class CharacterMotor : MonoBehaviour
         _state = MotorState.Airborne;
     }
 
+    // Downward impact speed (m/s) past which a landing also plays a cosmetic parkour roll (see
+    // HardLanded) — high enough that only big jumps/drops roll, not ordinary hops. Feel knob.
+    private const float RollLandingMinImpactSpeed = 9f;
+
     private void EnterGroundedFromLanding()
     {
         bool wasAirborne = _state == MotorState.Airborne;
         float airborneDuration = Time.time - _airborneStartTime;
+        float impactSpeed = -_rb.linearVelocity.y; // downward fall speed at touchdown
         _state = MotorState.Grounded;
         _lastGroundedTime = Time.time;
         _lastLandingTime = Time.time;
@@ -601,6 +667,11 @@ public sealed class CharacterMotor : MonoBehaviour
         // a single missed ground-probe tick doesn't read as a "landing" and shake the camera.
         if (wasAirborne && airborneDuration >= config.jump.minAirTimeForLandingEffects)
             Landed?.Invoke();
+
+        // Big landing → cosmetic parkour roll (bridge plays the roll clip via the Diving path; the
+        // motor dive-lock is NOT engaged, so the player keeps control and momentum through it).
+        if (wasAirborne && impactSpeed >= RollLandingMinImpactSpeed)
+            HardLanded?.Invoke();
     }
 
     private float CurrentTargetSpeed => (_input.SprintHeld ? config.ground.sprintSpeed : config.ground.walkSpeed) * ExternalSpeedMultiplier;
@@ -643,8 +714,14 @@ public sealed class CharacterMotor : MonoBehaviour
             newHorizontal = Vector3.MoveTowards(horizontal, Vector3.zero, config.ground.deceleration * dt);
         }
 
-        // Project onto the slope so the resulting velocity follows the ramp's incline.
-        Vector3 newVelocity = Vector3.ProjectOnPlane(newHorizontal, _ground.normal);
+        // Project onto the slope so the resulting velocity follows the ramp's incline. Preserve the
+        // intended horizontal SPEED along the slope (normalize + rescale) instead of letting the raw
+        // projection shrink it by cos(angle) — that cos-loss is half of why running UP a ramp felt
+        // like a forced walk (user). Matches TickSliding's slope projection. No-op on flat ground.
+        Vector3 onSlope = Vector3.ProjectOnPlane(newHorizontal, _ground.normal);
+        Vector3 newVelocity = newHorizontal.sqrMagnitude > 0.0001f && onSlope.sqrMagnitude > 1e-6f
+            ? onSlope.normalized * newHorizontal.magnitude
+            : onSlope;
 
         // Gravity's component along the slope: assists downhill, resists uphill — but ONLY while
         // actually moving or steering. Applied at rest it caused a real bug: near a ramp's SIDE
@@ -672,15 +749,20 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void SnapToGround()
     {
-        // ApplyGroundedAcceleration/TickSliding now compute a properly slope-projected vertical
-        // velocity, so this only clamps residual upward "bounce" from crossing between adjacent
-        // ground colliders — a small collision-resolution artifact — rather than forcing a fixed
-        // downward push every tick (which fought the correct slope velocity and caused visible
-        // bouncing down ramps).
-        if (_rb.linearVelocity.y > 0.05f)
+        // Kill residual upward "bounce" from crossing between adjacent ground colliders WITHOUT
+        // killing the legitimate upward velocity of running UP a ramp. The old version zeroed all
+        // vel.y > 0.05, which decapitated uphill slope motion every tick and made running up a ramp
+        // crawl (user: "can't run up a ramp"). Compute the vertical speed that simply FOLLOWS the
+        // ground surface (keeps velocity in the ground plane) and clamp only the excess above it —
+        // that excess is the bounce; the slope-following part is real ascent and must survive.
+        Vector3 vel = _rb.linearVelocity;
+        Vector3 n = _ground.normal;
+        float slopeVy = _ground.grounded && n.y > 0.01f
+            ? -(vel.x * n.x + vel.z * n.z) / n.y
+            : 0f;
+        if (vel.y > slopeVy + 0.05f)
         {
-            Vector3 vel = _rb.linearVelocity;
-            vel.y = 0f;
+            vel.y = slopeVy;
             _rb.linearVelocity = vel;
         }
     }
@@ -839,6 +921,7 @@ public sealed class CharacterMotor : MonoBehaviour
 
         // Consume the buffered press so it can't also feed a mantle a couple of frames later.
         ConsumeInteract();
+        CancelDive(); // an E-grab mid-lunge overrides the dive commitment
         _wallHookNormal = hit.normal;
         _wallHookElapsed = 0f;
         _state = MotorState.WallHook;
@@ -853,6 +936,26 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void TickWallHook(float dt)
     {
+        // Hanging directly below a reachable ledge should PULL UP, not dangle (user). Probe into the
+        // wall each tick; the moment a top within mantle reach exists (with real standing room — the
+        // phantom-seam guard applies here too), convert the hang into a mantle. Covers hangs that
+        // engaged a hair below the lip (late E while falling past a ledge).
+        Vector3 intoWall = -_wallHookNormal;
+        if (Physics.Raycast(CapsuleCenterWorld(), intoWall, out RaycastHit hangWallHit, config.wallHook.detectionDistance + 0.3f, wallMask, QueryTriggerInteraction.Ignore))
+        {
+            Vector3 above = hangWallHit.point + intoWall * 0.15f + Vector3.up * (config.mantleVault.mantleMaxHeight + 0.2f);
+            if (Physics.Raycast(above, Vector3.down, out RaycastHit hangTopHit, config.mantleVault.mantleMaxHeight + 0.3f, groundMask, QueryTriggerInteraction.Ignore))
+            {
+                float ledgeHeight = hangTopHit.point.y - transform.position.y;
+                if (ledgeHeight > 0.05f && ledgeHeight <= config.mantleVault.mantleMaxHeight
+                    && HasStandingRoom(hangTopHit.point, intoWall, hangTopHit.collider))
+                {
+                    StartMantle(hangTopHit.point, intoWall);
+                    return;
+                }
+            }
+        }
+
         _wallHookElapsed += dt;
         // You can't cling forever — hanging slides you slowly down the wall (and it eventually lets
         // go). Jump before then to launch off, wall-to-wall.
@@ -892,6 +995,7 @@ public sealed class CharacterMotor : MonoBehaviour
         // feed a mantle a couple frames later.
         if (cameraYaw == null || !_input.InteractPressed) return false;
         ConsumeInteract();
+        CancelDive(); // an E-grab mid-lunge overrides the dive commitment
         _wallHookNormal = wallNormal;
         _wallHookElapsed = 0f;
         _state = MotorState.WallHook;
@@ -904,6 +1008,15 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private bool TryMantleOrVaultOrClimb()
     {
+        // Anti-loop / anti-stick: don't re-enter a mantle/vault/climb right after one ended.
+        if (Time.time - _lastTransitionEndTime < TransitionReentryCooldown) return false;
+
+        // TEMPORARY feel experiment (user request): auto vault/mantle is OFF for the player — every
+        // get-on-top action requires a (buffered, 0.25s-forgiving) E press. Bots (cameraYaw == null)
+        // keep full auto; their parkour-graph traversal depends on it. Delete this one gate to
+        // restore auto-vault.
+        if (cameraYaw != null && !InteractBuffered) return false;
+
         Vector3 moveDir = ComputeWishDirection();
         Vector3 probeDir = moveDir.sqrMagnitude > 0.0001f ? moveDir : transform.forward;
 
@@ -918,11 +1031,31 @@ public sealed class CharacterMotor : MonoBehaviour
         bool kneeHit = Physics.Raycast(kneeOrigin, probeDir, out RaycastHit kneeWallHit, config.mantleVault.forwardCheckDistance, wallMask, QueryTriggerInteraction.Ignore);
 
         if (!chestHit && !kneeHit)
-            return false;
+        {
+            // FACING fallback: the primary probe follows the INPUT direction, but backing off a ledge
+            // (holding S) points that probe away from the wall in front of you — a late E then read as
+            // a facing-based wall-hang instead of the vault the body position clearly deserved. If the
+            // input-direction probe finds nothing, retry along the character's facing before giving up.
+            Vector3 facing = Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
+            if (facing.sqrMagnitude < 0.5f || Vector3.Dot(facing, probeDir) > 0.99f)
+                return false; // no distinct facing to try
+            probeDir = facing;
+            chestHit = Physics.Raycast(chestOrigin, probeDir, out chestWallHit, config.mantleVault.forwardCheckDistance, wallMask, QueryTriggerInteraction.Ignore);
+            kneeHit = Physics.Raycast(kneeOrigin, probeDir, out kneeWallHit, config.mantleVault.forwardCheckDistance, wallMask, QueryTriggerInteraction.Ignore);
+            if (!chestHit && !kneeHit)
+                return false;
+        }
 
         RaycastHit wallHit = !kneeHit || (chestHit && chestWallHit.distance <= kneeWallHit.distance)
             ? chestWallHit
             : kneeWallHit;
+
+        // A trash can is an objective you eat, not a ledge — never vault/mantle/climb onto one
+        // (user: "auto vaulting onto bins is bad"). wallMask is broad (~0) so a bin's collider
+        // registers as a wall; exclude it explicitly here rather than via a dedicated layer. Applies
+        // to bots too — they eat by proximity and have no reason to clamber a can.
+        if (wallHit.collider.GetComponentInParent<TrashCanInteractable>() != null)
+            return false;
 
         if (CurrentSpeed < 0.1f && !_input.JumpHeld && !InteractBuffered)
             return false;
@@ -939,12 +1072,17 @@ public sealed class CharacterMotor : MonoBehaviour
 
         float ledgeHeight = topHit.point.y - feet.y;
 
-        // Player only: getting over a wall is now a deliberate press of E, not automatic — per
-        // feel-test, the player should choose to vault/mantle rather than have it happen on approach.
-        // Bots (cameraYaw == null, the AI-input convention used in ComputeWishDirection) keep the
-        // automatic behavior — they rely on it to clamber incidental map geometry, and gating them on
-        // interact stranded them in the valley.
-        if (cameraYaw != null && !InteractBuffered) return false;
+        // PHANTOM-LEDGE guard — see HasStandingRoom. Buried/blocked ledge: fall through to wall-hang
+        // (still requires an explicit E press), never mantle/vault/climb here.
+        if (!HasStandingRoom(topHit.point, probeDir, topHit.collider))
+            return TryWallHang(wallHit.normal);
+
+        // Auto-vault/mantle/climb for BOTH players and bots: run into a ledge you can get onto and you
+        // get onto it — no E press (user: "when we can vault/climb up onto a ledge it should auto vault,
+        // more enjoyable"). The automatic gates below (approach-speed + mantleMinHeight floor) keep
+        // incidental knee-high geometry from triggering, and the standstill guard above keeps it from
+        // firing while idle against a wall. A deliberate E-press still RELAXES those gates (lower speed,
+        // knee-high lips) via explicitVault — now a bonus, no longer a requirement.
 
         // Vault takes priority in the overlap band: a low obstacle taken at speed is a vault, not a
         // mantle. Mantle only wins there when approach speed is too low to vault. A deliberate buffered
@@ -970,11 +1108,20 @@ public sealed class CharacterMotor : MonoBehaviour
             return true;
         }
 
-        // Bots keep the auto-climb for tall ledges (the Tag Arena's Climb_Mid). The PLAYER does NOT
-        // pull up from that far — if the ledge is above mantle height, it's a wall-grab, not a vault
-        // (per feel-test: pulling up from way down a wall felt wrong; grabbing is the intended move).
-        if (cameraYaw == null && ledgeHeight > config.mantleVault.mantleMaxHeight && ledgeHeight <= config.climb.climbMaxHeight)
+        // Auto-climb tall ledges (above mantle height, up to climbMaxHeight) for players too — the
+        // "climb up onto a ledge" half of the user's request. Only walls with NO reachable top within
+        // climbMaxHeight fall through to the wall-hang below, so deliberate wall-jump chains on truly
+        // tall walls are unaffected.
+        if (ledgeHeight > config.mantleVault.mantleMaxHeight && ledgeHeight <= config.climb.climbMaxHeight)
         {
+            // Player: a tall wall (above mantle height) is only climbed on an explicit E press —
+            // NOTHING else (user: "only E should allow you to stick to the wall"). Held jump was
+            // briefly allowed too, but jumping at a wall while still holding space is just normal
+            // movement, and it kept auto-hauling the player up ("stuck trying to vault at the
+            // bottom"). Bots (cameraYaw == null) keep the unconditional auto-climb their
+            // parkour-graph routing depends on.
+            if (cameraYaw != null && !InteractBuffered)
+                return TryWallHang(wallHit.normal);
             StartClimbToLedge(topHit.point, probeDir);
             return true;
         }
@@ -983,8 +1130,36 @@ public sealed class CharacterMotor : MonoBehaviour
         return TryWallHang(wallHit.normal);
     }
 
+    /// <summary>
+    /// True if a full standing capsule fits on top of <paramref name="ledgePoint"/> (at the spot a
+    /// mantle/vault would land). Guards against PHANTOM LEDGES: two stacked colliders with coplanar
+    /// faces (RooftopArena's roof body bottoming at y=-3 + SceneStyler's building-mass box topping at
+    /// y=-3, same footprint) produce a hittable interior seam — the down-probe starts inside the UPPER
+    /// box (rays never hit the collider they start in) but then crosses into the LOWER box's top face,
+    /// a "ledge" buried inside solid wall. Mantling onto it was blocked by the wall around it and
+    /// looped forever — the "stuck halfway down every wall, where the smog is" bug (the smog haze
+    /// planes sit at that same y=-3 band, hence the correlation). A real roof top has open air at the
+    /// landing spot and passes untouched. <paramref name="ledgeCollider"/> is excluded (flush-face
+    /// grazing); the wall/blocking collider deliberately is NOT — it IS the evidence of burial.
+    /// </summary>
+    private bool HasStandingRoom(Vector3 ledgePoint, Vector3 probeDir, Collider? ledgeCollider)
+    {
+        float radius = config.ground.capsuleRadius;
+        Vector3 landing = ledgePoint + probeDir.normalized * (radius + 0.05f) + Vector3.up * 0.05f;
+        Vector3 lower = landing + Vector3.up * radius;
+        Vector3 upper = landing + Vector3.up * Mathf.Max(radius, _defaultCapsuleHeight - radius);
+        Collider[] blockers = Physics.OverlapCapsule(lower, upper, radius * 0.9f, groundMask | wallMask, QueryTriggerInteraction.Ignore);
+        foreach (Collider blocker in blockers)
+        {
+            if (blocker == _capsule || blocker == ledgeCollider) continue;
+            return false;
+        }
+        return true;
+    }
+
     private void StartMantle(Vector3 ledgePoint, Vector3 approachDir)
     {
+        CancelDive(); // a get-on-top mid-lunge overrides the dive commitment
         _state = MotorState.Mantling;
         _transitionStart = transform.position;
         _transitionEnd = ledgePoint + approachDir.normalized * (config.ground.capsuleRadius + 0.05f) + Vector3.up * 0.05f;
@@ -997,11 +1172,18 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void StartVault(Vector3 ledgePoint, Vector3 approachDir)
     {
+        CancelDive(); // a get-on-top mid-lunge overrides the dive commitment
         _state = MotorState.Vaulting;
         _transitionStart = transform.position;
         _transitionEnd = ledgePoint + approachDir.normalized * (config.ground.capsuleRadius + 0.4f) + Vector3.up * 0.05f;
         _transitionElapsed = 0f;
-        _transitionDuration = config.mantleVault.vaultDuration;
+        // Momentum-continuous duration: cross the vault in exactly the time your current approach
+        // speed would carry you that distance, floored so it can't teleport and capped at
+        // vaultDuration so a slow walk-up still completes promptly. Makes a fast sprint-vault feel
+        // immediate (the "reduce vault time" ask) while keeping momentum true — no forced slowdown.
+        float vaultEntrySpeed = Mathf.Max(CurrentSpeed, config.mantleVault.vaultMinApproachSpeed);
+        float vaultDistance = Vector3.Distance(_transitionStart, _transitionEnd);
+        _transitionDuration = Mathf.Clamp(vaultDistance / vaultEntrySpeed, MinTransitionDuration, config.mantleVault.vaultDuration);
         _transitionExitVelocity = approachDir.normalized * CurrentSpeed;
         _rb.linearVelocity = Vector3.zero;
     }
@@ -1011,7 +1193,22 @@ public sealed class CharacterMotor : MonoBehaviour
         _transitionElapsed += dt;
         float t = Mathf.Clamp01(_transitionElapsed / _transitionDuration);
         float eased = t * t * (3f - 2f * t);
-        Vector3 pos = Vector3.Lerp(_transitionStart, _transitionEnd, eased);
+
+        // UP-THEN-OVER path, not a straight lerp. The straight start→end line cuts through the ledge
+        // CORNER: collision pinned the capsule against the wall face below the lip while t kept
+        // advancing, so the transition "completed" with the body still at the bottom, the exit
+        // velocity shoved it back into the wall, and 0.2s later it re-triggered — an endless
+        // climb-in-place loop at the wall base (the "stuck on every wall" bug). Rising vertically
+        // FIRST (along the wall face the capsule is already touching — nothing to clip) and only
+        // then moving horizontally onto the ledge keeps the whole path collision-free. t is split
+        // between the legs in proportion to their lengths so speed stays continuous.
+        Vector3 corner = new Vector3(_transitionStart.x, _transitionEnd.y, _transitionStart.z);
+        float upLen = Vector3.Distance(_transitionStart, corner);
+        float overLen = Vector3.Distance(corner, _transitionEnd);
+        float upFrac = upLen + overLen > 0.0001f ? upLen / (upLen + overLen) : 0f;
+        Vector3 pos = eased <= upFrac && upFrac > 0f
+            ? Vector3.Lerp(_transitionStart, corner, eased / upFrac)
+            : Vector3.Lerp(corner, _transitionEnd, (eased - upFrac) / Mathf.Max(1f - upFrac, 0.0001f));
 
         // Drive the transition through velocity rather than MovePosition, for the same reason the
         // ladder climb does: MovePosition leaves linearVelocity at zero between physics steps, so the
@@ -1027,16 +1224,24 @@ public sealed class CharacterMotor : MonoBehaviour
 
         if (t >= 1f)
         {
-            _rb.linearVelocity = _transitionExitVelocity;
+            // Completion check: if collision kept the body from actually reaching the ledge (odd
+            // geometry the up-then-over path still can't clear), do NOT fire the exit velocity —
+            // that shoved the body back into the wall and fed the re-trigger loop. Just drop to
+            // Airborne with no push; the re-entry lockout stops an instant retry.
+            bool reached = Vector3.Distance(_rb.position, _transitionEnd) <= 0.75f;
+            _rb.linearVelocity = reached ? _transitionExitVelocity : Vector3.zero;
             _state = MotorState.Airborne;
+            _lastTransitionEndTime = Time.time; // start the re-entry lockout (anti-stick)
         }
     }
 
     private void StartClimbToLedge(Vector3 ledgePoint, Vector3 approachDir)
     {
+        CancelDive(); // a get-on-top mid-lunge overrides the dive commitment
         _state = MotorState.Climbing;
         _transitionEnd = ledgePoint;
         _climbApproachDir = approachDir.normalized;
+        _climbStartTime = Time.time; // for the stuck-climb timeout in TickClimbing
         _doubleJumpUsed = false; // climbing recharges the double-jump too — see TryStartWallHook
     }
 
@@ -1055,9 +1260,21 @@ public sealed class CharacterMotor : MonoBehaviour
         {
             StartMantle(_transitionEnd, _climbApproachDir);
         }
-        else if (pos.y - transform.position.y > config.climb.climbMaxHeight)
+        else
         {
-            _state = MotorState.Airborne;
+            // Stuck-climb timeout. The old check here (pos.y - transform.position.y > climbMaxHeight)
+            // compared positions ONE TICK apart — always ~climbSpeed*dt, so it could never fire, and a
+            // climb whose ledge is unreachable (overhang / depenetration shoving the body back down
+            // every step) climbed in place forever: the "stuck on the wall at the bottom" bug. A full
+            // climb takes climbMaxHeight/climbSpeed seconds; allow 1.5x that, then bail to Airborne
+            // with a small push away from the wall so gravity + the re-entry lockout take over.
+            float maxClimbSeconds = config.climb.climbMaxHeight / Mathf.Max(config.climb.climbSpeed, 0.1f) * 1.5f;
+            if (Time.time - _climbStartTime > maxClimbSeconds)
+            {
+                _rb.linearVelocity = -_climbApproachDir * 1.5f; // nudge off the wall face
+                _state = MotorState.Airborne;
+                _lastTransitionEndTime = Time.time; // start the re-entry lockout (anti-stick)
+            }
         }
     }
 
@@ -1270,6 +1487,7 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void AttachToLadder(LadderInteractable ladder)
     {
+        CancelDive(); // an E-grab mid-lunge overrides the dive commitment
         _currentLadder = ladder;
         _ladderT = ladder.ProjectT(transform.position);
         _ladderCarryover = CurrentSpeed * config.ladder.entryMomentumRetention;
@@ -1282,6 +1500,7 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void AttachToSwing(ChainSwingInteractable swing)
     {
+        CancelDive(); // an E-grab mid-lunge overrides the dive commitment
         _currentSwing = swing;
 
         // Effective rope length = where you actually grabbed. The PLAYER grabs at their hands
@@ -1380,7 +1599,10 @@ public sealed class CharacterMotor : MonoBehaviour
         public bool JumpPressed => !Locked && Inner.JumpPressed;
         public bool SlideHeld => !Locked && Inner.SlideHeld;
         public bool SprintHeld => Inner.SprintHeld;
-        public bool InteractPressed => !Locked && Inner.InteractPressed;
+        // Interact passes THROUGH the dive lock: lunging at a wall must be E-cancelable into a
+        // grab/vault/ladder/swing (user: "lunge toward a wall, can't press E until the animation is
+        // done, which sucks"). A successful attach then cancels the dive outright — see CancelDive.
+        public bool InteractPressed => Inner.InteractPressed;
 
         public void Tick(float deltaTime) => Inner.Tick(deltaTime);
     }

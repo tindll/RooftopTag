@@ -15,12 +15,24 @@ using UnityEngine;
 public static class BuildCharacterAnimator
 {
     const string Folder = "Assets/Art/Characters";
-    const string AnimFolder = Folder + "/Animations";
+    public const string AnimFolder = Folder + "/Animations";
     // In Resources so the bootstrap can Resources.Load it at runtime.
     const string OutPath = Folder + "/Resources/CharacterAnimator.controller";
 
+    /// <summary>True while <see cref="Build"/> runs. The auto-rebuild postprocessor
+    /// (CharacterAnimatorAutoBuilder) checks this so Build's own ForceUpdate reimports don't
+    /// re-trigger it recursively.</summary>
+    public static bool IsBuilding { get; private set; }
+
     [MenuItem("Tools/RooftopTag/Build Character Animator")]
     public static void Build()
+    {
+        IsBuilding = true;
+        try { BuildInternal(); }
+        finally { IsBuilding = false; }
+    }
+
+    static void BuildInternal()
     {
         // Make sure loop/humanoid import settings are current before we reference the clips.
         foreach (string g in AssetDatabase.FindAssets("t:Model", new[] { AnimFolder }))
@@ -39,6 +51,10 @@ public static class BuildCharacterAnimator
         ctrl.AddParameter("AirDiving", AnimatorControllerParameterType.Bool);
         ctrl.AddParameter("Flipping", AnimatorControllerParameterType.Bool);
         ctrl.AddParameter("Diving", AnimatorControllerParameterType.Bool);
+        // Eating (bin objective): Eating held for the whole crouch sequence; EatStop pulses the stand-up.
+        ctrl.AddParameter("Eating", AnimatorControllerParameterType.Bool);
+        ctrl.AddParameter("EatStop", AnimatorControllerParameterType.Bool);
+        ctrl.AddParameter("EatStart", AnimatorControllerParameterType.Trigger);
 
         var sm = ctrl.layers[0].stateMachine;
 
@@ -71,16 +87,28 @@ public static class BuildCharacterAnimator
         // pose instead of freezing on a stood-up recovery frame (Bug A fix).
         // Wall-run was removed from CharacterMotor on this line, so MotorState has no WallRunning value
         // and everything from Mantling on shifted down by one — the Any() indices below match the live enum.
-        var mantling = Simple(sm, "Mantling", Clip("X Bot@Braced Hang To Crouch", "Climbing To Top"));
-        // Vault clip missing → sped-up braced-hang mantle stopgap so it reads as a quick hop-over.
+        // Mantle/vault clip playback is SYNCED to the motor's transition durations. At 1x the clip's
+        // "pull up" beat landed long after CharacterMotor had already placed the body on the ledge
+        // (motor mantle = 0.3s, vault 0.08-0.18s speed-scaled; the clip is seconds long), so the model
+        // visibly hauled itself up thin air. speed = clipLength / targetSeconds compresses the whole
+        // clip into roughly the motor's window. Targets sit a touch above the motor durations so the
+        // last frames ease out during the landing instead of hard-cutting.
+        const float MantleAnimTargetSeconds = 0.4f;  // motor mantleDuration 0.3 + a short settle tail
+        const float VaultAnimTargetSeconds = 0.25f;  // motor vault cap 0.18 + tail; a quick hop-over
+        AnimationClip mantleClip = Clip("X Bot@Braced Hang To Crouch", "Climbing To Top");
+        var mantling = Simple(sm, "Mantling", mantleClip);
+        if (mantleClip != null) mantling.speed = mantleClip.length / MantleAnimTargetSeconds;
+        // Vault clip missing → braced-hang mantle stopgap so it reads as a quick hop-over.
         // "Vault" listed first so Clip() self-heals (and logs the stopgap) once that clip is imported.
-        var vaulting = Simple(sm, "Vaulting", Clip("Vault", "X Bot@Braced Hang To Crouch", "Climbing To Top"));
-        vaulting.speed = 1.5f;
+        AnimationClip vaultClip = Clip("Vault", "X Bot@Braced Hang To Crouch", "Climbing To Top");
+        var vaulting = Simple(sm, "Vaulting", vaultClip);
+        if (vaultClip != null) vaulting.speed = vaultClip.length / VaultAnimTargetSeconds;
         var climbing = Simple(sm, "Climbing", Clip("X Bot@Freehang Climb", "Climbing Up Wall", "Rope Climb"));
         var ladder = Simple(sm, "OnLadder", Clip("X Bot@Climbing Ladder", "Climbing Ladder"));
         var swing = Simple(sm, "OnSwing", Clip("X Bot@Rope Swinging", "Rope Swinging"));
-        // Wall grab = brace/hang on the wall (Freehang Climb hold reads far better than the rope pose).
-        var wallHook = Simple(sm, "WallHook", Clip("X Bot@Freehang Climb", "Rope Swinging"));
+        // Wall grab = hang on the wall. Prefer the dedicated "Hanging Idle" clip; the Freehang Climb
+        // brace-hold is the fallback until it's imported (Clip() self-heals and logs the stopgap).
+        var wallHook = Simple(sm, "WallHook", Clip("Hanging Idle", "X Bot@Freehang Climb", "Rope Swinging"));
 
         // Front flip: replaces the normal jump/fall pose while airborne. Driven by CharacterAnimatorBridge,
         // which sets the Flipping bool the moment a runner double-jumps (and holds it for the clip length).
@@ -101,6 +129,16 @@ public static class BuildCharacterAnimator
         // this from the new frame range / window — it is NOT a fixed constant.)
         diveRoll.speed = 2.233f / 0.8f;
 
+        // Eating (bin objective): Standing To Crouched -> Crouching Idle (loop) -> Crouched To Standing.
+        // Crouching Idle loops (CharacterImportPostprocessor); the two transitions are one-shots. Driven
+        // by the bridge's Eating bool (held through the WHOLE sequence, incl. the stand-up) plus EatStop
+        // (pulsed when eating actually ends). Holding Eating true through the exit is what keeps the
+        // locomotion AnyState (guarded IfNot Eating below) from snatching the stand-up mid-play.
+        var eatEnter = Simple(sm, "EatEnter", Clip("Standing To Crouched"));
+        var eatLoop  = Simple(sm, "EatLoop", Clip("Crouching Idle"));
+        var eatExit  = Simple(sm, "EatExit", Clip("Crouched To Standing"));
+        eatEnter.speed = 1.5f; // snappy crouch-down (user: "fast standing to crouched")
+
         sm.defaultState = grounded;
 
         // Dive roll owns the moment whenever Diving is set, over any locomotion state.
@@ -110,6 +148,26 @@ public static class BuildCharacterAnimator
         diveT.canTransitionToSelf = false;
         diveT.AddCondition(AnimatorConditionMode.If, 0, "Diving");
 
+        // AnyState → EatEnter when eating begins (and not already standing back up).
+        var eatT = sm.AddAnyStateTransition(eatEnter);
+        eatT.hasExitTime = false;
+        eatT.duration = 0.15f;
+        eatT.canTransitionToSelf = false;
+        eatT.AddCondition(AnimatorConditionMode.If, 0, "EatStart");
+        // Crouch-down finishes → hold the rummage loop.
+        var eatEnterToLoop = eatEnter.AddTransition(eatLoop);
+        eatEnterToLoop.hasExitTime = true;
+        eatEnterToLoop.exitTime = 0.85f;
+        eatEnterToLoop.duration = 0.1f;
+        // Eating ends (EatStop pulse) → stand back up. Eating stays true through this clip (bridge hold),
+        // so the grounded AnyState can't cut it short.
+        var eatLoopToExit = eatLoop.AddTransition(eatExit);
+        eatLoopToExit.hasExitTime = false;
+        eatLoopToExit.duration = 0.1f;
+        eatLoopToExit.AddCondition(AnimatorConditionMode.If, 0, "EatStop");
+        // EatExit has no explicit exit: when the bridge finally drops Eating (after the stand-up), the
+        // grounded AnyState (IfNot Eating) fires and returns to locomotion.
+
         // AnyState → each state, selected by the MotorState int (see MotorState enum order).
         // Grounded also requires NOT diving so the dive roll isn't interrupted while on the ground.
         var groundT = sm.AddAnyStateTransition(grounded);
@@ -118,6 +176,7 @@ public static class BuildCharacterAnimator
         groundT.canTransitionToSelf = false;
         groundT.AddCondition(AnimatorConditionMode.Equals, 0, "MotorState");
         groundT.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
+        groundT.AddCondition(AnimatorConditionMode.IfNot, 0, "Eating"); // don't yank the eat crouch back to locomotion
 
         Any(sm, sliding, 1);
         // Airborne only when NOT flipping; the flip owns the airborne window when rolled.
@@ -166,6 +225,7 @@ public static class BuildCharacterAnimator
         // Never interrupt a committed dive roll — same guard as groundT (Bug C). A dive that goes
         // airborne (e.g. off a ledge) must finish its roll pose, not snap to the jump/fall blend.
         t.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
+        t.AddCondition(AnimatorConditionMode.IfNot, 0, "Eating"); // eating owns the pose (defensive; ground-probe flicker)
     }
 
     // Returns the first candidate clip that exists on disk. Later candidates are stopgaps for a
