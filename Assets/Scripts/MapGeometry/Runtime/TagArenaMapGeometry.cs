@@ -35,8 +35,11 @@ public static class TagArenaMapGeometry
     public static readonly Color OrangeColor = new(0.85f, 0.5f, 0.2f);
 
     /// <summary>Semantic surface role — the theme decides what each role looks like.
-    /// Interactable is reserved strictly for things the player can use (spec: gameplay color language).</summary>
-    public enum SurfaceRole { Floor, WallBody, Ramp, Interactable, Trim, Silhouette }
+    /// Interactable is reserved strictly for things the player can use (spec: gameplay color language).
+    /// BuildingFacade is WallBody's windowed cousin — same seeded concrete tint, plus the shared window
+    /// atlas — and is used ONLY by <see cref="CreateBuildingBox"/>. WallBody deliberately stays plain:
+    /// interior walls, alley walls and the other arenas use it, and none of those want windows.</summary>
+    public enum SurfaceRole { Floor, WallBody, Ramp, Interactable, Trim, Silhouette, BuildingFacade }
 
     private static VisualThemeConfig? _theme;
     public static VisualThemeConfig Theme => _theme ??= ScriptableObject.CreateInstance<VisualThemeConfig>();
@@ -55,6 +58,10 @@ public static class TagArenaMapGeometry
             SurfaceRole.Interactable => EmissiveMaterial(t.interactableColor, t.interactableEmissiveIntensity),
             SurfaceRole.Trim => EmissiveMaterial(t.rimColor, t.rimEmissiveIntensity),
             SurfaceRole.Silhouette => PlainMaterial(t.silhouetteColor),
+            // Same JitterValue(concreteWall, seed) as WallBody, deliberately: a roof body and the
+            // cosmetic mass under it share a seed, so they land on the same tint AND the same material
+            // instance out of the cache below — the seam between them stays invisible.
+            SurfaceRole.BuildingFacade => GetFacadeMaterial(JitterValue(t.concreteWall, seed, t.wallValueJitter), t.windowEmissiveIntensity),
             _ => PlainMaterial(t.concreteFloor),
         };
         RoleMaterialCache[key] = material;
@@ -75,16 +82,144 @@ public static class TagArenaMapGeometry
         return m;
     }
 
+    private static readonly Dictionary<string, Material> FacadeMaterialCache = new();
+
+    /// <summary>
+    /// Windowed concrete over an arbitrary <paramref name="tint"/>: the tint is the surface's own colour
+    /// on _BaseColor, the shared albedo atlas multiplies the window grid over it, and the emission atlas
+    /// masks the lit cells at <paramref name="emissiveIntensity"/>. Built on top of
+    /// <see cref="PlainMaterial"/> so the URP/Standard shader lookup — and the main-colour/main-texture
+    /// property mapping that differs between the two (_BaseColor/_BaseMap vs _Color/_MainTex, which
+    /// Material.color/.mainTexture resolve for us) — stays in exactly one place.
+    ///
+    /// Public because the far skyline needs the identical treatment at its own haze-lerped tint and a
+    /// dimmer glow (SceneStyler.CreateSilhouettes): a windowed play area against an unwindowed horizon
+    /// was the visible break. Cached on (tint, intensity) — the same shape as <see cref="GetMaterial(Color)"/>'s
+    /// colour-keyed cache — because the skyline mints one material per RING, not per box.
+    /// </summary>
+    public static Material GetFacadeMaterial(Color tint, float emissiveIntensity)
+    {
+        string key = $"{ColorUtility.ToHtmlStringRGBA(tint)}:{emissiveIntensity}";
+        if (FacadeMaterialCache.TryGetValue(key, out Material cached)) return cached;
+
+        VisualThemeConfig t = Theme;
+        Material m = PlainMaterial(tint);
+        m.mainTexture = WindowAtlas(emission: false);
+        m.EnableKeyword("_EMISSION");
+        m.SetTexture("_EmissionMap", WindowAtlas(emission: true));
+        m.SetColor("_EmissionColor", t.windowLitColor * emissiveIntensity);
+        m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+        FacadeMaterialCache[key] = m;
+        return m;
+    }
+
+    private static Texture2D? _windowAlbedoAtlas;
+    private static Texture2D? _windowEmissionAtlas;
+
+    /// <summary>The two window atlases — one albedo, one emission — generated once and shared by every
+    /// building in the map (a facade's identity comes from its tint and its UV offset, not its own
+    /// texture). Lazy-once and never invalidated, exactly like <see cref="Theme"/> and
+    /// <see cref="RoleMaterialCache"/>: the theme is a CreateInstance whose field defaults ARE the
+    /// theme, so there is no edit that could invalidate these under us.</summary>
+    private static Texture2D WindowAtlas(bool emission)
+    {
+        if (_windowAlbedoAtlas == null) BuildWindowAtlases();
+        return emission ? _windowEmissionAtlas! : _windowAlbedoAtlas!;
+    }
+
+    private static void BuildWindowAtlases()
+    {
+        VisualThemeConfig t = Theme;
+        int cells = Mathf.Max(1, t.windowAtlasCells);
+        int px = Mathf.Max(1, t.windowCellPixels);
+        int size = cells * px;
+
+        var albedo = new Color32[size * size];
+        var emissive = new Color32[size * size];
+        // Wall texels are WHITE on the albedo atlas — it multiplies _BaseColor, so anything else would
+        // darken the per-building concrete tint — and BLACK on the emission atlas. Black on every
+        // non-lit texel is not a detail: it is the only thing keeping the wall itself and the unlit
+        // glass from glowing, since _EmissionColor is applied to whatever this atlas samples.
+        for (int i = 0; i < albedo.Length; i++)
+        {
+            albedo[i] = new Color32(0xFF, 0xFF, 0xFF, 0xFF);
+            emissive[i] = new Color32(0x00, 0x00, 0x00, 0xFF);
+        }
+
+        // Fixed seed, fixed iteration order: the same atlas on every build, on every machine.
+        var rng = new System.Random(t.windowSeed);
+        Color32 dark = t.windowDarkColor;
+        Color32 lit = t.windowLitColor;
+        int w = Mathf.Max(1, Mathf.RoundToInt(px * t.windowWidthFraction));
+        int h = Mathf.Max(1, Mathf.RoundToInt(px * t.windowHeightFraction));
+        int insetX = (px - w) / 2, insetY = (px - h) / 2; // one window, centred: every cell keeps a
+                                                          // wall border on all four sides
+        for (int cy = 0; cy < cells; cy++)
+        {
+            for (int cx = 0; cx < cells; cx++)
+            {
+                bool isLit = rng.NextDouble() < t.windowLitChance;
+                for (int y = 0; y < h; y++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        int p = (cy * px + insetY + y) * size + (cx * px + insetX + x);
+                        albedo[p] = isLit ? lit : dark;
+                        // WHITE, not windowLitColor: this atlas is a MASK. _EmissionColor already
+                        // carries windowLitColor * windowEmissiveIntensity, and the shader multiplies
+                        // the two — tinting here as well would square the colour and drag every lit
+                        // window orange, making windowLitColor mean something other than it says.
+                        if (isLit) emissive[p] = new Color32(0xFF, 0xFF, 0xFF, 0xFF);
+                    }
+                }
+            }
+        }
+
+        _windowAlbedoAtlas = MakeAtlas("WindowAlbedoAtlas", size, albedo);
+        _windowEmissionAtlas = MakeAtlas("WindowEmissionAtlas", size, emissive);
+    }
+
+    private static Texture2D MakeAtlas(string name, int size, Color32[] pixels)
+    {
+        // Mipmaps ON and Bilinear: a window grid this fine turns into crawling aliased noise on the
+        // distant half of the map without them. Repeat is what lets a facade's UVs run 0..cols/0..rows
+        // in cell units and simply wrap. Point filtering would look crisper standing still and crawl
+        // horribly in motion — the cure for the "blurry" feel-check is resolution and aniso, not filter
+        // mode. At the default 32x32 cells x 32px this is 1024^2 RGBA32 + mips ~= 5.3 MiB per atlas.
+        var tex = new Texture2D(size, size, TextureFormat.RGBA32, mipChain: true)
+        {
+            name = name,
+            wrapMode = TextureWrapMode.Repeat,
+            filterMode = FilterMode.Bilinear,
+            // A facade is seen at a grazing angle nearly always (you look ALONG the wall you are running
+            // past), which is exactly the case trilinear mips blur to mush and aniso fixes — the single
+            // biggest sharpness win here. The slight negative bias pulls the mip selection toward the
+            // sharper level; mips still exist, so distant facades still resolve rather than alias.
+            anisoLevel = 8,
+            mipMapBias = -0.5f,
+        };
+        tex.SetPixels32(pixels);
+        tex.Apply();
+        return tex;
+    }
+
     /// <summary>Deterministic per-seed brightness variation (FNV hash — stable across runs and
     /// machines, unlike string.GetHashCode) so rebuilt scenes are byte-comparable.</summary>
     private static Color JitterValue(Color color, int seed, float amount)
     {
         if (seed == 0 || amount <= 0f) return color;
-        uint h = 2166136261u;
-        unchecked { h = (h ^ (uint)seed) * 16777619u; h = (h ^ (h >> 13)) * 16777619u; }
-        float t = (h % 1000u) / 1000f * 2f - 1f; // [-1, 1]
+        float t = (Hash(seed) % 1000u) / 1000f * 2f - 1f; // [-1, 1]
         Color.RGBToHSV(color, out float hue, out float sat, out float val);
         return Color.HSVToRGB(hue, sat, Mathf.Clamp01(val + t * amount));
+    }
+
+    /// <summary>FNV-1a over a single int. Shared by <see cref="JitterValue"/> (per-building tint) and
+    /// <see cref="BuildFacadeMesh"/> (per-building window-pattern offset) so one seed drives both.</summary>
+    private static uint Hash(int seed)
+    {
+        uint h = 2166136261u;
+        unchecked { h = (h ^ (uint)seed) * 16777619u; h = (h ^ (h >> 13)) * 16777619u; }
+        return h;
     }
 
     public static GameObject CreateBox(string name, Transform? parent, Vector3 center, Vector3 size, SurfaceRole role, int seed = 0)
@@ -96,6 +231,140 @@ public static class TagArenaMapGeometry
         go.transform.localScale = size;
         go.GetComponent<Renderer>().sharedMaterial = GetMaterial(role, seed);
         return go;
+    }
+
+    /// <summary>
+    /// A city building: physically identical to <see cref="CreateBox"/> (unit-cube mesh, scaled by
+    /// <paramref name="size"/> on the transform, primitive BoxCollider KEPT — both call sites want a
+    /// solid building), but rendered with a two-submesh mesh so the four SIDE faces get the windowed
+    /// <see cref="SurfaceRole.BuildingFacade"/> while the top/bottom get plain
+    /// <see cref="SurfaceRole.Floor"/> concrete — so a roof reads as a concrete deck rather than as
+    /// more wall lying on its back.
+    ///
+    /// <paramref name="facadeBottomY"/>/<paramref name="facadeTopY"/> describe the FULL building column
+    /// (street level to roof top), NOT this box's own extent. RooftopArena's roof body and SceneStyler's
+    /// cosmetic mass beneath it are two boxes of ONE building: both pass the same pair, so both derive
+    /// the same row origin and the same row spacing, and the window rows run continuously across the
+    /// visible seam between them (y = -3) instead of restarting there. Rounding the row count over the
+    /// whole column also lands a row boundary exactly on <paramref name="facadeTopY"/>, so the roof lip
+    /// never cuts a window in half.
+    /// </summary>
+    public static GameObject CreateBuildingBox(string name, Transform? parent, Vector3 center, Vector3 size,
+        float facadeBottomY, float facadeTopY, int seed)
+    {
+        GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        go.name = name;
+        if (parent != null) go.transform.SetParent(parent, false);
+        go.transform.position = center;
+        go.transform.localScale = size;
+        // Swaps the primitive's cube MESH only. The BoxCollider is a unit box in its own right — it
+        // does not read the mesh — so the collider this box presents to movement is bit-identical to
+        // the one CreateBox's plain cube presented.
+        // separateCaps: this box's top face is a WALKABLE roof, so it must be plain Floor concrete, not
+        // wall-on-its-back. (The skyline's boxes ask for false — see BuildFacadeMesh.)
+        go.GetComponent<MeshFilter>().sharedMesh = BuildFacadeMesh(name, center, size, facadeBottomY, facadeTopY, seed, separateCaps: true);
+        go.GetComponent<Renderer>().sharedMaterials = new[]
+        {
+            GetMaterial(SurfaceRole.BuildingFacade, seed), // submesh 0: the four side faces
+            GetMaterial(SurfaceRole.Floor),                // submesh 1: top + bottom
+        };
+        return go;
+    }
+
+    /// <summary>
+    /// The facade mesh: a UNIT cube (verts at ±0.5 — the size lives in the transform's localScale
+    /// exactly like <see cref="CreateBox"/>'s primitive, only the UVs are computed in world units), 24
+    /// verts, 4 per face, hard normals so it flat-shades by construction.
+    /// See <see cref="CreateBuildingBox"/> for what facadeBottomY/facadeTopY mean.
+    ///
+    /// Public so SceneStyler can put the same window grid on the far skyline without duplicating any of
+    /// this into the Editor assembly. It builds a MESH only — the caller keeps ownership of the
+    /// GameObject, so the skyline path keeps stripping its collider and keeps its Dressing layer, while
+    /// CreateBuildingBox keeps its collider. Nothing here creates or touches a collider.
+    /// </summary>
+    /// <param name="separateCaps">true: submesh 0 = the four ±X/±Z sides, submesh 1 = top + bottom, so a
+    /// caller can give the caps their own material (a building's roof deck). false: ONE submesh with all
+    /// six faces — the skyline's ~160 boxes are pure backdrop whose tops are never visible, and a second
+    /// submesh would double them to ~320 draw calls for nothing. Either way the caps get (0,0) UVs, which
+    /// lands in a cell's WALL border (the window rect is centred and inset), so a single-submesh cap
+    /// samples plain tint with zero emission rather than a stray window.</param>
+    public static Mesh BuildFacadeMesh(string name, Vector3 center, Vector3 size, float facadeBottomY, float facadeTopY, int seed, bool separateCaps)
+    {
+        VisualThemeConfig t = Theme;
+        int cells = Mathf.Max(1, t.windowAtlasCells);
+
+        // Rows are counted over the WHOLE column and the spacing then stretched to fit them, so a row
+        // boundary lands exactly on the roof lip. Flooring the column at one spacing keeps a degenerate
+        // (zero/inverted) column from dividing by zero rather than inventing a magic epsilon.
+        float column = Mathf.Max(t.windowSpacingY, facadeTopY - facadeBottomY);
+        int rows = Mathf.Max(1, Mathf.RoundToInt(column / t.windowSpacingY));
+        float effSpacingY = column / rows;
+
+        // Per-building whole-cell offset into the atlas (same FNV seed as the tint), so two neighbours
+        // don't show the same lit-window pattern. INTEGER cells only: a fractional offset would land the
+        // Repeat wrap mid-window and shear the grid.
+        uint hash = Hash(seed);
+        float uOffCells = hash % (uint)cells;
+        float vOffCells = hash / (uint)cells % (uint)cells;
+
+        // The box is axis-aligned and unrotated, so a local ±0.5 vert's world height is just this.
+        float vBottom = (vOffCells + (center.y - size.y * 0.5f - facadeBottomY) / effSpacingY) / cells;
+        float vTop = (vOffCells + (center.y + size.y * 0.5f - facadeBottomY) / effSpacingY) / cells;
+
+        var verts = new List<Vector3>(24);
+        var normals = new List<Vector3>(24);
+        var uvs = new List<Vector2>(24);
+        var sideTris = new List<int>(24);
+        // Caps land in their own list only when the caller wants them on their own submesh; otherwise
+        // they just join the sides.
+        var capTris = separateCaps ? new List<int>(12) : sideTris;
+
+        // Corners run bl -> tl -> tr -> br with right = cross(n, up), which makes cross(tl-bl, tr-bl)
+        // equal n — i.e. both triangles wind to face OUTWARD, Unity's front-face convention.
+        void AddQuad(Vector3 n, Vector3 up, Vector2 uvBL, Vector2 uvTL, Vector2 uvTR, Vector2 uvBR, List<int> tris)
+        {
+            Vector3 right = Vector3.Cross(n, up);
+            Vector3 faceCenter = n * 0.5f;
+            int b = verts.Count;
+            verts.Add(faceCenter - right * 0.5f - up * 0.5f);
+            verts.Add(faceCenter - right * 0.5f + up * 0.5f);
+            verts.Add(faceCenter + right * 0.5f + up * 0.5f);
+            verts.Add(faceCenter + right * 0.5f - up * 0.5f);
+            for (int i = 0; i < 4; i++) normals.Add(n);
+            uvs.Add(uvBL); uvs.Add(uvTL); uvs.Add(uvTR); uvs.Add(uvBR);
+            tris.Add(b); tris.Add(b + 1); tris.Add(b + 2);
+            tris.Add(b); tris.Add(b + 2); tris.Add(b + 3);
+        }
+
+        // faceWidth is measured PER FACE (±X faces span size.z, ±Z faces span size.x) so the column
+        // count follows the face's real width — that is what keeps windows square on a non-square
+        // footprint like Con_Alley's 8x20. Cell units are divided by `cells` here and only here: the
+        // atlas is `cells` cells across, so one cell is 1/cells of UV space.
+        void AddSide(Vector3 n, float faceWidth)
+        {
+            int cols = Mathf.Max(1, Mathf.RoundToInt(faceWidth / t.windowSpacingX));
+            float u0 = uOffCells / cells;
+            float u1 = (uOffCells + cols) / cells;
+            AddQuad(n, Vector3.up, new Vector2(u0, vBottom), new Vector2(u0, vTop),
+                new Vector2(u1, vTop), new Vector2(u1, vBottom), sideTris);
+        }
+
+        AddSide(Vector3.right, size.z);
+        AddSide(Vector3.left, size.z);
+        AddSide(Vector3.forward, size.x);
+        AddSide(Vector3.back, size.x);
+        AddQuad(Vector3.up, Vector3.forward, Vector2.zero, Vector2.zero, Vector2.zero, Vector2.zero, capTris);
+        AddQuad(Vector3.down, Vector3.forward, Vector2.zero, Vector2.zero, Vector2.zero, Vector2.zero, capTris);
+
+        var mesh = new Mesh { name = $"{name}_Facade" };
+        mesh.SetVertices(verts);
+        mesh.SetNormals(normals);
+        mesh.SetUVs(0, uvs);
+        mesh.subMeshCount = separateCaps ? 2 : 1;
+        mesh.SetTriangles(sideTris, 0);
+        if (separateCaps) mesh.SetTriangles(capTris, 1);
+        mesh.RecalculateBounds();
+        return mesh;
     }
 
     /// <summary>

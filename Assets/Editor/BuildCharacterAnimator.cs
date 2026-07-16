@@ -139,8 +139,15 @@ public static class BuildCharacterAnimator
         // committed-dive window as the roll (diveDuration / CharacterAnimatorBridge.DiveHoldSeconds), so
         // it is played back at trimmedSeconds/0.8 to land the whole catch inside that window:
         // 2.000s / 0.8s = 2.5x. (Recompute from the frame range / window if either changes — NOT a fixed constant.)
-        var divingCatch = Simple(sm, "DivingCatch", Clip("DivingCatch", "X Bot@Dive Roll"));
-        divingCatch.speed = 2.000f / 0.8f;
+        // STOPGAP (user): the DivingCatch clip doesn't read right on the pest_control model, so the
+        // catch state plays the FIRST HALF of the proven trimmed Dive Roll instead — launch coil into
+        // the airborne forward dive, which reads as "diving after you". speed covers half the trimmed
+        // clip (2.233s / 2) across the 0.8s dive window, so the state exits mid-clip right at the
+        // dive's deepest point, before the roll-recovery half ever plays. The DivingCatch clip stays
+        // as the fallback candidate so restoring it later is just re-ordering this list (and putting
+        // the 2.000/0.8 speed back).
+        var divingCatch = Simple(sm, "DivingCatch", Clip("X Bot@Dive Roll", "DivingCatch"));
+        divingCatch.speed = 2.233f / 2f / 0.8f;
 
         // Eating (bin objective): Standing To Crouched -> Crouching Idle (loop) -> Crouched To Standing.
         // Crouching Idle loops (CharacterImportPostprocessor); the two transitions are one-shots. Driven

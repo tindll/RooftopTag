@@ -57,7 +57,50 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     [SerializeField] private float maxSafeDrop = 2f;
     [SerializeField] private float upwardClearance = 3f;
 
+    // Momentum brake horizon. Cliff-avoidance only STEERS, and steering cannot beat momentum: the
+    // fan's shallowest deflection (20°) still carries most of the forward velocity, so a sprinting bot
+    // "avoids" a lip and slides over it anyway — measured falling at x=11.22 past a lip at x=10 while
+    // chasing a target parked at the edge. That's the void-bait from manual play: it needs a runway to
+    // reach sprint, which is why bot-vs-bot self-play (runners juke away) never reproduced it.
+    //
+    // So when our CURRENT VELOCITY would carry us off within this many seconds, stop instead of
+    // steering. Scaling the check by speed (not a flat look-ahead) is the point: a flat value big
+    // enough to stop a sprint makes bots halt ~5m short of EVERY edge (measured: lookAheadDistance 6
+    // parked the bot at x=5.15, unable to reach a target on the lip at x=9.5), which just swaps the
+    // void exploit for a ledge-camping one. Speed-scaled, a slowed bot's horizon shrinks with it, so
+    // it creeps right up to the lip — charge, brake, close on foot (measured: settles at x=9.00,
+    // 0.5m from a target at the edge, inside tagReachMoving).
+    //
+    // TUNED, do not lower without re-running ParkourBotInput_BaitedToLipByTargetAtEdge: real stopping
+    // distance from sprint is ~2-2.4m, NOT the ~0.33m that deceleration=75 suggests on paper (the
+    // config value isn't raw m/s²). 0.15s (1.05m) and 0.25s (1.75m) BOTH still went over the lip;
+    // 0.35s (2.45m) is the first that holds. Cost is real and measured: it drops tagger pressure
+    // enough to move bot-vs-bot runner_win_rate 0.00 -> 0.20.
+    [SerializeField] private float edgeBrakeSeconds = 0.35f;
+
+    // Takeoff cone — see ApplySteeringSafety. Cliff-avoidance is suppressed for a gap-crossing edge
+    // ONLY within this radius of the takeoff node and only while heading along the edge, instead of
+    // for the edge's whole duration. MUST stay above lookAheadDistance: below that, avoidance would
+    // already be steering the bot away from the lip before it could reach the cone, and it would
+    // never take off at all — which is why the original suppression was edge-wide.
+    [SerializeField] private float takeoffConeRadius = 4f;
+    // Cosine of the cone half-angle (0.5 = 60°). Kept well wider than the 18-30° steering jitter so an
+    // imprecise bot doesn't flip between suppress and avoid on approach and oscillate at the lip.
+    [SerializeField] private float takeoffConeAlignment = 0.5f;
+
     [SerializeField] private float maxSteeringJitterDegrees = 30f;
+
+    // Fall recovery. A bot that has dropped this far BELOW the height it was last standing at, with
+    // nothing inside fallRecoveryGroundProbe underneath it, has missed — not jumped. Both conditions are
+    // needed: mid-jump there's also no ground below (so the probe alone would make a bot grab a wall in
+    // the middle of a perfectly good jump), and a Drop edge descends deliberately (so the height alone
+    // would fire on a routed descent). Only "below where I took off AND nothing to land on" is a fall.
+    [SerializeField] private float fallRecoveryDropThreshold = 4f;
+    [SerializeField] private float fallRecoveryGroundProbe = 5f;
+    // How far to look for a wall to steer at while falling. Facades run down to buildingBaseY (-25) and
+    // the map resets a fallen agent at -15, so there is always wall alongside a chasm — the bot just has
+    // to reach it, and wallHook.detectionDistance is only 1m.
+    [SerializeField] private float fallRecoveryWallSearchRange = 6f;
 
     // Break-contact juke (runners only). When the nearest tagger is within jukeTriggerRange AND closing,
     // the runner cuts ~90° off the tagger axis for jukeDuration, then can't juke again for jukeCooldown.
@@ -85,6 +128,24 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private const float CanSeekPressureDistance = 12f;
     private const float CanAbortDistance = 6f;
 
+    // Horizontal directions swept when hunting for a wall to fall toward — matches the motor's own
+    // BotWallProbeDirections so the "steer at it" and "grab it" probes agree about what's reachable.
+    private const int WallSearchDirections = 8;
+
+    // Commit-latch lifetimes. Swing gets its own because the motor's swing.maxHangSeconds is 8 — a
+    // flat 4s deadline expires mid-arc and replans the bot off its own edge.
+    private const float CommitSeconds = 4f;
+    private const float SwingCommitSeconds = 10f;
+    // How far from a Swing edge's midpoint to look for the rope. The pivot hangs over the gap, and the
+    // two authored swings span ~11m chasms, so this only has to cover half a span plus slack.
+    private const float SwingSearchRadius = 12f;
+    // Below this tangential speed there's no meaningful direction of travel to pump along, so the pump
+    // seeds off the swing's exit direction instead of amplifying noise.
+    private const float SwingPumpMinSpeed = 0.5f;
+    // Horizontal range for the edge-stalk creep at a hanging target. Beyond this, normal routing closes
+    // the distance first; inside it, the direct walk owns steering.
+    private const float EdgeStalkRange = 7f;
+
     private TagAgent _agent = null!;
     private RoundController _roundController = null!;
     private ParkourGraph? _graph;
@@ -95,6 +156,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private int _pathIndex;
     private float _nextDecisionTime;
     private MatchMetrics? _metrics;
+    private System.Random _rng = new(0);
 
     // Jump-landing telemetry: capture the target node at takeoff, measure horizontal miss on landing.
     private bool _jumpInFlight;
@@ -105,6 +167,22 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     private bool _jumpWasShort;   // was the in-flight jump a short (walk) one — for landing telemetry
     private float _jumpTargetZ;
     private bool _airJumpRequested; // edge-trigger: one mid-air double-jump press per airborne period
+
+    // Fall recovery: the height we were last standing at (the reference for "have I dropped?"), and the
+    // earliest time we'll launch off a wall we're clinging to.
+    private float _lastGroundedY;
+    private float _wallHangLaunchTime;
+
+    // The rope for the Swing edge currently being executed — resolved from the world once per edge
+    // (the graph only knows node ids) so steering can aim at it. Cleared when the edge completes.
+    private ChainSwingInteractable? _edgeSwing;
+
+    // TEMP DIAG (remove once swings land) — see the Swing case in ExecuteEdgeButtons.
+    private float _swingMinRopeDist = float.MaxValue;
+    private float _swingMinPivotDrop = float.MaxValue;
+    private bool _swingAttached;
+    private bool _swingSeenOccupied;
+    private bool _swingRopeSearchFailed;
 
     // Commit-to-edge latch. Once the bot presses the button that starts a special edge
     // (jump/swing/climb/ladder/vault/mantle), planning freezes so the every-reactionTime replan can't
@@ -151,13 +229,26 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     /// <summary>Optional — only the self-play harness sets this, to record which edge types actually get traversed during a match.</summary>
     public void SetMetrics(MatchMetrics metrics) => _metrics = metrics;
 
+    /// <summary>Optional — seeds this bot's decision RNG so self-play batches reproduce. Per-bot (not global Random) so bots don't couple through shared RNG call order. Unseeded bots all share seed 0.</summary>
+    public void SetSeed(int seed) => _rng = new System.Random(seed);
+
     public void Tick(float deltaTime)
     {
         JumpPressed = false;
         InteractPressed = false;
 
         if (_agent.Motor.CurrentState == MotorState.Grounded)
+        {
             _airJumpRequested = false; // double-jump recharges on the ground (mirrors the motor's _doubleJumpUsed reset)
+            _lastGroundedY = transform.position.y; // reference height for the fall check
+        }
+
+        // Fall recovery owns the tick when it fires: a bot in the void has no route to plan, and its
+        // path steering would just aim it at a target it can't reach.
+        if (UpdateFallRecovery()) return;
+
+        // Swinging owns the tick too — a pendulum is driven, not steered at. See UpdateSwingPump.
+        if (UpdateSwingPump()) return;
 
         // Jump-shortfall recovery: descending mid-flight on a committed Jump edge, still short of the
         // target lip, with no floor within safe-drop reach below → press jump once for the double-jump
@@ -208,7 +299,13 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         {
             _nextDecisionTime = Time.time + Mathf.Max(_tuning.reactionTime, 0.05f);
             if (_committed && Time.time >= _commitDeadline)
+            {
+                // TEMP DIAG (remove once swings land): a swing edge whose commit expired never reached
+                // its exit node — report how close to the rope it got and whether it ever attached.
+                if (_committedEdge is { Type: ParkourEdgeType.Swing })
+                    ReportSwingDiag("deadline");
                 _committed = false; // deadline — the maneuver stalled; let planning resume
+            }
             SelectTarget();
             if (!_committed)
                 RecomputePath(); // frozen while committed so a mid-edge bot keeps its approach + held Interact
@@ -238,11 +335,24 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             return;
         }
 
-        Vector3 rawDir = RawDirectionTo(steerPoint);
-        Vector3 finalDir = ApplySteeringSafety(rawDir);
+        // Edge-stalk: a hanging target (pipe/ladder/rope/wall over the void) breaks BOTH normal layers —
+        // cliff-avoidance fans its below-lip direction into sideways milling so the pack never reaches
+        // the lip where the ranged tag could connect, and the pre-lunge landing check vetoes every dive
+        // at it because a hanging target is by definition over void. Net effect (reported from manual
+        // play, screenshot of the whole pack huddled a few metres from the lip): camping a pipe top made
+        // you untouchable. Stalking walks straight at the target's XZ at WALK speed and stops dead at
+        // the lip — close enough for TryTagInRange's reach, and the lunge below gets its own hanging
+        // exception.
+        bool stalkingHangingTarget = UpdateEdgeStalk();
 
-        Move = new Vector2(finalDir.x, finalDir.z);
-        ExecuteEdgeButtons(rawDir);
+        if (!stalkingHangingTarget)
+        {
+            Vector3 rawDir = RawDirectionTo(steerPoint);
+            Vector3 finalDir = ApplySteeringSafety(rawDir);
+
+            Move = new Vector2(finalDir.x, finalDir.z);
+            ExecuteEdgeButtons(rawDir);
+        }
 
         if (_agent.Role == Role.Tagger)
         {
@@ -253,9 +363,179 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             // window can land the tag, and a bot diving after you reads exactly as intended.
             Vector3 toTarget = _target.transform.position - transform.position;
             bool targetAhead = Vector3.Dot(transform.forward, toTarget.normalized) > 0.6f;
-            if (toTarget.magnitude <= lungeRange && targetAhead)
+            // LungeLandsOnGround is the void-bait fix: the dive is committed and outranges lungeRange,
+            // so a target baiting from the lip's edge would otherwise pull the bot straight off it with
+            // steering authority too low to recover. Refusing the dive just means closing on foot.
+            //
+            // EXCEPT at a hanging target: their position is over void, so the landing check would veto
+            // every dive at them forever — that veto is exactly what made pipe-camping safe. Diving at
+            // a hanger is a deliberate trade now that fall recovery exists: the dive's contact window
+            // tags them mid-flight, and the tagger grabs a wall on the way down (worst case it eats the
+            // fall-respawn — the tag still landed). Pest control hurling itself off a roof to peel you
+            // off a pipe is precisely the "hunted" feel this bot is for.
+            bool targetHanging = _target.Motor.CurrentState
+                is MotorState.OnLadder or MotorState.OnSwing or MotorState.WallHook or MotorState.Climbing;
+            if (toTarget.magnitude <= lungeRange && targetAhead && (LungeLandsOnGround() || targetHanging))
                 _agent.TryLunge();
         }
+    }
+
+    // ---------------------------------------------------------------- Edge stalk
+
+    /// <summary>
+    /// Close-quarters approach to a HANGING target (ladder/pipe/rope/wall). Returns true while it owns
+    /// steering. Walks — never sprints — straight at the target's XZ and freezes at the lip the moment
+    /// the ground is about to run out, which parks the bot at exactly the spot TryTagInRange's
+    /// chest-to-chest linecast clears the roof corner from. The walk matters twice: momentum at the lip
+    /// is what the brake exists to prevent, and a creeping bot at the edge above you reads scarier than
+    /// a sprinting one anyway.
+    ///
+    /// Deliberately NOT gated on difficulty: standing still doing nothing was never the intended Casual
+    /// behaviour, it was a hole. Tier scaling still applies through reaction time (how fast they notice
+    /// you hanging) and the lunge's aim jitter.
+    /// </summary>
+    private bool UpdateEdgeStalk()
+    {
+        if (_agent.Role != Role.Tagger || _target == null) return false;
+
+        bool targetHanging = _target.Motor.CurrentState
+            is MotorState.OnLadder or MotorState.OnSwing or MotorState.WallHook or MotorState.Climbing;
+        if (!targetHanging) return false;
+
+        Vector3 toTarget = _target.transform.position - transform.position;
+        Vector3 flat = new(toTarget.x, 0f, toTarget.z);
+        if (flat.magnitude > EdgeStalkRange) return false; // too far for the direct creep — keep routing
+
+        _approachShortGap = true; // walk: SprintHeld is !_approachShortGap
+        Vector3 dir = flat.sqrMagnitude > 0.0001f ? flat.normalized : transform.forward;
+        Move = _agent.Motor.CurrentState == MotorState.Grounded && IsAboutToRunOffEdge(dir)
+            ? Vector2.zero                  // parked at the lip — reach/lunge take it from here
+            : new Vector2(dir.x, dir.z);
+        return true;
+    }
+
+    // ---------------------------------------------------------------- Swing
+
+    /// <summary>
+    /// Drive the pendulum while on a rope. Returns true while it owns the input.
+    ///
+    /// Steering at the exit NODE — which is what normal path steering does, and what bots did before —
+    /// is a CONSTANT force on a pendulum. Constant force doesn't add energy to a swing; it just shifts
+    /// where the thing hangs. A bot that drops onto the rope out of a fall arrives with almost no
+    /// tangential speed, so it hung near the bottom of the arc forever and the motor's auto-release
+    /// (velocity toward ExitDirection > 5 AND rising > 1) could never be satisfied — measured: every
+    /// swing ended how=deadline, attached=True, min_rope_dist=0.02-0.08. They caught the rope fine;
+    /// nothing was building the arc.
+    ///
+    /// Pumping means pushing along the CURRENT direction of travel, which adds energy every tick, so
+    /// amplitude grows until an exit-ward upswing satisfies the release. Seeded with the exit direction
+    /// when velocity is ~0, otherwise a bot hanging dead-still has no direction to pump along.
+    ///
+    /// EXIT POLICY: never strands. The motor auto-releases when the arc finally carries it exit-ward,
+    /// and force-releases at swing.maxHangSeconds (8) regardless; this only decides where to push.
+    /// </summary>
+    private bool UpdateSwingPump()
+    {
+        if (_agent.Motor.CurrentState != MotorState.OnSwing) return false;
+
+        Vector3 velocity = _agent.Motor.HorizontalVelocity;
+        Vector3 pump = velocity.sqrMagnitude > SwingPumpMinSpeed * SwingPumpMinSpeed
+            ? velocity.normalized
+            : (_edgeSwing != null ? _edgeSwing.ExitDirection : transform.forward);
+
+        pump.y = 0f;
+        if (pump.sqrMagnitude < 0.0001f) return false;
+        pump.Normalize();
+
+        Move = new Vector2(pump.x, pump.z);
+        return true;
+    }
+
+    // ---------------------------------------------------------------- Fall recovery
+
+    /// <summary>
+    /// "I'm falling — find a wall, grab it, climb back up." Returns true while recovery owns the input.
+    ///
+    /// The chain is grab → launch → grab → launch, each cycle netting height: LaunchOffWallHook fires
+    /// jumpUpSpeed (7.5) up and jumpOutSpeed (6) away along the wall normal, which across a rooftop
+    /// chasm lands the bot on the FACING facade — a chimney climb. Runners additionally get the air
+    /// jump (grabbing recharges it), so they climb faster than taggers; that asymmetry is real and
+    /// intended, since RoundController only grants CanDoubleJump to Runners and a human tagger is under
+    /// exactly the same restriction. No movement stat is touched here.
+    ///
+    /// Scales by tier through reaction time alone: a Scary bot hangs a beat and goes, a Casual bot
+    /// dithers on the wall long enough to slide (slideDownSpeed 1.5) and can still lose the recovery.
+    /// </summary>
+    private bool UpdateFallRecovery()
+    {
+        MotorState state = _agent.Motor.CurrentState;
+
+        if (state == MotorState.WallHook)
+        {
+            // TickWallHook pulls up into a mantle the instant a ledge is within reach, so if we're still
+            // hanging there isn't one — launch and grab again higher. The reaction-time delay keeps the
+            // launch off the same frame as the grab and is what makes the tiers differ.
+            if (Time.time >= _wallHangLaunchTime) JumpPressed = true;
+            Move = Vector2.zero; // no steering authority while clung; the launch does the work
+            return true;
+        }
+
+        if (state is not MotorState.Airborne) return false;
+
+        // Reference height for "have I dropped?". While a planned jump is in flight the bot is SUPPOSED
+        // to be below its takeoff (a Drop edge descends deliberately, and every jump arcs down onto its
+        // lip), so the comparison has to be against the landing it's aiming at — not where it jumped
+        // from. Getting this wrong made recovery fire in the middle of perfectly good traversals:
+        // measured self-play stuck 7 -> 14 and double-jumps 7 -> 30 as bots grabbed walls and burned
+        // air-jumps mid-arc. Below the LANDING with nothing underneath is a miss; below the takeoff is
+        // just a jump.
+        float landingReference = _jumpInFlight ? _jumpTargetPos.y : _lastGroundedY;
+        bool falling = _agent.Motor.Velocity.y < -2f;
+        bool belowLanding = transform.position.y < landingReference - fallRecoveryDropThreshold;
+        bool nothingBelow = !Physics.Raycast(transform.position, Vector3.down, fallRecoveryGroundProbe);
+        if (!(falling && belowLanding && nothingBelow)) return false;
+
+        if (_agent.Motor.TryBotWallGrab())
+        {
+            _wallHangLaunchTime = Time.time + Mathf.Max(_tuning.reactionTime, 0.05f);
+            _airJumpRequested = false; // the grab recharged the motor's air jump; re-arm our own edge-trigger to match
+            _jumpInFlight = false;     // whatever jump this was, it's over — don't score it as a landing later
+            Move = Vector2.zero;
+            return true;
+        }
+
+        // Nothing in grab range yet: steer at the nearest wall so the fall carries us TO one, and spend
+        // the air jump (runners only — CanDoubleJump is role-gated) to buy height while we close on it.
+        Vector3 toWall = NearestWallDirection();
+        if (toWall != Vector3.zero) Move = new Vector2(toWall.x, toWall.z);
+
+        if (_agent.Motor.CanDoubleJump && !_airJumpRequested)
+        {
+            JumpPressed = true;
+            _airJumpRequested = true;
+        }
+        return true;
+    }
+
+    /// <summary>Nearest grabbable wall face around us, as a flat direction (zero if none in range).
+    /// Rejects near-horizontal hits the same way the motor's grab does, so we never steer at a floor.</summary>
+    private Vector3 NearestWallDirection()
+    {
+        Vector3 origin = transform.position + Vector3.up * 0.5f;
+        float bestDistance = float.MaxValue;
+        Vector3 bestDir = Vector3.zero;
+
+        for (int i = 0; i < WallSearchDirections; i++)
+        {
+            Vector3 dir = Quaternion.Euler(0f, i * (360f / WallSearchDirections), 0f) * Vector3.forward;
+            if (!Physics.Raycast(origin, dir, out RaycastHit hit, fallRecoveryWallSearchRange)) continue;
+            if (Mathf.Abs(hit.normal.y) > 0.3f) continue;
+            if (hit.distance >= bestDistance) continue;
+            bestDistance = hit.distance;
+            bestDir = dir;
+        }
+
+        return bestDir;
     }
 
     // ---------------------------------------------------------------- Planning
@@ -310,6 +590,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
         _path = _graph.FindPath(startNode, goalNode);
         _pathIndex = 0;
+        _edgeSwing = null; // the new path's Swing edges resolve their own rope
     }
 
     /// <summary>Nearest-tagger graph path-distance to EVERY node (MIN over all taggers = pincer
@@ -412,7 +693,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         // Lower-precision bots predict sloppily: add positional noise scaled by (1 - precision).
         float jitter = (1f - _tuning.executionPrecision) * 4f;
         if (jitter > 0.01f)
-            predicted += new Vector3(Random.Range(-jitter, jitter), 0f, Random.Range(-jitter, jitter));
+            predicted += new Vector3(RandRange(-jitter, jitter), 0f, RandRange(-jitter, jitter));
 
         return predicted;
     }
@@ -455,12 +736,12 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         // Spread the flee: 10 runners scoring near-identically all funnel to the SAME best node and get
         // swept as one cluster. Pick RANDOMLY among goals within FleeGoalSpread metres of the best lead,
         // so runners fan out across several good exits — deterministic flee is trivial for a pincer to
-        // corner. Unity Random (not Time-seeded), matching PredictPosition's existing jitter.
+        // corner. Per-bot seeded RNG (_rng), matching PredictPosition's existing jitter.
         if (bestScore == float.NegativeInfinity) return best;
         var pool = new List<int>();
         for (int i = 0; i < scores.Length; i++)
             if (scores[i] >= bestScore - FleeGoalSpread) pool.Add(i);
-        return pool.Count > 0 ? pool[Random.Range(0, pool.Count)] : best;
+        return pool.Count > 0 ? pool[RandIndex(pool.Count)] : best;
     }
 
     private Vector3 ComputeSteerPoint()
@@ -473,15 +754,29 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
             ParkourEdge edge = _path[_pathIndex];
             Vector3 toNodePos = _graph!.Nodes[edge.ToNode].Position;
 
+            // Swing approach: aim at the ROPE, not the far lip. The grab volume is a radius-1.2 capsule
+            // hanging down the rope line, and the exit node is metres past it — steering at the exit
+            // sends the bot off the entry lip on a trajectory that only clips the rope by chance, which
+            // is exactly why swings measured 9 attempts / 0 completions. Once attached, the pendulum
+            // owns the motion and the exit node is the right target again.
+            if (edge.Type == ParkourEdgeType.Swing && _edgeSwing != null
+                && _agent.Motor.CurrentState != MotorState.OnSwing)
+            {
+                Vector3 pivot = _edgeSwing.PivotPosition;
+                return new Vector3(pivot.x, transform.position.y, pivot.z);
+            }
+
             if (Vector3.Distance(transform.position, toNodePos) > nodeArrivalRadius)
                 return toNodePos;
 
             _metrics?.RecordEdgeUsage(edge.Type);
+            if (edge.Type == ParkourEdgeType.Swing) ReportSwingDiag("completed"); // TEMP DIAG
             if (_committed && ReferenceEquals(edge, _committedEdge))
             {
                 _committed = false; // committed edge completed — arrived at its ToNode
                 _committedEdge = null;
             }
+            _edgeSwing = null; // next Swing edge resolves its own rope; a stale one would misaim the approach
             _pathIndex++;
         }
 
@@ -556,20 +851,81 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
         float jitterDeg = (1f - _tuning.executionPrecision) * maxSteeringJitterDegrees;
         if (jitterDeg > 0.01f)
-            dir = Quaternion.Euler(0f, Random.Range(-jitterDeg, jitterDeg), 0f) * dir;
+            dir = Quaternion.Euler(0f, RandRange(-jitterDeg, jitterDeg), 0f) * dir;
 
         return dir;
     }
 
-    /// <summary>Cliff-avoidance is only wanted where solid ground is actually expected — suppress it while executing an edge that's a deliberate gap-crossing, or it would prevent the very jump the route calls for.</summary>
+    private float RandRange(float min, float max) => min + (float)_rng.NextDouble() * (max - min);
+    private int RandIndex(int countExclusive) => _rng.Next(0, countExclusive);
+
+    /// <summary>
+    /// Cliff-avoidance is only wanted where solid ground is actually expected, which means two
+    /// separate suppressions:
+    ///
+    /// (1) Never off the ground. IsSafe probes for a floor, so over a gap it fails in EVERY direction,
+    /// FindSafeDirection returns zero, and Move goes to zero mid-flight — air control dies and a jump
+    /// that would have landed drops into the void instead. Airborne/rope/ladder/transition states have
+    /// no floor to probe and nothing to steer away from.
+    ///
+    /// (2) On approach to a deliberate gap-crossing edge — but only inside the TAKEOFF CONE (near the
+    /// takeoff node AND heading along the edge), not for the edge's whole duration. Outside the cone
+    /// there's no takeoff to protect, so avoidance (and the momentum brake) stay on. Note this is
+    /// hardening, NOT the void-fall fix: the old edge-wide suppression was measured NOT to cause falls,
+    /// because steering jitter is re-rolled per tick and so is zero-mean noise that never accumulates
+    /// into a side-lip departure. The actual void fall was momentum — see SteerSafely.
+    /// </summary>
     private Vector3 ApplySteeringSafety(Vector3 dir)
     {
-        bool crossingGapIsExpected = _path != null && _pathIndex < _path.Count && _path[_pathIndex].Type
+        // Grounded and Sliding are the only states standing on a floor worth probing (Sliding matters:
+        // a slide-hop chain must still not slide off a roof).
+        if (_agent.Motor.CurrentState is not (MotorState.Grounded or MotorState.Sliding))
+            return dir;
+
+        if (_graph == null || _path == null || _pathIndex >= _path.Count)
+            return SteerSafely(dir);
+
+        ParkourEdge edge = _path[_pathIndex];
+        bool crossingGapIsExpected = edge.Type
             is ParkourEdgeType.Jump or ParkourEdgeType.SlideHop
                or ParkourEdgeType.Vault or ParkourEdgeType.Mantle or ParkourEdgeType.Drop
                or ParkourEdgeType.Swing;
+        if (!crossingGapIsExpected) return SteerSafely(dir);
 
-        return crossingGapIsExpected ? dir : FindSafeDirection(dir);
+        return InTakeoffCone(edge, dir) ? dir : SteerSafely(dir);
+    }
+
+    /// <summary>
+    /// Is the bot actually in position to take off along this edge — within takeoffConeRadius of its
+    /// takeoff node AND heading along it? This is the landing check: the takeoff node is the only
+    /// spot on the roof whose arc is known to reach the far node, because the graph builder validated
+    /// exactly that pair (RooftopGraphBuilder.JumpMakeable). Anywhere else on the lip, the same jump
+    /// leaves the map.
+    ///
+    /// Shared deliberately by ApplySteeringSafety (suppress cliff-avoidance only here) and
+    /// ExecuteEdgeButtons (press Jump only here). Both previously trusted "the current edge is a
+    /// Jump" on its own, which fires at ANY lip the bot happens to reach — so a bot nudged toward a
+    /// side lip by steering jitter, a shove, or a bait would launch itself into the void with
+    /// avoidance switched off. One guard covering both is why the fix holds.
+    ///
+    /// The cone opens naturally: the Run edge preceding a Jump ends AT its takeoff node, so when the
+    /// path advances onto the Jump the bot is already within nodeArrivalRadius of it — well inside.
+    /// </summary>
+    private bool InTakeoffCone(ParkourEdge edge, Vector3 dir)
+    {
+        if (_graph == null) return false;
+
+        Vector3 takeoff = _graph.Nodes[edge.FromNode].Position;
+        Vector3 toTakeoff = takeoff - transform.position;
+        toTakeoff.y = 0f;
+        if (toTakeoff.sqrMagnitude > takeoffConeRadius * takeoffConeRadius)
+            return false; // too far out to be taking off — a lip here is a fall, not a route
+
+        Vector3 alongEdge = _graph.Nodes[edge.ToNode].Position - takeoff;
+        alongEdge.y = 0f;
+        if (alongEdge.sqrMagnitude < 0.0001f) return true; // degenerate edge — nothing to align against
+
+        return Vector3.Dot(dir.normalized, alongEdge.normalized) >= takeoffConeAlignment;
     }
 
     private void ExecuteEdgeButtons(Vector3 steeringDir)
@@ -587,7 +943,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 // Drop (a one-way descent edge, e.g. Tower's second exit) reuses this verbatim: a
                 // jump press off a ledge you're descending from is still the correct way to clear
                 // the gap, it just lands lower than it took off.
-                if (_agent.Motor.CurrentState == MotorState.Grounded && IsAboutToRunOffEdge(steeringDir))
+                // InTakeoffCone is the landing check: without it this fires at ANY lip the ground
+                // runs out at, so a bot carrying a Jump edge that drifts to a side lip launches into
+                // the void on faith. Only the validated takeoff node's arc is known to reach ToNode.
+                if (_agent.Motor.CurrentState == MotorState.Grounded && IsAboutToRunOffEdge(steeringDir)
+                    && InTakeoffCone(edge, steeringDir))
                 {
                     JumpPressed = true;
                     Commit(edge);
@@ -625,6 +985,24 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 // motor's ExitDirection auto-release still handles the actual departure toward the exit.
                 if (_agent.Motor.CurrentState != MotorState.OnSwing)
                     InteractPressed = true;
+                // Resolve the actual rope so ComputeSteerPoint can aim AT it. Holding interact is
+                // useless if the bot's arc never enters the grab capsule, which is what steering at the
+                // far exit node produced: measured 9 swing attempts, 0 completions — it was catching the
+                // rope only by luck of trajectory.
+                CacheEdgeSwing(edge);
+                // TEMP DIAG (remove once swings land): attempts>>usage says bots start swing edges and
+                // never finish them. Track how close we actually get to the rope and whether we ever
+                // attach, so the failure stage is data rather than another guess.
+                if (_edgeSwing != null)
+                {
+                    Vector3 pv = _edgeSwing.PivotPosition;
+                    Vector3 me = transform.position;
+                    float ropeDist = new Vector2(me.x - pv.x, me.z - pv.z).magnitude;
+                    _swingMinRopeDist = Mathf.Min(_swingMinRopeDist, ropeDist);
+                    _swingMinPivotDrop = Mathf.Min(_swingMinPivotDrop, pv.y - me.y);
+                    if (_agent.Motor.CurrentState == MotorState.OnSwing) _swingAttached = true;
+                    if (_edgeSwing.IsOccupied && _agent.Motor.CurrentState != MotorState.OnSwing) _swingSeenOccupied = true;
+                }
                 Commit(edge);
                 break;
 
@@ -645,17 +1023,62 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     }
 
     /// <summary>Latch onto the special edge the bot has just started executing: freeze planning until
-    /// the edge completes (ToNode arrival), a fall-respawn teleport, or the 4s deadline. Records
+    /// the edge completes (ToNode arrival), a fall-respawn teleport, or the deadline. Records
     /// exactly ONE attempt per execution here — swing/climb/ladder previously counted per-FixedUpdate
     /// (frame-inflated: 333/471/54 attempts, 0 completions); this matches Jump's per-event semantics.
-    /// No-op if already committed, so neither the counter nor the deadline re-arm each frame.</summary>
+    /// No-op if already committed, so neither the counter nor the deadline re-arm each frame.
+    ///
+    /// The deadline is per-edge-kind because a flat 4s is SHORTER than a swing's own designed hang
+    /// budget (swing.maxHangSeconds = 8): a bot that attached correctly would have its commit expire
+    /// mid-arc, replan, steer at some unrelated point while the pendulum fought it, and orphan the edge
+    /// so even a good landing never scored as usage.</summary>
     private void Commit(ParkourEdge edge)
     {
         if (_committed) return;
         _committed = true;
-        _commitDeadline = Time.time + 4f;
+        _commitDeadline = Time.time + (edge.Type == ParkourEdgeType.Swing ? SwingCommitSeconds : CommitSeconds);
         _committedEdge = edge;
         _metrics?.RecordEdgeAttempt(edge.Type);
+    }
+
+    /// <summary>TEMP DIAG (remove once swings land): dump what happened to one swing edge execution.
+    /// min_rope_dist is the closest the bot's XZ ever got to the rope line — the grab capsule is radius
+    /// 1.2 and the motor's own overlap adds ladderGrabRange 1.2, so anything under ~2.4 should have been
+    /// catchable. min_pivot_drop is how far BELOW the pivot it passed: a negative value means it never
+    /// got below the pivot at all, i.e. it never reached the chain's height to grab it.</summary>
+    private void ReportSwingDiag(string how)
+    {
+        _swingRopeSearchFailed = false; // re-arm the rope-missing one-shot for the next execution
+        if (_swingMinRopeDist == float.MaxValue) return;
+        Debug.Log($"METRIC swingdiag how={how} attached={_swingAttached} occupied_seen={_swingSeenOccupied} " +
+                  $"min_rope_dist={_swingMinRopeDist:0.00} min_pivot_drop={_swingMinPivotDrop:0.00}");
+        _swingMinRopeDist = float.MaxValue;
+        _swingMinPivotDrop = float.MaxValue;
+        _swingAttached = false;
+        _swingSeenOccupied = false;
+        _swingRopeSearchFailed = false;
+    }
+
+    /// <summary>Find the rope this Swing edge actually refers to, once per execution. The graph only
+    /// carries node ids, and the pivot is nowhere near either of them, so the rope has to be located in
+    /// the world — it hangs over the gap, hence the search from the edge's midpoint.</summary>
+    private void CacheEdgeSwing(ParkourEdge edge)
+    {
+        if (_edgeSwing != null || _graph == null) return;
+
+        Vector3 midpoint = (_graph.Nodes[edge.FromNode].Position + _graph.Nodes[edge.ToNode].Position) * 0.5f;
+        Collider[] hits = Physics.OverlapSphere(midpoint, SwingSearchRadius, ~0, QueryTriggerInteraction.Collide);
+        foreach (Collider col in hits)
+            if (col.TryGetComponent(out ChainSwingInteractable swing)) { _edgeSwing = swing; return; }
+
+        // TEMP DIAG (remove once swings land): a failed lookup was previously SILENT, and the attach
+        // diagnostics are all gated behind _edgeSwing != null — so "rope not found" and "no data" were
+        // indistinguishable. Once per execution: the retry runs every tick until the edge ends.
+        if (!_swingRopeSearchFailed)
+        {
+            _swingRopeSearchFailed = true;
+            Debug.Log($"METRIC swingdiag how=rope_missing midpoint=({midpoint.x:0.0},{midpoint.y:0.0},{midpoint.z:0.0}) overlaps={hits.Length}");
+        }
     }
 
     /// <summary>Should the bot approach at walk speed to avoid overshooting a short gap? Only for a
@@ -698,6 +1121,26 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         return !Physics.Raycast(rayOrigin, Vector3.down, 1.0f);
     }
 
+    /// <summary>
+    /// Cliff-avoidance with a momentum brake in front of it. Braking must be checked against our
+    /// VELOCITY, not the desired direction: steering away from a lip does nothing about the 7m/s
+    /// already carrying us at it, and FindSafeDirection happily returns a 20°-off heading that keeps
+    /// nearly all of that forward speed. Returning zero hands the motor no wish direction, so its
+    /// deceleration does the work.
+    ///
+    /// The horizon is speed-scaled on purpose (see edgeBrakeSeconds): as the bot slows, its horizon
+    /// shrinks with it, so it settles into a creep and can still reach a target parked on the lip.
+    /// </summary>
+    private Vector3 SteerSafely(Vector3 desired)
+    {
+        Vector3 velocity = _agent.Motor.HorizontalVelocity;
+        float speed = velocity.magnitude;
+        if (speed > 0.5f && !HasGroundAt(velocity, speed * edgeBrakeSeconds))
+            return Vector3.zero;
+
+        return FindSafeDirection(desired);
+    }
+
     private Vector3 FindSafeDirection(Vector3 desired)
     {
         if (IsSafe(desired)) return desired;
@@ -714,10 +1157,30 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         return Vector3.zero;
     }
 
-    private bool IsSafe(Vector3 direction)
+    private bool IsSafe(Vector3 direction) => HasGroundAt(direction, lookAheadDistance);
+
+    /// <summary>Is there floor within the safe-drop band at <paramref name="distance"/> along
+    /// <paramref name="direction"/>? The shared probe behind both steering cliff-avoidance (which asks
+    /// at lookAheadDistance) and the pre-lunge landing check (which asks at the dive's full reach).</summary>
+    private bool HasGroundAt(Vector3 direction, float distance)
     {
-        Vector3 lookAheadPoint = transform.position + direction.normalized * lookAheadDistance;
-        Vector3 rayOrigin = new(lookAheadPoint.x, transform.position.y + upwardClearance, lookAheadPoint.z);
+        Vector3 point = transform.position + direction.normalized * distance;
+        Vector3 rayOrigin = new(point.x, transform.position.y + upwardClearance, point.z);
         return Physics.Raycast(rayOrigin, Vector3.down, upwardClearance + maxSafeDrop);
     }
+
+    /// <summary>
+    /// Landing check for the lunge — the one committed decision cliff-avoidance CANNOT undo.
+    /// BeginDive locks the motor for diveDuration and cuts steering authority to diveSteeringScale
+    /// (0.15), and avoidance only shapes Move, so once the dive starts the bot goes where it was
+    /// pointed. Reach (~diveSpeed*diveDuration, 7.2m) exceeds lungeRange (4.5m), so diving at a target
+    /// standing near a lip overshoots straight past the edge: bait the tagger, step aside, watch it
+    /// commit into the void. Probing the dive's END POINT (not the target's position) is the fix.
+    ///
+    /// Endpoint-only on purpose: a dive that clears a small gap and lands on the far side is a good
+    /// diving catch, and this still allows it. Arriving faster than diveSpeed is preserved rather than
+    /// clamped (see TagRulesConfig.diveSpeed), so reach takes the greater of the two.
+    /// </summary>
+    private bool LungeLandsOnGround() =>
+        HasGroundAt(transform.forward, _agent.DiveReachAt(_agent.Motor.HorizontalVelocity.magnitude));
 }

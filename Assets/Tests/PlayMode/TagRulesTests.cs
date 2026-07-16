@@ -490,6 +490,262 @@ public sealed class TagRulesTests
         Assert.Greater(minY, -1f, "Bot should not run off the cliff edge chasing a target on the other side of a gap.");
     }
 
+    [UnityTest]
+    public IEnumerator ParkourBotInput_RoutedAcrossJumpEdge_WalksNarrowApproachAndLands()
+    {
+        // Companion to ParkourBotInput_AvoidsRunningOffCliff, which only covers the graph-less
+        // direct-chase path. This covers the ROUTED path end to end: cross a narrow approach while
+        // carrying a Jump edge, reach the takeoff, commit, and land on the far pad.
+        //
+        // Honest scope note — this does NOT discriminate the takeoff-cone change in
+        // ApplySteeringSafety: it was measured passing identically (max_x 18.83 vs 18.84) against the
+        // old edge-wide suppression. That's because steering jitter is re-rolled every tick, so it's
+        // zero-mean noise rather than a persistent bias — it wobbles the bot but never accumulates
+        // into walking off a side lip, which is also why self-play measures zero falls. The cone is
+        // defensive hardening for a fall that has not been reproduced, not a fix for an observed one.
+        // What this test genuinely guards is routed traversal: that safety steering on the approach
+        // never stalls the bot short of its takeoff, and that the jump still completes.
+        //
+        // Casual is deliberate: loosest execution precision (0.4 -> ~18 deg jitter), the worst case
+        // for the approach. The narrow catwalk is deliberate too: a 12x12 roof absorbs drift a 4m
+        // one doesn't.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 4f));  // catwalk: x -10..10, z -2..2
+        CreateGround(_sceneRoot.transform, new Vector3(16f, -0.5f, 0f), new Vector3(6f, 1f, 4f));  // landing pad across a 3m gap
+
+        var graph = new ParkourGraph();
+        int takeoffNode = graph.AddNode(new Vector3(9f, 0f, 0f));   // at the catwalk's +X lip
+        int landingNode = graph.AddNode(new Vector3(16f, 0f, 0f));  // on the far pad
+        graph.AddEdge(takeoffNode, landingNode, ParkourEdgeType.Jump, _movementConfig.ground.sprintSpeed, emptyGap: 3f);
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform, false);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.taggerCount = 1;
+        config.forcePlayerAsTagger = false;
+        // Taggers are frozen for the whole start grace (ParkourBotInput.Tick returns early), which
+        // would otherwise burn most of the sim window with the bot standing still and let this test
+        // pass without the bot ever walking the catwalk it's supposed to walk.
+        config.roundStartGraceDuration = 0f;
+        controller.Configure(config);
+
+        // Both graph nodes sit at the far end, so NearestNode resolves the bot straight onto the Jump
+        // edge while it's still 17m from the takeoff — exactly the "carrying a Jump edge across open
+        // ground" state that used to run unguarded.
+        (GameObject botGo, _, TagAgent botAgent, _) = CreateBotAgent(new Vector3(-8f, 1.1f, 0f), controller, graph, BotDifficulty.Casual);
+        (_, _, TagAgent targetAgent, _) = CreateTagAgent(new Vector3(16f, 1.1f, 0f)); // stands on the far pad
+        controller.RegisterAgent(targetAgent, isLocalPlayer: false);
+
+        yield return null;
+        botAgent.SetRole(Role.Tagger, startGrace: false);
+        targetAgent.SetRole(Role.Runner, startGrace: false);
+
+        float minY = float.MaxValue;
+        float maxX = float.NegativeInfinity;
+        for (int i = 0; i < 400; i++) // ~8s: enough to cross the 17m approach and commit the jump
+        {
+            yield return new WaitForFixedUpdate();
+            minY = Mathf.Min(minY, botGo.transform.position.y);
+            maxX = Mathf.Max(maxX, botGo.transform.position.x);
+        }
+
+        Debug.Log($"METRIC bot_takeoff_cone_min_y={minY:0.00} bot_takeoff_cone_max_x={maxX:0.00}");
+
+        // Vacuous-pass guard: a bot that never left its spawn also never falls off anything.
+        Assert.Greater(maxX, 0f, "Bot never advanced along the catwalk — it wasn't pursuing, so this run proves nothing.");
+        Assert.Greater(minY, -1f, "Bot fell off the narrow approach while carrying a Jump edge — cliff-avoidance must stay live until it reaches the takeoff cone.");
+        Assert.Greater(maxX, 16f, "Bot never landed on the far pad — safety steering on the approach must not stall it short of its takeoff.");
+    }
+
+    [UnityTest]
+    public IEnumerator ParkourBotInput_BaitedToLipByTargetAtEdge_RefusesTheVoidLunge()
+    {
+        // THE bait regression test — the void-fall reported from manual play, which bot-vs-bot
+        // self-play structurally cannot reproduce (bot runners juke AWAY from a closing tagger rather
+        // than baiting from a lip, so a batch reports zero falls no matter how broken this is).
+        //
+        // The lunge is the only committed decision a bot makes: BeginDive locks the motor for
+        // diveDuration and drops steering authority to diveSteeringScale (0.15), and cliff-avoidance
+        // only shapes Move — so it cannot pull the bot out once the dive starts. Reach is
+        // diveSpeed*diveDuration (~7.2m) while the bot commits as soon as the target is within
+        // lungeRange (4.5m), so a target standing at the edge is bait: the dive overshoots the lip by
+        // metres with no abort. The pre-dive landing check must refuse it.
+        //
+        // graph: null keeps this on the direct-chase path, which is where the endgame close-quarters
+        // pursuit actually happens.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 8f)); // x -10..10, void past x=10
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform, false);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.taggerCount = 1;
+        config.forcePlayerAsTagger = false;
+        config.roundStartGraceDuration = 0f; // else the tagger stands frozen through most of the window
+        controller.Configure(config);
+
+        // Runner parked right at the lip; tagger closes from behind. Once the tagger is within
+        // lungeRange of the runner it is ~5.5m from a lip it dives 7.2m toward.
+        (GameObject botGo, _, TagAgent botAgent, _) = CreateBotAgent(new Vector3(2f, 1.1f, 0f), controller);
+        (_, _, TagAgent targetAgent, _) = CreateTagAgent(new Vector3(9.5f, 1.1f, 0f)); // 0.5m from the edge
+        controller.RegisterAgent(targetAgent, isLocalPlayer: false);
+
+        yield return null;
+        botAgent.SetRole(Role.Tagger, startGrace: false);
+        targetAgent.SetRole(Role.Runner, startGrace: false);
+
+        int lunges = 0;
+        float lungeX = float.NaN;
+        botAgent.Lunged += () => { lunges++; if (float.IsNaN(lungeX)) lungeX = botGo.transform.position.x; };
+
+        float minY = float.MaxValue;
+        float xWhenLeftPlatform = float.NaN;
+        for (int i = 0; i < 300; i++)
+        {
+            yield return new WaitForFixedUpdate();
+            minY = Mathf.Min(minY, botGo.transform.position.y);
+            if (float.IsNaN(xWhenLeftPlatform) && botGo.transform.position.y < -1f)
+                xWhenLeftPlatform = botGo.transform.position.x;
+        }
+
+        Debug.Log($"METRIC bot_bait_lunge_min_y={minY:0.00} bot_bait_final_x={botGo.transform.position.x:0.00} " +
+                  $"lunges={lunges} first_lunge_x={lungeX:0.00} left_platform_x={xWhenLeftPlatform:0.00} role={botAgent.Role}");
+        Assert.Greater(minY, -1f, "Tagger committed a lunge off the lip chasing a target baiting at the edge — the dive is unrecoverable, so it must be refused before it starts.");
+    }
+
+    [UnityTest]
+    public IEnumerator ParkourBotInput_FallingIntoChasm_GrabsWallAndClimbsOut()
+    {
+        // Fall recovery: a bot that drops into a gap must grab a facade and chimney back up, instead of
+        // riding to FallResetY (-15) and being teleported to spawn. Reported from manual play as "some
+        // still die, which shouldn't really ever happen".
+        //
+        // Geometry mirrors a real rooftop chasm: two facades 5m apart running well below the roofs, so
+        // the launch (jumpOutSpeed 6 along the wall normal) carries the bot across to the FACING wall —
+        // that's the chimney climb, and it's why the gap has to be narrow enough to cross. Runner role
+        // on purpose: CanDoubleJump is role-gated to Runners (RoundController), so this exercises the
+        // full grab -> launch -> air-jump -> re-grab chain the user described.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(-4.5f, -5f, 0f), new Vector3(4f, 30f, 12f)); // west facade, inner face at x=-2.5
+        CreateGround(_sceneRoot.transform, new Vector3(4.5f, -5f, 0f), new Vector3(4f, 30f, 12f));  // east facade, inner face at x=+2.5
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform, false);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.taggerCount = 1;
+        config.forcePlayerAsTagger = false;
+        config.roundStartGraceDuration = 0f;
+        controller.Configure(config);
+
+        // Dropped into the middle of the chasm, already falling, well below its last standing height —
+        // exactly the state fallRecoveryDropThreshold + the ground probe are meant to recognise.
+        (GameObject botGo, CharacterMotor botMotor, TagAgent botAgent, _) =
+            CreateBotAgent(new Vector3(0f, 4f, 0f), controller, graph: null, BotDifficulty.Scary);
+        (_, _, TagAgent targetAgent, _) = CreateTagAgent(new Vector3(0f, 12f, 0f));
+        controller.RegisterAgent(targetAgent, isLocalPlayer: false);
+
+        yield return null;
+        botAgent.SetRole(Role.Runner, startGrace: false);   // Runner => CanDoubleJump, the full chain
+        targetAgent.SetRole(Role.Tagger, startGrace: false);
+        botMotor.CanDoubleJump = true;
+
+        float minY = float.MaxValue;
+        float maxYAfterFalling = float.NegativeInfinity;
+        bool everGrabbed = false;
+        for (int i = 0; i < 500; i++) // ~10s: several grab -> launch cycles at ~2.9m each
+        {
+            yield return new WaitForFixedUpdate();
+            float y = botGo.transform.position.y;
+            minY = Mathf.Min(minY, y);
+            if (botMotor.CurrentState == MotorState.WallHook) everGrabbed = true;
+            if (everGrabbed) maxYAfterFalling = Mathf.Max(maxYAfterFalling, y);
+        }
+
+        Debug.Log($"METRIC bot_fall_recovery_min_y={minY:0.00} max_y_after_grab={maxYAfterFalling:0.00} " +
+                  $"grabbed={everGrabbed} final_y={botGo.transform.position.y:0.00} state={botMotor.CurrentState}");
+
+        Assert.IsTrue(everGrabbed, "Bot fell the whole chasm without ever grabbing a wall — fall recovery never engaged.");
+        Assert.Greater(maxYAfterFalling, minY + 2f, "Bot grabbed a wall but never gained height from it — the grab/launch chain isn't climbing.");
+    }
+
+    [UnityTest]
+    public IEnumerator ParkourBotInput_RunnerCampingPipeTop_GetsDivedOn()
+    {
+        // Pipe-camping regression (reported with a screenshot: the whole pack huddled metres from the
+        // lip while the player hung on a pipe, untouchable). Two mechanisms made the camp safe:
+        // cliff-avoidance fanned the below-lip steer direction into sideways milling, so no tagger ever
+        // stood where the ranged tag's chest-to-chest linecast clears the roof corner; and the pre-lunge
+        // landing check vetoed every dive at a hanging target, because a hanger is by definition over
+        // void. Edge-stalk + the hanging-target lunge exception exist to close exactly this.
+        //
+        // The runner hangs on a ladder (the same interactable a VoidPipe is) just below the lip; the
+        // tagger must creep to the edge and dive. The tag lands via the dive's contact window — the
+        // tagger sails into the void afterwards, which is an accepted trade (fall recovery/respawn).
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f)); // roof: top y=0, lip at x=10
+
+        // Ladder down the outer face: top flush at the roof surface, bottom hanging in the void —
+        // mirrors RooftopInteractableBuilder.BuildLadder / VoidPipeAnchors (0.4m proud of the face).
+        Vector3 ladderBottom = new(10.4f, -6f, 0f);
+        Vector3 ladderTop = new(10.4f, 0f, 0f);
+        var bottomGo = new GameObject("PipeBottom");
+        bottomGo.transform.SetParent(_sceneRoot.transform, false);
+        bottomGo.transform.position = ladderBottom;
+        var topGo = new GameObject("PipeTop");
+        topGo.transform.SetParent(_sceneRoot.transform, false);
+        topGo.transform.position = ladderTop;
+        var ladderGo = new GameObject("Pipe");
+        ladderGo.transform.SetParent(_sceneRoot.transform, false);
+        ladderGo.transform.position = new Vector3(10.4f, -3f, 0f);
+        var trigger = ladderGo.AddComponent<BoxCollider>();
+        trigger.isTrigger = true;
+        trigger.size = new Vector3(2f, 6f, 1.5f);
+        ladderGo.AddComponent<LadderInteractable>().Initialize(bottomGo.transform, topGo.transform, Vector3.right);
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform, false);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.taggerCount = 1;
+        config.forcePlayerAsTagger = false;
+        config.roundStartGraceDuration = 0f;
+        controller.Configure(config);
+
+        (GameObject botGo, _, TagAgent taggerAgent, _) = CreateBotAgent(new Vector3(4f, 1.1f, 0f), controller, graph: null, BotDifficulty.Scary);
+        // Runner spawns airborne alongside the pipe, just below the lip — the camping spot.
+        (GameObject runnerGo, CharacterMotor runnerMotor, TagAgent runnerAgent, ScriptedCharacterInput runnerInput) =
+            CreateTagAgent(new Vector3(10.4f, -1f, 0f));
+        controller.RegisterAgent(runnerAgent, isLocalPlayer: false);
+
+        yield return null;
+        taggerAgent.SetRole(Role.Tagger, startGrace: false);
+        runnerAgent.SetRole(Role.Runner, startGrace: false);
+
+        bool tagged = false;
+        runnerAgent.WasTagged += (_, _) => tagged = true;
+
+        bool everOnLadder = false;
+        for (int i = 0; i < 750 && !tagged; i++) // ~15s budget
+        {
+            // Grab (and re-grab) the pipe: TryStartLadderOrSwingAttach needs a fresh press, and a tag
+            // mid-dive can knock the runner off — a camper would immediately re-grab, so the script
+            // does too, until the tag actually lands.
+            if (runnerMotor.CurrentState != MotorState.OnLadder) runnerInput.PressInteract();
+            runnerInput.Move = Vector2.zero;
+            yield return new WaitForFixedUpdate();
+            everOnLadder |= runnerMotor.CurrentState == MotorState.OnLadder;
+        }
+
+        Debug.Log($"METRIC pipe_camp tagged={tagged} runner_on_ladder={everOnLadder} " +
+                  $"tagger_pos=({botGo.transform.position.x:0.0},{botGo.transform.position.y:0.0}) runner_y={runnerGo.transform.position.y:0.0}");
+
+        Assert.IsTrue(everOnLadder, "Runner never attached to the pipe — the camp never happened, so this run proves nothing.");
+        Assert.IsTrue(tagged, "Runner camped the pipe top for 15s untouched — taggers must edge-stalk to the lip and dive at a hanging target.");
+    }
+
     // ---------------------------------------------------------------- Helpers
 
     private static GameObject CreateGround(Transform parent, Vector3 center, Vector3 size)
@@ -522,7 +778,8 @@ public sealed class TagRulesTests
         return (go, motor, agent, input);
     }
 
-    private (GameObject go, CharacterMotor motor, TagAgent agent, ParkourBotInput botInput) CreateBotAgent(Vector3 position, RoundController controller)
+    private (GameObject go, CharacterMotor motor, TagAgent agent, ParkourBotInput botInput) CreateBotAgent(
+        Vector3 position, RoundController controller, ParkourGraph? graph = null, BotDifficulty difficulty = BotDifficulty.Skilled)
     {
         var go = new GameObject("TestBot");
         go.transform.SetParent(_sceneRoot!.transform, false);
@@ -540,8 +797,10 @@ public sealed class TagRulesTests
         TagAgent agent = go.AddComponent<TagAgent>();
         agent.Configure(_tagConfig, motor, go.GetComponentInChildren<Renderer>(), isLocalPlayer: false);
         agent.SetRoundController(controller);
-        // No graph supplied — exercises the fallback direct-chase-with-cliff-avoidance path.
-        botInput.Configure(agent, controller, graph: null, _botConfig, BotDifficulty.Skilled);
+        // Default: no graph — exercises the fallback direct-chase-with-cliff-avoidance path. Pass a
+        // graph to exercise the routed path instead (see the takeoff-cone test).
+        botInput.Configure(agent, controller, graph, _botConfig, difficulty);
+        botInput.SetSeed(0); // pin the steering/prediction jitter so a failure is a real regression, not a reroll
         controller.RegisterAgent(agent, isLocalPlayer: false);
 
         return (go, motor, agent, botInput);

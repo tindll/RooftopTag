@@ -4,6 +4,7 @@
         "Game.Movement",
         "Game.Camera",
         "Game.MapGeometry",
+        "Game.UI",
         "Unity.InputSystem"
     ],
     "includePlatforms": [],

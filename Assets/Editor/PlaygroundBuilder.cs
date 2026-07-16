@@ -57,6 +57,11 @@ public static class PlaygroundBuilder
         // objects (clouds/haze/silhouettes) to it — see RoundController.SetupMinimap, which
         // excludes this layer from the minimap camera's cullingMask so cloud slabs don't wash it out.
         EnsureLayer("Dressing");
+        // Same deal for "Ragdoll", reserved for CharacterRagdoll's bone colliders — CharacterMotor
+        // subtracts it from both probe masks so an active ragdoll isn't stand-on-able. Reserved here
+        // (rather than left to the runtime) because a layer only exists if TagManager.asset says so,
+        // and CharacterRagdoll resolves it by NAME at build-time with a warn-and-degrade fallback.
+        EnsureLayer("Ragdoll");
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
         Light sun = BuildMapGeometry(movementConfig);
@@ -97,8 +102,10 @@ public static class PlaygroundBuilder
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         int playerLayer = EnsureLayer("Player");
         int groundMask = ~(1 << playerLayer);
-        // See the matching call in Build() — ensures "Dressing" exists before SceneStyler.Apply.
+        // See the matching calls in Build() — "Dressing" before SceneStyler.Apply, "Ragdoll" for
+        // CharacterRagdoll's bone colliders.
         EnsureLayer("Dressing");
+        EnsureLayer("Ragdoll");
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
@@ -141,8 +148,10 @@ public static class PlaygroundBuilder
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         int playerLayer = EnsureLayer("Player");
         int groundMask = ~(1 << playerLayer);
-        // See the matching call in Build() — ensures "Dressing" exists before SceneStyler.Apply.
+        // See the matching calls in Build() — "Dressing" before SceneStyler.Apply, "Ragdoll" for
+        // CharacterRagdoll's bone colliders.
         EnsureLayer("Dressing");
+        EnsureLayer("Ragdoll");
 
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 

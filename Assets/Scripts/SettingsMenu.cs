@@ -4,6 +4,7 @@ using Game.AI;
 using Game.CameraSystem;
 using Game.Movement;
 using Game.Rules;
+using Game.UI;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -35,11 +36,21 @@ public sealed class SettingsMenu : MonoBehaviour
 {
     private const string MouseSensitivityPrefKey = "RooftopTag.Settings.MouseSensitivity";
     private const string KeyboardTurnSpeedPrefKey = "RooftopTag.Settings.KeyboardTurnSpeed";
+    private const string MasterVolumePrefKey = "RooftopTag.Settings.MasterVolume";
+    private const string FullscreenPrefKey = "RooftopTag.Settings.Fullscreen";
+    private const string ResolutionIndexPrefKey = "RooftopTag.Settings.ResolutionIndex";
 
     private const float MinMouseSensitivity = 0.5f;
     private const float MaxMouseSensitivity = 10f;
     private const float MinKeyboardTurnSpeed = 30f;
     private const float MaxKeyboardTurnSpeed = 300f;
+
+    // Four common presets, cycled by a button — IMGUI has no real dropdown and this is the whole
+    // resolution picker, so a fixed short list beats building one.
+    private static readonly Vector2Int[] Resolutions =
+    {
+        new(1280, 720), new(1600, 900), new(1920, 1080), new(2560, 1440),
+    };
 
     private PlayerInputProvider _input = null!;
     private ThirdPersonCameraRig _cameraRig = null!;
@@ -54,13 +65,16 @@ public sealed class SettingsMenu : MonoBehaviour
     private MainMenuOverlay? _mainMenu;
 
     private bool _open;
-    private Rect _windowRect = new(20, 20, 320, 10);
 
     private bool _paused;
+    // Captured on Pause() — the vignette eases in off this, on unscaled time (see UIEase remarks).
+    private float _pausedAt;
 
-    // Fixed id: only one local player (and therefore one SettingsMenu instance) exists per scene,
-    // so there's no risk of colliding with another IMGUI window in this project's OnGUI-only HUD.
-    private const int PauseWindowId = 847022;
+    // Resolved lazily on first keypress (not per-frame) — null until then. The kill-cam replay is
+    // ~4.2s and skippable with click/Space, so blocking pause/settings for its duration is acceptable
+    // and intended: it and Time.timeScale=0 (pause/end-screen) are the two owners of Time.timeScale,
+    // and they must never overlap or one strands the game holding the other's value.
+    private KillCamPlayback? _killCamPlayback;
 
     // RebindingOperation is a nested type of InputActionRebindingExtensions, not a top-level type
     // in UnityEngine.InputSystem — hence the qualified name here despite the `using` above.
@@ -69,6 +83,9 @@ public sealed class SettingsMenu : MonoBehaviour
 
     private float _mouseSensitivity;
     private float _keyboardTurnSpeed;
+    private float _masterVolume;
+    private bool _fullscreen;
+    private int _resolutionIndex;
 
     /// <summary>
     /// Wires the menu to the local player's concrete input provider and camera rig. Must be called
@@ -96,15 +113,31 @@ public sealed class SettingsMenu : MonoBehaviour
         _keyboardTurnSpeed = PlayerPrefs.GetFloat(KeyboardTurnSpeedPrefKey, _cameraRig.KeyboardTurnSpeed);
         _cameraRig.MouseSensitivity = _mouseSensitivity;
         _cameraRig.KeyboardTurnSpeed = _keyboardTurnSpeed;
+
+        // No mixer/global-volume system exists yet — AudioListener.volume IS the master gate every
+        // other source (GameAudio's per-category volumes included) plays through.
+        _masterVolume = PlayerPrefs.GetFloat(MasterVolumePrefKey, AudioListener.volume);
+        AudioListener.volume = _masterVolume;
+
+        _fullscreen = PlayerPrefs.GetInt(FullscreenPrefKey, Screen.fullScreen ? 1 : 0) != 0;
+        Screen.fullScreen = _fullscreen;
+
+        _resolutionIndex = Mathf.Clamp(PlayerPrefs.GetInt(ResolutionIndexPrefKey, 2), 0, Resolutions.Length - 1);
     }
 
     private void Update()
     {
         if (Keyboard.current != null && Keyboard.current.f1Key.wasPressedThisFrame)
-            _open = !_open;
+        {
+            _killCamPlayback ??= FindAnyObjectByType<KillCamPlayback>();
+            if (_killCamPlayback is not { IsPlaying: true }) _open = !_open;
+        }
 
         if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
-            TogglePause();
+        {
+            _killCamPlayback ??= FindAnyObjectByType<KillCamPlayback>();
+            if (_killCamPlayback is not { IsPlaying: true }) TogglePause();
+        }
     }
 
     private void OnDestroy()
@@ -115,20 +148,17 @@ public sealed class SettingsMenu : MonoBehaviour
         Time.timeScale = 1f;
     }
 
-    // Fixed id: only one local player (and therefore one SettingsMenu instance) exists per scene,
-    // so there's no risk of colliding with another IMGUI window in this project's OnGUI-only HUD.
-    private const int WindowId = 847021;
-
     private void OnGUI()
     {
+        // Vignette only when actually frozen (Pause()) — F1's settings window can be opened live,
+        // mid-round, to rebind on the fly, and the scene behind it should keep reading as playing.
         if (_paused)
-        {
-            var pauseRect = new Rect(Screen.width / 2f - 110, Screen.height / 2f - 100, 220, 10);
-            GUILayout.Window(PauseWindowId, pauseRect, DrawPauseWindow, "Paused");
-        }
+            GameUIStyle.Vignette(0.85f * UIEase.Since(_pausedAt, 0.25f));
 
         if (_open)
-            _windowRect = GUILayout.Window(WindowId, _windowRect, DrawWindow, "Settings (F1)");
+            DrawSettingsCard();
+        else if (_paused)
+            DrawPauseCard();
     }
 
     private void TogglePause()
@@ -140,6 +170,7 @@ public sealed class SettingsMenu : MonoBehaviour
     private void Pause()
     {
         _paused = true;
+        _pausedAt = Time.unscaledTime;
         Time.timeScale = 0f;
         _cameraRig.CursorUnlocked = true;
         _cameraRig.SuppressAutoRelock = true;
@@ -153,22 +184,48 @@ public sealed class SettingsMenu : MonoBehaviour
         _cameraRig.SuppressAutoRelock = false;
     }
 
-    private void DrawPauseWindow(int id)
+    private const float RowHeight = 40f;
+    private const float RowGap = 10f;
+
+    private void DrawPauseCard()
     {
-        if (GUILayout.Button("Resume")) Resume();
+        const float width = 360f;
+        const float pad = 28f;
+        const float titleH = 54f;
+        const float buttonH = 52f;
+        const float gap = 12f;
+        const int buttonCount = 4;
+        float height = pad * 2f + titleH + buttonCount * buttonH + (buttonCount - 1) * gap;
+
+        float x = (GameUIStyle.DesignWidth - width) / 2f;
+        float top = (GameUIStyle.DesignHeight - height) / 2f;
+        GameUIStyle.Panel(new Rect(x, top, width, height));
+
+        GUIStyle titleStyle = GameUIStyle.Label(GameUIStyle.Title, TextAnchor.MiddleCenter, FontStyle.Bold);
+        titleStyle.normal.textColor = GameUIStyle.Text;
+        GUI.Label(GameUIStyle.Scaled(new Rect(x, top + pad - 6f, width, titleH)), "PAUSED", titleStyle);
+
+        float innerX = x + pad;
+        float innerWidth = width - pad * 2f;
+        float y = top + pad + titleH;
+
+        if (GameUIStyle.Button(new Rect(innerX, y, innerWidth, buttonH), "Resume")) Resume();
+        y += buttonH + gap;
 
         GUI.enabled = _roundController != null;
-        if (GUILayout.Button("Restart round"))
+        if (GameUIStyle.Button(new Rect(innerX, y, innerWidth, buttonH), "Restart round"))
         {
             _roundController!.StartRound();
             _cameraRig.SnapToTarget();
             Resume();
         }
         GUI.enabled = true;
+        y += buttonH + gap;
 
-        if (GUILayout.Button("Settings")) _open = true;
+        if (GameUIStyle.Button(new Rect(innerX, y, innerWidth, buttonH), "Settings")) _open = true;
+        y += buttonH + gap;
 
-        if (GUILayout.Button("Quit"))
+        if (GameUIStyle.Button(new Rect(innerX, y, innerWidth, buttonH), "Quit"))
         {
             if (_mainMenu != null)
             {
@@ -188,63 +245,180 @@ public sealed class SettingsMenu : MonoBehaviour
         }
     }
 
-    private void DrawWindow(int id)
+    private void DrawSettingsCard()
     {
-        GUILayout.Label("Keybinds", GUI.skin.box);
-        DrawRebindRow("Jump", _input.JumpAction);
-        DrawRebindRow("Slide", _input.SlideAction);
-        DrawRebindRow("Sprint", _input.SprintAction);
-        DrawRebindRow("Interact", _input.InteractAction);
+        const float width = 560f;
+        const float pad = 28f;
+        bool showBots = _botDifficultyBootstrap != null;
+        // Fixed content budget (rows are a known, non-user-variable set) rather than measuring twice —
+        // the background panel must be drawn before the rows that sit on top of it.
+        float height = 760f + (showBots ? 96f : 0f);
 
-        GUILayout.Space(8);
-        GUILayout.Label("Sensitivity", GUI.skin.box);
-        DrawSensitivitySliders();
+        float x = (GameUIStyle.DesignWidth - width) / 2f;
+        float top = Mathf.Max(30f, (GameUIStyle.DesignHeight - height) / 2f);
+        GameUIStyle.Panel(new Rect(x, top, width, height));
 
-        if (_botDifficultyBootstrap != null)
+        float innerX = x + pad;
+        float innerWidth = width - pad * 2f;
+        float y = top + pad;
+
+        GUIStyle titleStyle = GameUIStyle.Label(GameUIStyle.Title, TextAnchor.MiddleLeft, FontStyle.Bold);
+        titleStyle.normal.textColor = GameUIStyle.Text;
+        GUI.Label(GameUIStyle.Scaled(new Rect(innerX, y, innerWidth, 44f)), "SETTINGS", titleStyle);
+        y += 54f;
+
+        SectionHeader(innerX, ref y, innerWidth, "CONTROLS");
+        DrawRebindRow(innerX, ref y, innerWidth, "Jump", _input.JumpAction);
+        DrawRebindRow(innerX, ref y, innerWidth, "Slide", _input.SlideAction);
+        DrawRebindRow(innerX, ref y, innerWidth, "Sprint", _input.SprintAction);
+        DrawRebindRow(innerX, ref y, innerWidth, "Interact", _input.InteractAction);
+        y += 10f;
+
+        SectionHeader(innerX, ref y, innerWidth, "CAMERA");
+        DrawSensitivityRows(innerX, ref y, innerWidth);
+        y += 10f;
+
+        SectionHeader(innerX, ref y, innerWidth, "AUDIO");
+        DrawMasterVolumeRow(innerX, ref y, innerWidth);
+        y += 10f;
+
+        SectionHeader(innerX, ref y, innerWidth, "DISPLAY");
+        DrawDisplayRows(innerX, ref y, innerWidth);
+
+        if (showBots)
         {
-            GUILayout.Space(8);
-            GUILayout.Label("Bots", GUI.skin.box);
-            DrawBotDifficultyRow(_botDifficultyBootstrap);
+            y += 10f;
+            SectionHeader(innerX, ref y, innerWidth, "BOTS");
+            DrawBotDifficultyRow(innerX, ref y, innerWidth, _botDifficultyBootstrap!);
         }
 
-        GUILayout.Space(8);
-        if (GUILayout.Button("Close")) _open = false;
-
-        GUI.DragWindow(new Rect(0, 0, 10000, 20));
+        y += 8f;
+        if (GameUIStyle.Button(new Rect(innerX, y, innerWidth, 48f), "Close")) _open = false;
     }
 
-    private void DrawRebindRow(string label, InputAction action)
+    /// <summary>Caption-size dim label + a hairline underneath. Advances <paramref name="y"/> past both.</summary>
+    private static void SectionHeader(float x, ref float y, float width, string title)
     {
-        GUILayout.BeginHorizontal();
-        GUILayout.Label(label, GUILayout.Width(70));
+        GUIStyle style = GameUIStyle.Label(GameUIStyle.Caption, TextAnchor.MiddleLeft, FontStyle.Bold);
+        style.normal.textColor = GameUIStyle.TextDim;
+        GUI.Label(GameUIStyle.Scaled(new Rect(x, y, width, 20f)), title, style);
+        y += 22f;
 
-        string bindingText = _rebindingAction == action ? "press a key..." : action.GetBindingDisplayString(0);
-        GUILayout.Label(bindingText, GUILayout.Width(110));
+        Color prev = GUI.color;
+        GUI.color = GameUIStyle.Hairline;
+        GUI.DrawTexture(GameUIStyle.Scaled(new Rect(x, y, width, 1f)), GameUIStyle.HairlineTex);
+        GUI.color = prev;
+        y += 12f;
+    }
 
-        GUI.enabled = _rebindingAction == null;
-        if (GUILayout.Button("Rebind", GUILayout.Width(70)))
-            StartRebind(action);
-        GUI.enabled = true;
+    /// <summary>Two-column row: label on the left, caller-drawn control (design-space rect) on the
+    /// right. Advances <paramref name="y"/> by one row + gap.</summary>
+    private static void Row(float x, ref float y, float width, string label, System.Action<Rect> drawControl)
+    {
+        GUIStyle labelStyle = GameUIStyle.Label(GameUIStyle.Body);
+        labelStyle.normal.textColor = GameUIStyle.Text;
+        GUI.Label(GameUIStyle.Scaled(new Rect(x, y, width * 0.42f, RowHeight)), label, labelStyle);
 
-        GUILayout.EndHorizontal();
+        drawControl(new Rect(x + width * 0.42f, y, width * 0.58f, RowHeight));
+        y += RowHeight + RowGap;
+    }
+
+    private void DrawRebindRow(float x, ref float y, float width, string label, InputAction action)
+    {
+        Row(x, ref y, width, label, controlRect =>
+        {
+            const float buttonW = 110f;
+            var textRect = new Rect(controlRect.x, controlRect.y, controlRect.width - buttonW - 8f, controlRect.height);
+            var buttonRect = new Rect(controlRect.xMax - buttonW, controlRect.y, buttonW, controlRect.height);
+
+            GUIStyle bindStyle = GameUIStyle.Label(GameUIStyle.Body, TextAnchor.MiddleLeft, FontStyle.Bold);
+            bool listening = _rebindingAction == action;
+            if (listening)
+            {
+                // Pulse toward AccentBright on unscaled time — pause/settings freeze Time.timeScale,
+                // so anything easing off Time.time would sit dead still while this is on screen.
+                float pulse = 0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 6f);
+                bindStyle.normal.textColor = Color.Lerp(GameUIStyle.TextDim, GameUIStyle.AccentBright, pulse);
+                GUI.Label(GameUIStyle.Scaled(textRect), "press a key...", bindStyle);
+            }
+            else
+            {
+                bindStyle.normal.textColor = GameUIStyle.Accent;
+                GUI.Label(GameUIStyle.Scaled(textRect), action.GetBindingDisplayString(0), bindStyle);
+            }
+
+            GUI.enabled = _rebindingAction == null;
+            if (GameUIStyle.Button(buttonRect, "Rebind")) StartRebind(action);
+            GUI.enabled = true;
+        });
+    }
+
+    private void DrawSensitivityRows(float x, ref float y, float width)
+    {
+        Row(x, ref y, width, $"Mouse sensitivity: {_mouseSensitivity:0.0}", controlRect =>
+        {
+            float v = GameUIStyle.Slider(controlRect, _mouseSensitivity, MinMouseSensitivity, MaxMouseSensitivity);
+            if (Mathf.Approximately(v, _mouseSensitivity)) return;
+            _mouseSensitivity = v;
+            _cameraRig.MouseSensitivity = v;
+            PlayerPrefs.SetFloat(MouseSensitivityPrefKey, v);
+        });
+
+        Row(x, ref y, width, $"Keyboard turn speed: {_keyboardTurnSpeed:0}", controlRect =>
+        {
+            float v = GameUIStyle.Slider(controlRect, _keyboardTurnSpeed, MinKeyboardTurnSpeed, MaxKeyboardTurnSpeed);
+            if (Mathf.Approximately(v, _keyboardTurnSpeed)) return;
+            _keyboardTurnSpeed = v;
+            _cameraRig.KeyboardTurnSpeed = v;
+            PlayerPrefs.SetFloat(KeyboardTurnSpeedPrefKey, v);
+        });
+    }
+
+    private void DrawMasterVolumeRow(float x, ref float y, float width)
+    {
+        Row(x, ref y, width, $"Master volume: {Mathf.RoundToInt(_masterVolume * 100f)}%", controlRect =>
+        {
+            float v = GameUIStyle.Slider(controlRect, _masterVolume, 0f, 1f);
+            if (Mathf.Approximately(v, _masterVolume)) return;
+            _masterVolume = v;
+            AudioListener.volume = v;
+            PlayerPrefs.SetFloat(MasterVolumePrefKey, v);
+        });
+    }
+
+    private void DrawDisplayRows(float x, ref float y, float width)
+    {
+        Row(x, ref y, width, "Fullscreen", controlRect =>
+        {
+            if (!GameUIStyle.Button(controlRect, _fullscreen ? "On" : "Off")) return;
+            _fullscreen = !_fullscreen;
+            Screen.fullScreen = _fullscreen;
+            PlayerPrefs.SetInt(FullscreenPrefKey, _fullscreen ? 1 : 0);
+        });
+
+        Row(x, ref y, width, "Resolution", controlRect =>
+        {
+            Vector2Int res = Resolutions[_resolutionIndex];
+            if (!GameUIStyle.Button(controlRect, $"{res.x} x {res.y}")) return;
+            _resolutionIndex = (_resolutionIndex + 1) % Resolutions.Length;
+            Vector2Int next = Resolutions[_resolutionIndex];
+            Screen.SetResolution(next.x, next.y, _fullscreen);
+            PlayerPrefs.SetInt(ResolutionIndexPrefKey, _resolutionIndex);
+        });
     }
 
     /// <summary>Cycles Casual/Skilled/Scary and applies instantly (ParkourBotInput.Configure is instant — no restart needed).</summary>
-    private void DrawBotDifficultyRow(TagArenaBootstrap bootstrap)
+    private void DrawBotDifficultyRow(float x, ref float y, float width, TagArenaBootstrap bootstrap)
     {
-        GUILayout.BeginHorizontal();
-        GUILayout.Label("Difficulty (live)", GUILayout.Width(140));
-
         BotDifficulty current = bootstrap.Difficulty;
-        if (GUILayout.Button("<", GUILayout.Width(30)))
-            bootstrap.ApplyDifficulty(CycleDifficulty(current, -1));
-
-        GUILayout.Label(current.ToString(), GUILayout.Width(70));
-
-        if (GUILayout.Button(">", GUILayout.Width(30)))
-            bootstrap.ApplyDifficulty(CycleDifficulty(current, 1));
-
-        GUILayout.EndHorizontal();
+        Row(x, ref y, width, $"Bot difficulty: {current}", controlRect =>
+        {
+            const float buttonW = 44f;
+            var prevRect = new Rect(controlRect.x, controlRect.y, buttonW, controlRect.height);
+            var nextRect = new Rect(controlRect.xMax - buttonW, controlRect.y, buttonW, controlRect.height);
+            if (GameUIStyle.Button(prevRect, "<")) bootstrap.ApplyDifficulty(CycleDifficulty(current, -1));
+            if (GameUIStyle.Button(nextRect, ">")) bootstrap.ApplyDifficulty(CycleDifficulty(current, 1));
+        });
     }
 
     private static BotDifficulty CycleDifficulty(BotDifficulty current, int step)
@@ -253,31 +427,6 @@ public sealed class SettingsMenu : MonoBehaviour
         int index = System.Array.IndexOf(values, current);
         int next = (index + step + values.Length) % values.Length;
         return values[next];
-    }
-
-    private void DrawSensitivitySliders()
-    {
-        GUILayout.BeginHorizontal();
-        GUILayout.Label($"Mouse: {_mouseSensitivity:0.0}", GUILayout.Width(140));
-        float newMouse = GUILayout.HorizontalSlider(_mouseSensitivity, MinMouseSensitivity, MaxMouseSensitivity);
-        GUILayout.EndHorizontal();
-        if (!Mathf.Approximately(newMouse, _mouseSensitivity))
-        {
-            _mouseSensitivity = newMouse;
-            _cameraRig.MouseSensitivity = newMouse;
-            PlayerPrefs.SetFloat(MouseSensitivityPrefKey, newMouse);
-        }
-
-        GUILayout.BeginHorizontal();
-        GUILayout.Label($"Keyboard turn: {_keyboardTurnSpeed:0}", GUILayout.Width(140));
-        float newTurn = GUILayout.HorizontalSlider(_keyboardTurnSpeed, MinKeyboardTurnSpeed, MaxKeyboardTurnSpeed);
-        GUILayout.EndHorizontal();
-        if (!Mathf.Approximately(newTurn, _keyboardTurnSpeed))
-        {
-            _keyboardTurnSpeed = newTurn;
-            _cameraRig.KeyboardTurnSpeed = newTurn;
-            PlayerPrefs.SetFloat(KeyboardTurnSpeedPrefKey, newTurn);
-        }
     }
 
     /// <summary>

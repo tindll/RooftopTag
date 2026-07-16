@@ -223,6 +223,26 @@ public sealed class ChainSwingInteractable : MonoBehaviour
         }
     }
 
+    // A box rotated so its BODY DIAGONAL points straight up puts every one of its 6 faces at
+    // arccos(1/sqrt(3)) ~= 54.7356 deg from vertical — past the 50 deg standable cap — and that holds
+    // for ANY box, not just a cube: scaling along local axes never changes which WORLD direction those
+    // axes point, only how far apart the faces are. Used ONLY for the two pieces that have no
+    // directional span to preserve (MastCap, Counterweight).
+    //
+    // It deliberately is NOT applied to the Jib/Brace/CounterJib, and the reason is worth stating
+    // because it looks like it should work: this tilt rotates the box's LENGTH axis 35 deg off
+    // horizontal too. Those pieces are centred on the midpoint of a line and sized to that line's
+    // length, so tilting the length axis walks their ends off the line — a "jib" whose ends miss both
+    // the mast and the pivot by ~0.9m. It stops being a crane.
+    //
+    // And there is no rotation that would have worked for them anyway. For a box with a HORIZONTAL
+    // length axis, the other two axes are orthogonal and span a vertical plane containing world-up, so
+    // one of them is ALWAYS within 45 deg of vertical — i.e. <= 50 — i.e. standable. Rolling about the
+    // long axis just trades which of the two it is (theta and 90-theta are complementary). A horizontal
+    // box cannot be made non-standable by orientation; only by changing its shape or its span. See
+    // BuildCrane for what that means for the arms.
+    private static readonly Quaternion VertexUpTilt = Quaternion.Euler(35.264f, 0f, 45f);
+
     // A small crane the chain hangs from: a mast offset to the side (perpendicular to the swing arc so
     // it never blocks the player or the trigger sphere), a horizontal jib reaching over the pivot, a
     // diagonal brace to the jib tip, and a counter-jib + counterweight for silhouette. Every piece is
@@ -231,6 +251,21 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     // offset along `side` (perpendicular to the exit), and the jib runs along `side` too, so whenever
     // any part of the swinging capsule is at jib height the bob is ~L metres away along the swing axis.
     // The ChainSwing trigger sphere (a separate object) stays a trigger; the chain LINKS stay non-solid.
+    //
+    // Anti-exploit (reported from manual play): swing on the chain, release, land on top of a flat
+    // crane piece — untouchable, since bots have no route up there. RooftopArena.BuildSwing already
+    // made this call for its own beam (rolled 60 deg past ground.maxSlopeAngleDegrees so a release onto
+    // it slides off); the crane was added later and never got the same treatment.
+    //
+    // Only the two flat PADS are hardened here, and that is a deliberate limit, not an oversight:
+    //   - MastCap + Counterweight are the actual perches (a 0.5x0.5 and a 0.8x0.8 flat top). Neither
+    //     has a span to preserve, so VertexUpTilt makes every face 54.7 deg and they shed cleanly.
+    //   - Jib/CounterJib/Brace are horizontal arms that must keep their endpoints, and per VertexUpTilt's
+    //     remarks NO orientation can make a horizontal box non-standable. They stay as-is: 0.18-0.35m
+    //     rods you would have to balance on, which is a far cry from the flat pads that got reported.
+    //     If someone does learn to camp an arm, the fix is its SHAPE (a thin slab rolled past 50 like
+    //     the beam, accepting the narrow complementary face) — not another rotation.
+    // Every piece stays a solid, non-trigger BoxCollider on the normal groundMask.
     private void BuildCrane()
     {
         Vector3 p = PivotPosition;
@@ -252,13 +287,27 @@ public sealed class ChainSwingInteractable : MonoBehaviour
         var crane = new GameObject("SwingCrane");
         crane.transform.SetParent(transform, false);
 
-        // Mast (vertical post).
+        // Mast (vertical post) — kept perfectly upright so it still READS as one: a vertical box's SIDE
+        // faces are already safe with no fix at all (their normal is horizontal, 90 deg from vertical,
+        // regardless of how tall the post is). The only standable face was ever the flat 0.5x0.5 TOP
+        // CAP — tilting the whole shaft far enough to fix that would stop it looking like a mast, so
+        // the cap is covered separately below instead of rotating the shaft.
         float mastH = mastTopY - mastBottomY;
         CraneBox(crane.transform, "Mast",
             new Vector3(mastTop.x, (mastTopY + mastBottomY) * 0.5f, mastTop.z),
             new Vector3(0.5f, mastH, 0.5f), Quaternion.identity);
 
-        // Jib (horizontal arm at pivot height, from the mast out to the pivot).
+        // Caps the mast's flat top with a bare VertexUpTilt cube centred exactly ON that top point, so
+        // a downward approach meets the tilted cap before it can ever reach the shaft's flat top below
+        // it. Coverage check: a vertex-up cube of edge s has a top-down (hexagonal) silhouette whose
+        // narrowest radius (its inradius) is s*sqrt(2/3)*cos(30deg) ~= 0.71s; at s=0.8 that is ~0.57m in
+        // every direction, well past the shaft's own top's corner-to-centre distance (0.5x0.5 square ->
+        // 0.35m), so the cap fully shadows the shaft's top with margin.
+        CraneBox(crane.transform, "MastCap", mastTop, new Vector3(0.8f, 0.8f, 0.8f), VertexUpTilt);
+
+        // Jib (horizontal arm at pivot height, from the mast out to the pivot). Aim stays the TRUE
+        // mast->pivot line: it has to actually connect the two, and no rotation could make it
+        // non-standable anyway (see VertexUpTilt). It's a 0.35m rod — balance-beam, not a pad.
         Vector3 jibA = new Vector3(mastTop.x, p.y, mastTop.z);
         CraneBox(crane.transform, "Jib", (jibA + jibTip) * 0.5f,
             new Vector3(0.35f, 0.35f, Vector3.Distance(jibA, jibTip) + 0.3f),
@@ -269,7 +318,9 @@ public sealed class ChainSwingInteractable : MonoBehaviour
             new Vector3(0.18f, 0.18f, Vector3.Distance(mastTop, jibTip)),
             Quaternion.LookRotation((jibTip - mastTop).normalized));
 
-        // Counter-jib + counterweight on the far side of the mast top.
+        // Counter-jib + counterweight on the far side of the mast top. The counterweight is the other
+        // real perch (a 0.8x0.8 flat pad) and has no span to preserve, so it takes VertexUpTilt bare —
+        // same case as the mast cap. The counter-jib arm keeps its aim, like the jib.
         Vector3 counterEnd = mastTop - side * (jib * 0.5f);
         Vector3 counterMid = (mastTop + counterEnd) * 0.5f;
         CraneBox(crane.transform, "CounterJib",
@@ -278,7 +329,7 @@ public sealed class ChainSwingInteractable : MonoBehaviour
             Quaternion.LookRotation((-side).normalized));
         CraneBox(crane.transform, "Counterweight",
             new Vector3(counterEnd.x, mastTopY - 0.3f, counterEnd.z),
-            new Vector3(0.8f, 0.9f, 0.8f), Quaternion.identity);
+            new Vector3(0.8f, 0.9f, 0.8f), VertexUpTilt);
     }
 
     // One structural crane member. The BoxCollider is ALWAYS added (physical — must exist headless for

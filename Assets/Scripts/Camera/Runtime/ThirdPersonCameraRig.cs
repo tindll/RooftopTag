@@ -38,6 +38,24 @@ public sealed class ThirdPersonCameraRig : MonoBehaviour
 
     public Transform YawPivot => yawPivot!;
 
+    /// <summary>The camera this rig drives — for code that takes over the shot while this rig is
+    /// disabled (see <c>KillCamPlayback</c>). Not <c>Camera.main</c>: the camera is a separate object
+    /// this rig only writes to, so there's no other reliable handle on it.</summary>
+    public Camera Camera => cameraComponent;
+
+    /// <summary>This rig's live <see cref="CameraConfig"/> — for code that takes the shot over while
+    /// this rig is disabled and needs its own framing knobs off the same config (see
+    /// <c>StreetDeathCam</c>). Exposed wholesale rather than as another pair of per-knob properties
+    /// like <see cref="MouseSensitivity"/>: those exist because the settings menu MUTATES exactly two
+    /// values, whereas this is four read-only knobs and counting. Same runtime-instance caveat —
+    /// <see cref="Awake"/> guarantees it is non-null by the time anything can find this rig.</summary>
+    public CameraConfig Config => config;
+
+    /// <summary>The obstruction mask this rig's own SphereCast excludes the target's layer from — for
+    /// code that takes the shot over while this rig is disabled and needs to run the same collision
+    /// probe against the same layers (see <c>KillCamPlayback</c>).</summary>
+    public int ObstructionMask => _obstructionMask;
+
     /// <summary>External cursor-unlock control. Escape used to be read directly in <see cref="LateUpdate"/>
     /// to drive this; that's now owned exclusively by <c>SettingsMenu</c> (Esc = pause), which sets this
     /// instead — so Escape is only ever read in one place.</summary>

@@ -169,6 +169,48 @@ public sealed class MovementConfig : ScriptableObject
         public float regrabCooldownSeconds;
     }
 
+    [Serializable]
+    public struct RagdollSettings
+    {
+        // Total body mass (kg) distributed over the bones by the weights below, which are NORMALISED
+        // against the sum of the bones the rig actually has — so the numbers are proportions, not
+        // fractions that must add to 1, and a rig missing a bone still weighs totalMass. Distributing
+        // anatomically is the whole point: leave every bone at Unity's default mass 1 and the ragdoll
+        // reads as a flailing balloon instead of a body, because the light limbs get to throw the
+        // torso around.
+        public float totalMass;
+        public float hipsMassWeight;
+        public float spineMassWeight;
+        public float headMassWeight;
+        public float upperArmMassWeight;
+        public float lowerArmMassWeight;
+        public float upperLegMassWeight;
+        public float lowerLegMassWeight;
+
+        // Bone capsule sizing, all in WORLD metres (CharacterRagdoll divides the model's ~1.8 m
+        // bounds-rescale back out). Radius is derived from the bone's own length and clamped, so one
+        // ratio covers both a forearm and a thigh without a per-bone table.
+        public float boneRadiusRatio;
+        public float minBoneRadius;
+        public float maxBoneRadius;
+        public float headRadius;        // the head has no child bone to measure against — sized directly
+        public float fallbackBoneLength; // used when a bone's child endpoint is missing on the rig
+
+        // Joint limits (degrees). Rough on purpose — this is a comedy tumble, not a simulation — but
+        // deliberately not defaults, which let every joint cone to 0 and fold the body into origami.
+        public float torsoSwingLimit;     // spine/neck cone
+        public float torsoTwistLimit;
+        public float limbRootSwingLimit;  // shoulder/hip cone — much wider than the torso's
+        public float limbRootTwistLimit;
+        // Knees/elbows. The bend is the LOW twist limit and the counter-bend the HIGH one, because
+        // swing limits are symmetric and can't express "one way only". Which way that one way points
+        // depends on the rig's bind pose: if a feel-check shows knees bending forwards, swap
+        // hingeBendLimit and hingeBackLimit rather than touching the builder.
+        public float hingeBendLimit;
+        public float hingeBackLimit;
+        public float hingeSideLimit;      // near-zero: a knee is not a ball joint
+    }
+
     public GroundSettings ground = new()
     {
         walkSpeed = 3.5f,
@@ -309,5 +351,35 @@ public sealed class MovementConfig : ScriptableObject
         attachReleaseGraceSeconds = 0.15f,
         maxHangSeconds = 8f,
         regrabCooldownSeconds = 1.5f,
+    };
+
+    [Header("Ragdoll")]
+    public RagdollSettings ragdoll = new()
+    {
+        // 70 kg over a 1.8 m character. Weights are roughly the standard anthropometric segment
+        // fractions (torso ~50%, each leg ~16%, head ~7%, each arm ~5%) — hips/spine heaviest so the
+        // torso leads the fall and the limbs trail it, which is what sells "body" over "bag of springs".
+        totalMass = 70f,
+        hipsMassWeight = 0.28f,
+        spineMassWeight = 0.22f,
+        headMassWeight = 0.06f,
+        upperArmMassWeight = 0.03f,
+        lowerArmMassWeight = 0.02f,
+        upperLegMassWeight = 0.10f,
+        lowerLegMassWeight = 0.06f,
+
+        boneRadiusRatio = 0.28f, // a limb is roughly a third as thick as it is long
+        minBoneRadius = 0.05f,
+        maxBoneRadius = 0.14f,
+        headRadius = 0.12f,
+        fallbackBoneLength = 0.2f,
+
+        torsoSwingLimit = 30f,
+        torsoTwistLimit = 25f,
+        limbRootSwingLimit = 70f,
+        limbRootTwistLimit = 40f,
+        hingeBendLimit = 90f,
+        hingeBackLimit = 5f, // not 0: a dead-locked hinge chatters against its own limit
+        hingeSideLimit = 5f,
     };
 }

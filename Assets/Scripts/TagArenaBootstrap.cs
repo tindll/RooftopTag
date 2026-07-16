@@ -100,6 +100,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
             bridge: playerBridge, animController: animController, modelResourceName: "raccoon");
         playerAgent.SetRoundController(roundController);
         roundController.RegisterAgent(playerAgent, isLocalPlayer: true);
+        playerRoot.AddComponent<FootstepPlayer>().Configure(playerMotor, isLocalPlayer: true);
 
         ThirdPersonCameraRig rig = cameraRig.AddComponent<ThirdPersonCameraRig>();
         rig.Configure(playerMotor, mainCamera, cameraYawPivot, groundMask);
@@ -113,8 +114,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig, roundController, this, mainMenu);
 
         var bots = new System.Collections.Generic.List<ParkourBotInput>(botRoots.Length);
-        foreach (GameObject botRoot in botRoots)
+        for (int botIndex = 0; botIndex < botRoots.Length; botIndex++)
         {
+            GameObject botRoot = botRoots[botIndex];
             ParkourBotInput botInput = botRoot.AddComponent<ParkourBotInput>();
             CharacterMotor botMotor = botRoot.AddComponent<CharacterMotor>();
             botMotor.Configure(groundMask, wallMask, null);
@@ -124,7 +126,11 @@ public sealed class TagArenaBootstrap : MonoBehaviour
                 bridge: botBridge, animController: animController, modelResourceName: "pest_control");
             botAgent.SetRoundController(roundController);
             botInput.Configure(botAgent, roundController, graph, botConfig, difficulty);
+            // Distinct per-bot seed: unseeded bots all share seed 0, so their steering/prediction
+            // jitter would be identical and they'd visibly clump instead of fanning out.
+            botInput.SetSeed(botIndex);
             roundController.RegisterAgent(botAgent, isLocalPlayer: false);
+            botRoot.AddComponent<FootstepPlayer>().Configure(botMotor, isLocalPlayer: false);
             bots.Add(botInput);
             _bots.Add((botInput, botAgent));
         }

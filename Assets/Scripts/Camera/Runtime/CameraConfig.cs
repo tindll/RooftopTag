@@ -37,4 +37,23 @@ public sealed class CameraConfig : ScriptableObject
     public float slideFovKick = 5f;
     // Feel-test knob: seconds for the entry kick above to decay back to zero.
     public float slideFovKickDuration = 0.4f;
+
+    [Header("Street death cam")]
+    // Framing for the shot that watches a car launch you down the street (Game.Rules' StreetDeathCam
+    // takes the rig over and drives the Camera itself). Horizontal distance from the ragdoll's pelvis.
+    public float deathCamDistance = 4.5f;
+    // Height above the pelvis. Positive and comfortably clear of it, which is the whole "don't clip
+    // into the road" story: the shot looks DOWN at a body lying on the slab, so it never needs to
+    // reach below the surface the body is on.
+    public float deathCamHeight = 2.2f;
+    // Degrees/sec the shot drifts around the body while it settles. Slow — this is a held beat over a
+    // ragdoll, not an orbit that draws attention to itself.
+    public float deathCamOrbitSpeed = 18f;
+    // SmoothDamp time following the tumbling body. Loose on purpose: the pelvis of a body being hit by
+    // a car moves violently, and a tight follow would translate that straight into the shot.
+    public float deathCamSmoothTime = 0.25f;
+
+    [Header("Kill cam")]
+    public float killCamPitch = 8f;          // slight downward look
+    public float killCamYawSmoothTime = 0.18f;  // bots snap their yaw; the shot must not
 }

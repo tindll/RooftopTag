@@ -19,8 +19,15 @@ public sealed class CharacterMotor : MonoBehaviour
     /// <summary>For runtime wiring (e.g. a bootstrap that attaches this component live) instead of Inspector assignment.</summary>
     public void Configure(int groundLayerMask, int wallLayerMask, Transform? cameraYawTransform)
     {
-        groundMask = groundLayerMask;
-        wallMask = wallLayerMask;
+        // The ragdoll layer is subtracted from BOTH probe masks HERE rather than at each call site.
+        // Every caller passes a deliberately broad mask (~0, or ~Player) and none of them would ever
+        // want another agent's live ragdoll to be ground or a wall — an active ragdoll's bone
+        // colliders are otherwise stand-on-able, mantle-able geometry floating in open air (see
+        // CharacterRagdoll's remarks; HasStandingRoom does not save us — it rejects a BLOCKED
+        // landing, and a corpse in mid-air isn't blocked). One subtraction where every caller already
+        // routes through can't be missed by a call site added later.
+        groundMask = groundLayerMask & ~CharacterRagdoll.LayerBit;
+        wallMask = wallLayerMask & ~CharacterRagdoll.LayerBit;
         cameraYaw = cameraYawTransform;
     }
 
@@ -158,6 +165,10 @@ public sealed class CharacterMotor : MonoBehaviour
     /// <summary>When true, a mid-air jump press triggers one double-jump per airborne period (runners only; Game.Rules sets this per role). Role-agnostic here — the motor knows nothing about tagging.</summary>
     public bool CanDoubleJump { get; set; } = false;
 
+    // How many horizontal directions TryBotWallGrab sweeps for a grabbable face. 8 (45° steps) covers a
+    // tumbling bot without making the fall cost 32 SphereCasts a tick.
+    private const int BotWallProbeDirections = 8;
+
     /// <summary>Generic world-space velocity impulse — a hook for systems outside movement (e.g. a tag lunge) to affect the Rigidbody without reaching into its internals.</summary>
     public void AddImpulse(Vector3 worldImpulse) => _rb.linearVelocity += worldImpulse;
 
@@ -176,6 +187,11 @@ public sealed class CharacterMotor : MonoBehaviour
     /// <summary>True only during the active (locked-in) dive window — NOT during recovery. Systems
     /// outside movement (e.g. TagAgent's contact-tag window / re-lunge block) key off this.</summary>
     public bool IsDiving => _diveActiveRemaining > 0f;
+
+    /// <summary>Freezes this character's movement input without touching physics — gravity and settling
+    /// still run. Set by RoundController for the round-start countdown, for player and bots alike.
+    /// Applied inside DiveInputFilter, the single chokepoint every Tick* method already reads through.</summary>
+    public bool InputLocked;
 
     /// <summary>Steering authority multiplier applied to move/steer acceleration: cut to the dive's
     /// steering scale while the active window runs (a committed dive allows only minimal correction),
@@ -983,6 +999,55 @@ public sealed class CharacterMotor : MonoBehaviour
 
     /// <summary>Grab and hang on a wall you can't get up (E). Player-only — bots route via graph edges.
     /// Hanging slides you slowly down (TickWallHook); jump to launch off, chaining wall to wall.</summary>
+    /// <summary>
+    /// Bot fall-recovery wall grab. Deliberately NOT a relaxation of <see cref="TryStartWallHook"/>'s
+    /// cameraYaw gate: that gate exists because bots hold InteractPressed for the whole length of every
+    /// Vault/Mantle/Swing/Climb edge, so a press-driven grab would snag them onto walls mid-traversal
+    /// (see its remarks — that reasoning still stands). Here the CALLER decides when a grab is wanted —
+    /// ParkourBotInput only asks while it is falling with nothing safe below — so no held press can
+    /// misfire, and normal traversal never reaches this.
+    ///
+    /// Probes all round rather than along transform.forward: the player's version can assume a human is
+    /// aiming at the wall they want, while a bot tumbling off a lip is rarely facing anything useful.
+    /// Nearest grabbable face wins.
+    ///
+    /// EXIT POLICY (a bot must never enter a state it can't leave): none needed here — TickWallHook
+    /// already guarantees escape on all four paths (auto-mantle when a ledge comes into reach, launch on
+    /// a jump press, drop to Airborne on slide-off, and the maxHoldDuration timeout). Even if the bot's
+    /// own logic stalled, the hang self-terminates in maxHoldDuration.
+    /// </summary>
+    public bool TryBotWallGrab()
+    {
+        if (cameraYaw != null) return false; // the player has the deliberate E-press path; this is the bot seam
+        if (_state != MotorState.Airborne) return false;
+        if (Time.time - _lastGroundedTime < config.wallHook.minAirTimeBeforeHook) return false;
+
+        Vector3 origin = CapsuleCenterWorld();
+        float bestDistance = float.MaxValue;
+        Vector3 bestNormal = Vector3.zero;
+
+        for (int i = 0; i < BotWallProbeDirections; i++)
+        {
+            Vector3 dir = Quaternion.Euler(0f, i * (360f / BotWallProbeDirections), 0f) * Vector3.forward;
+            if (!Physics.SphereCast(origin, 0.25f, dir, out RaycastHit hit, config.wallHook.detectionDistance, wallMask, QueryTriggerInteraction.Ignore))
+                continue;
+            if (Mathf.Abs(hit.normal.y) > 0.3f) continue; // floors and roof lips aren't walls — same test the player's grab uses
+            if (hit.distance >= bestDistance) continue;
+            bestDistance = hit.distance;
+            bestNormal = hit.normal;
+        }
+
+        if (bestNormal == Vector3.zero) return false;
+
+        CancelDive();
+        _wallHookNormal = bestNormal;
+        _wallHookElapsed = 0f;
+        _state = MotorState.WallHook;
+        _rb.linearVelocity = Vector3.zero;
+        _doubleJumpUsed = false; // a grab recharges the air jump, same as landing — see TryStartWallHook
+        return true;
+    }
+
     private bool TryWallHang(Vector3 wallNormal)
     {
         // Require the current-frame press, NOT the lingering interact buffer. The buffer (set for
@@ -1578,11 +1643,13 @@ public sealed class CharacterMotor : MonoBehaviour
     }
 
     /// <summary>
-    /// Wraps the real input during a committed dive: the dive locks the character in, so jump, slide
-    /// and interact are swallowed for the active window (neither player nor bot can cancel the
-    /// commitment). Applied here — the single chokepoint every Tick* method reads through — so the
-    /// lock works for every <see cref="ICharacterInput"/> impl (player, bot, future net) identically.
-    /// Move/Look/Sprint pass through unchanged; steering authority is reduced separately via
+    /// Wraps the real input for two separate locks: a committed dive (jump/slide/interact swallowed
+    /// for the active window — neither player nor bot can cancel the commitment) and RoundController's
+    /// round-start countdown freeze (<see cref="InputLocked"/> — Move zeroed, nothing else touched, so
+    /// gravity/settling still run and the player can still look around while frozen). Applied here —
+    /// the single chokepoint every Tick* method reads through — so both locks work for every
+    /// <see cref="ICharacterInput"/> impl (player, bot, future net) identically. Look and Sprint always
+    /// pass through unchanged; dive steering authority is reduced separately via
     /// <see cref="DiveSteerScale"/> (scaling Move here would be undone by ComputeWishDirection's normalize).
     /// </summary>
     private sealed class DiveInputFilter : ICharacterInput
@@ -1591,18 +1658,23 @@ public sealed class CharacterMotor : MonoBehaviour
         public DiveInputFilter(CharacterMotor motor) => _motor = motor;
 
         private ICharacterInput Inner => _motor._realInput;
-        private bool Locked => _motor.IsDiving;
+        private bool Locked => _motor.IsDiving || _motor.InputLocked;
 
-        public Vector2 Move => Inner.Move;
+        // Move zeroes ONLY for the countdown lock — a dive must keep passing Move through so its
+        // redirected momentum still comes from the player's held direction, steering authority is
+        // scaled separately via DiveSteerScale instead.
+        public Vector2 Move => _motor.InputLocked ? Vector2.zero : Inner.Move;
         public Vector2 Look => Inner.Look;
         public bool JumpHeld => !Locked && Inner.JumpHeld;
         public bool JumpPressed => !Locked && Inner.JumpPressed;
         public bool SlideHeld => !Locked && Inner.SlideHeld;
         public bool SprintHeld => Inner.SprintHeld;
-        // Interact passes THROUGH the dive lock: lunging at a wall must be E-cancelable into a
-        // grab/vault/ladder/swing (user: "lunge toward a wall, can't press E until the animation is
-        // done, which sucks"). A successful attach then cancels the dive outright — see CancelDive.
-        public bool InteractPressed => Inner.InteractPressed;
+        // Interact passes THROUGH the dive lock (but NOT the countdown lock): lunging at a wall must
+        // stay E-cancelable into a grab/vault/ladder/swing (user: "lunge toward a wall, can't press E
+        // until the animation is done, which sucks") — a successful attach then cancels the dive
+        // outright, see CancelDive. The countdown freeze has no such exception: E stays locked out
+        // for its whole window.
+        public bool InteractPressed => !_motor.InputLocked && Inner.InteractPressed;
 
         public void Tick(float deltaTime) => Inner.Tick(deltaTime);
     }

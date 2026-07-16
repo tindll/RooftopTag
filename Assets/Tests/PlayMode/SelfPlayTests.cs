@@ -71,7 +71,7 @@ public sealed class SelfPlayTests
         for (int matchIndex = 0; matchIndex < MatchCount; matchIndex++)
         {
             var metrics = new MatchMetrics();
-            yield return RunOneMatch(movementConfig, tagConfig, botConfig, graph, metrics);
+            yield return RunOneMatch(movementConfig, tagConfig, botConfig, graph, metrics, matchIndex);
             allResults.Add(metrics);
             LogMatchSummary(matchIndex, metrics);
         }
@@ -79,7 +79,7 @@ public sealed class SelfPlayTests
         LogBatchSummary(allResults);
     }
 
-    private static IEnumerator RunOneMatch(MovementConfig movementConfig, TagRulesConfig tagConfig, BotConfig botConfig, ParkourGraph graph, MatchMetrics metrics)
+    private static IEnumerator RunOneMatch(MovementConfig movementConfig, TagRulesConfig tagConfig, BotConfig botConfig, ParkourGraph graph, MatchMetrics metrics, int matchIndex)
     {
         Time.timeScale = TimeScale;
 
@@ -119,9 +119,13 @@ public sealed class SelfPlayTests
             agent.SetRoundController(controller);
             botInput.Configure(agent, controller, graph, botConfig, BotDifficulty.Skilled);
             botInput.SetMetrics(metrics);
+            // Per-bot seed keyed to spawn index + match index: reproducible across batches (so a
+            // before/after metric delta is the change, not RNG drift) while still decorrelating bots
+            // from each other and giving each match a distinct draw.
+            botInput.SetSeed(matchIndex * 1000 + i);
             controller.RegisterAgent(agent, isLocalPlayer: false);
 
-            agent.WasTagged += _ => metrics.RecordFirstTag(elapsedRef);
+            agent.WasTagged += (_, _) => metrics.RecordFirstTag(elapsedRef);
             motor.DoubleJumped += () => metrics.DoubleJumpCount++;
             agents.Add(agent);
         }
@@ -136,7 +140,12 @@ public sealed class SelfPlayTests
         var lastCheckPositions = new Dictionary<TagAgent, Vector3>();
         foreach (TagAgent agent in agents) lastCheckPositions[agent] = agent.transform.position;
         var countedStuck = new HashSet<TagAgent>();
-        var countedFallen = new HashSet<TagAgent>();
+
+        // Count falls where they're actually decided, not by polling for a depth nobody reaches.
+        // RoundController consequences a fall from y < -15 (respawn + Runner->Tagger conversion), so the
+        // old y < -20 poll could never fire: total_fallen read 0 in every batch ever run, and that zero
+        // was mistaken for "bots don't fall off this map". EVERY fall is one of these events.
+        controller.AgentFell += _ => metrics.FallCount++;
 
         float elapsed = 0f;
         float nextSpeedSample = 0f;
@@ -158,8 +167,6 @@ public sealed class SelfPlayTests
 
             foreach (TagAgent agent in agents)
             {
-                if (agent.transform.position.y < FallYThreshold && countedFallen.Add(agent))
-                    metrics.FallCount++;
                 // Straight-line distance from the spawn roof — RooftopArena's branching topology
                 // spreads agents radially in both X and Z, not along a single +Z corridor axis.
                 float distanceFromSpawn = Vector3.Distance(agent.transform.position, RooftopArena.Roofs[0].Walk);

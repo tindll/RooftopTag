@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using Game.CameraSystem;
 using Game.MapGeometry;
 using Game.Movement;
+using Game.UI;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.Rendering;
@@ -26,10 +27,54 @@ public sealed class RoundController : MonoBehaviour
 
     // An agent below this height has fallen off the map: it respawns at its start, and a Runner is
     // converted to a Tagger on the way back (the map itself "tags" you).
+    //
+    // Deliberately still -15, even though there is now a street at -25 to land on: -15 is what
+    // SelfPlayTests' fall metric is calibrated against, and raising it to meet the street would
+    // change when bots respawn headless. The street was moved DOWN to keep this line crossed
+    // mid-fall instead (see VisualThemeConfig.buildingBaseY).
     private const float FallResetY = -15f;
+
+    // Agents currently falling to / standing on the street, and when each one's sequence ends. See
+    // UpdateStreetFallers: crossing FallResetY still detects the fall exactly as it always did, but
+    // in a scene with a street under it the CONSEQUENCE waits for the sequence rather than firing
+    // mid-air. Empty (and every path here skipped) in the headless self-play harness — see
+    // StreetFallEnabled. Cleared by StartRound, so a faller mid-sequence at round end can't leak
+    // into the next round.
+    private readonly Dictionary<TagAgent, (float timeoutAt, float lingerAt)> _streetFallers = new();
+    // Iterated instead of _streetFallers itself, which UpdateStreetFallers removes from as it goes.
+    // A field, not a local: the loop it feeds runs every frame an agent is down there.
+    private readonly List<TagAgent> _streetFallerScratch = new();
+
+    // Null until the first fall asks. Headless self-play never builds a street (SceneStyler is
+    // Editor-only and never runs there) and never builds a ragdoll (CharacterModelAttacher's
+    // real-model path is graphics-gated), so there is nothing to fall onto and nothing to sequence:
+    // it takes the original immediate consequence, unchanged. Same for any scene styled without a
+    // street — the whole feature turns itself off rather than leaving agents in a state nothing resolves.
+    private bool? _hasStreet;
+    private bool StreetFallEnabled => _hasStreet ??= SystemInfo.graphicsDeviceType != GraphicsDeviceType.Null
+        && GameObject.Find("Streets") != null;
     private readonly Dictionary<TagAgent, TagAgent> _taggerClaims = new();
     private TagAgent? _localPlayerAgent;
     private ThirdPersonCameraRig? _cameraRig;
+
+    // Phase-1 kill-cam: an always-on ring-buffer recorder, lazily created on the first RegisterAgent
+    // call. Nothing reads it yet (a later phase will) — see KillCamRecorder's own remarks for why it
+    // needs no headless guard here (it guards itself in Awake).
+    private KillCamRecorder? _killCam;
+    public KillCamRecorder? KillCam => _killCam;
+
+    // The replay half, created next to the recorder on this same GameObject (KillCamPlayback resolves
+    // its RoundController via GetComponent, so it must live here). Non-headless only: the self-play
+    // harness has no camera to show a replay on, and Play's own headless guard would no-op anyway —
+    // this just avoids adding a per-frame Update to that batch at all. Null there, hence every call
+    // below being null-conditional.
+    private KillCamPlayback? _killCamPlayback;
+
+    // Holds the shot on the local player's ragdoll while a car finishes with them. Created next to the
+    // kill cam and gated identically (non-headless + local player only) — the self-play harness has no
+    // rig to take over, and StreetDeathCam.Begin's own headless guard would no-op anyway. Null there,
+    // hence every call below being null-conditional. Bots ragdoll with no camera.
+    private StreetDeathCam? _streetDeathCam;
 
     // Reopens MainMenuOverlay from the end screen's "MAIN MENU" button. A plain delegate rather than
     // a typed field: MainMenuOverlay compiles into Assembly-CSharp (no asmdef, per its own remarks),
@@ -61,12 +106,15 @@ public sealed class RoundController : MonoBehaviour
     // always runs rather than being gated on a local player.
     private readonly Dictionary<TagAgent, int> _tagCounts = new();
 
-    // Auto-restart only ever ticks when _localPlayerAgent != null (see Update) — SelfPlayTests
-    // runs 10 headless matches on its own clock and never sets a local player, so this const and
-    // field are simply inert there.
-    private const float AutoRestartDuration = 8f;
-    private float _autoRestartRemaining;
     private float _finalRoundLength;
+    // Unscaled timestamp EndRound fired at — drives the end screen's verdict slide/punch-in and the
+    // cosmetic draining bar under its buttons. Unscaled because EndRound freezes timeScale to 0 for
+    // the local player (see below), same reasoning as every other end-screen/menu animation in this
+    // project (see GameUIStyle.UIEase's remarks).
+    private float _endScreenOpenedUnscaled;
+    // Draining bar duration only — no restart is armed off this any more (see EndRound's remarks on
+    // the auto-restart removal). Purely decorative, so drifting past 0 and staying there is fine.
+    private const float EndScreenBarDuration = 8f;
 
     // Session tally — accumulated across rounds (never reset by StartRound), updated once in EndRound
     // and rendered on the end screen. Local-player only; stays 0 in the headless self-play harness.
@@ -74,6 +122,17 @@ public sealed class RoundController : MonoBehaviour
     private int _sessionWins;
     private int _sessionLosses;
     private float _sessionBestSurvival;
+
+    // Best-of-5 match framing, gated on MatchActive (see below) so free-roam and headless self-play
+    // stay standalone-round exactly as before. StartRound never clears these (same reasoning as the
+    // session tally above) — only StartMatch resets them, so a mid-match R-restart keeps the score.
+    private const string MatchesWonPrefKey = "MatchesWon";
+    private const string MatchesLostPrefKey = "MatchesLost";
+    private const int RoundsToWinMatch = 3;
+    private int _matchPlayerWins;
+    private int _matchBotWins;
+    private readonly List<bool> _roundHistory = new(); // true = player won that round
+    private bool _matchOver;
 
     // Trash-can objective: Runners win instantly by eating trashPointsToWin points of cans before the
     // timer runs out. All state is instance (never static) so the self-play harness's 10 matches/process
@@ -87,12 +146,27 @@ public sealed class RoundController : MonoBehaviour
 
     private float _timeRemaining;
     private float _roundStartTime;
+    // 3-2-1-GO round-start countdown: freezes every agent at spawn for CountdownDuration, then
+    // releases the movement lock on the same frame the GO! banner draws. CountdownDuration (2.1s)
+    // sits comfortably inside roundStartGraceDuration's 3s, so no-tag-yet grace already covers it.
+    private const float CountdownBeatDuration = 0.7f;
+    private const int CountdownBeats = 3;
+    private const float CountdownDuration = CountdownBeats * CountdownBeatDuration; // 2.1s, inside roundStartGraceDuration's 3s
+    private const float CountdownGoDisplayDuration = 0.5f;
+    private float _countdownEndTime = float.NegativeInfinity;
+    private bool _countdownLocked;
+    private int _countdownBeatsPlayed;
     private bool _roundOver;
     private string _resultMessage = "";
     // Set only by PlayerCaught (local player tagged) — TagAgent.PerformTag never converts the local
     // player to Tagger, so the normal "all runners tagged" win check can't fire for them; this forces
     // DrawEndScreen to read as a loss regardless of the runnersWon/localWon role-based computation.
     private bool _playerLost;
+    // Catcher's name for the end screen's "caught by <NAME>" subline — captured in PlayerCaught,
+    // which already has the tagger reference (TagAgent.DisplayName), rather than reaching into the
+    // kill-cam system for it. Empty for any other loss (e.g. falling off the map), so DrawEndScreen
+    // falls back to a generic subline there.
+    private string _caughtByName = "";
 
     public bool IsRoundOver => _roundOver;
     public string ResultMessage => _resultMessage;
@@ -124,6 +198,20 @@ public sealed class RoundController : MonoBehaviour
     /// <summary>No tag should land while this is false — see <see cref="TagRulesConfig.roundStartGraceDuration"/>.</summary>
     public bool IsPastStartGrace => Time.time - _roundStartTime >= _config.roundStartGraceDuration;
 
+    /// <summary>True for the 3-2-1-GO countdown window. Movement is locked while true; TagAgent.TryLunge
+    /// gates on it too because lunge is a separate InputAction that bypasses the motor's input filter
+    /// entirely.</summary>
+    public bool IsCountdownActive => Time.time < _countdownEndTime;
+
+    /// <summary>Best-of-5 match framing applies only to local human play with at least one Tagger —
+    /// free-roam (Chasers = 0, see MainMenuOverlay.ChaserCounts) and the headless self-play harness
+    /// (_localPlayerAgent == null) both stay standalone-round, no match state drawn or persisted.</summary>
+    private bool MatchActive => _localPlayerAgent != null && _config.taggerCount > 0;
+
+    // Either side is one round from clinching the match — shared by the end-screen mid-match line
+    // and the round-start banner so the two "MATCH POINT" callouts can't drift out of sync.
+    private bool MatchPointNow => _matchPlayerWins == RoundsToWinMatch - 1 || _matchBotWins == RoundsToWinMatch - 1;
+
     public void Configure(TagRulesConfig config) => _config = config;
 
     public void SetCameraRig(ThirdPersonCameraRig cameraRig) => _cameraRig = cameraRig;
@@ -137,9 +225,17 @@ public sealed class RoundController : MonoBehaviour
     {
         _agents.Add(agent);
         _spawnStates[agent] = (agent.transform.position, agent.transform.rotation);
+        _killCam ??= gameObject.AddComponent<KillCamRecorder>();
+        _killCam.Register(agent);
+        agent.DisplayName = isLocalPlayer ? "YOU" : NextBotName();
         if (isLocalPlayer)
         {
             _localPlayerAgent = agent;
+            if (SystemInfo.graphicsDeviceType != GraphicsDeviceType.Null)
+            {
+                _killCamPlayback ??= gameObject.AddComponent<KillCamPlayback>();
+                _streetDeathCam ??= gameObject.AddComponent<StreetDeathCam>();
+            }
             // The local player is never converted to Tagger on tag (see TagAgent.PerformTag's
             // _isLocalPlayer guard), so the "all runners tagged" win check in Update never fires for
             // them — explicitly end the round here instead.
@@ -148,6 +244,18 @@ public sealed class RoundController : MonoBehaviour
             SetupMinimap();
             SetupLungeSpinner();
         }
+    }
+
+    // Registration-order name draw, wrapping when there are more bots than names. Counts across
+    // rounds rather than resetting per round (StartRound doesn't re-register) — which agent holds
+    // which name only has to be stable, not zero-based.
+    private int _botsNamed;
+
+    private string NextBotName()
+    {
+        string[] names = _config.botNames;
+        if (names == null || names.Length == 0) return "PEST CONTROL"; // config stripped of names — still never blank
+        return names[_botsNamed++ % names.Length];
     }
 
     /// <summary>Local-player-involved tag juice: dip to slow-mo. No-op if the pause menu currently owns
@@ -160,7 +268,7 @@ public sealed class RoundController : MonoBehaviour
         _slowMoEndUnscaled = Time.unscaledTime + TagSlowMoDuration;
     }
 
-    private void OnLocalPlayerTagged(TagAgent _) => _tagFlashEndUnscaled = Time.unscaledTime + TagFlashDuration;
+    private void OnLocalPlayerTagged(TagAgent _, TagAgent __) => _tagFlashEndUnscaled = Time.unscaledTime + TagFlashDuration;
 
     /// <summary>Loose tagger coordination: taggers record who they're currently pursuing so others prefer an unclaimed runner over piling onto the same one.</summary>
     public void ClaimTarget(TagAgent tagger, TagAgent target) => _taggerClaims[tagger] = target;
@@ -194,7 +302,8 @@ public sealed class RoundController : MonoBehaviour
             bool claimedByOther = false;
             foreach (KeyValuePair<TagAgent, TagAgent> claim in _taggerClaims)
             {
-                if (claim.Key != self && claim.Value == agent)
+                // a converted tagger's claim must not keep a runner reserved
+                if (claim.Key != self && claim.Value == agent && claim.Key.Role == Role.Tagger)
                 {
                     claimedByOther = true;
                     break;
@@ -231,6 +340,96 @@ public sealed class RoundController : MonoBehaviour
         return nearest;
     }
 
+    /// <summary>The fall-off-the-map consequence, unchanged from when it lived inline in the -15
+    /// check: the local player loses the round, a bot respawns at its start and a Runner is converted
+    /// to a Tagger on the way back (the map itself "tags" you). Now called from two places — straight
+    /// off the -15 check where there's no street, and at the end of the street sequence where there
+    /// is — which is the entire point: WHEN it happens moved, WHAT happens did not.</summary>
+    /// <summary>Fired whenever a fall actually costs an agent something — the single place a fall is
+    /// consequenced, whether it happened instantly or at the end of a street sequence. Exists because
+    /// there was no way to MEASURE falls: self-play was polling for y &lt; -20, which this code makes
+    /// unreachable (agents are consequenced from -15), so its fall counter could only ever read zero
+    /// and "bots never fall" looked true for months.</summary>
+    public event System.Action<TagAgent>? AgentFell;
+
+    private void ApplyFallConsequence(TagAgent agent)
+    {
+        if (!_spawnStates.TryGetValue(agent, out (Vector3 pos, Quaternion rot) spawn)) return;
+
+        AgentFell?.Invoke(agent);
+
+        if (agent == _localPlayerAgent)
+        {
+            // The local player falling off the map is a loss, same flow as being tagged (see
+            // PlayerCaught) — no respawn, the round is over (EndRound no-ops if it already ended this
+            // same frame, e.g. via a simultaneous tag).
+            _playerLost = true;
+            EndRound("You fell off the map!");
+        }
+        else
+        {
+            // A Runner is converted to a Tagger on the way back: falling off reads as "the map itself
+            // tagged you". A Tagger keeps its role. If this converts the last Runner, the
+            // runnersRemaining == 0 check in Update ends the round this same frame with the existing
+            // "Taggers win" result.
+            Role respawnRole = agent.Role == Role.Runner ? Role.Tagger : agent.Role;
+            agent.Motor.ResetState(spawn.pos, spawn.rot);
+            // Brief grace on respawn so it doesn't reappear right into a tagger's reach (and, for a
+            // freshly-converted Runner, so the conversion telegraphs the same way a normal tag does).
+            agent.SetRole(respawnRole, startGrace: true);
+        }
+    }
+
+    /// <summary>Runs the street sequence for everyone currently down there and applies the (deferred)
+    /// fall consequence when each one's is over. The timeout is the whole safety story: it fires no
+    /// matter what happens on the street, so a bot standing in the road can never strand the round —
+    /// nothing down there is required to resolve anything.</summary>
+    private void UpdateStreetFallers()
+    {
+        if (_streetFallers.Count == 0) return; // the every-frame path: no allocation, no scan
+
+        _streetFallerScratch.Clear();
+        _streetFallerScratch.AddRange(_streetFallers.Keys); // Remove below would invalidate a live enumerator
+        foreach (TagAgent agent in _streetFallerScratch)
+        {
+            (float timeoutAt, float lingerAt) = _streetFallers[agent];
+            CharacterRagdoll? ragdoll = agent.GetComponent<CharacterRagdoll>();
+
+            // Ragdolled down there (i.e. a car's CarImpact trigger hit them): the sequence is OVER the
+            // moment they're hit, so the consequence lands a short linger later instead of waiting out
+            // the full timeout. Armed once, on the frame IsActive first reads true — from then on
+            // lingerAt is a real deadline and this is skipped.
+            if (float.IsPositiveInfinity(lingerAt) && ragdoll is { IsActive: true })
+            {
+                lingerAt = Time.time + _config.ragdollLingerSeconds;
+                _streetFallers[agent] = (timeoutAt, lingerAt);
+                // Same frame, same one-shot arm: this is the only place the death cam starts, so it
+                // inherits the "exactly once per fall" property from the branch it rides on. Local
+                // player only — a bot getting flattened is not worth taking the player's camera for.
+                // Can't collide with the kill cam: Update early-returns while that IsPlaying, so this
+                // whole method is unreachable during a replay.
+                if (agent == _localPlayerAgent) _streetDeathCam?.Begin(ragdoll.Pelvis);
+            }
+
+            if (Time.time < Mathf.Min(timeoutAt, lingerAt)) continue;
+
+            // Hand the rig back BEFORE the consequence, which for the local player is EndRound and its
+            // end screen — that screen must not draw over a camera still staring at the road. (EndRound
+            // ends the shot itself too, for the paths that reach it without coming through here.)
+            if (agent == _localPlayerAgent) _streetDeathCam?.End();
+
+            // Un-ragdoll BEFORE the consequence: ResetState inside it teleports the agent's own root,
+            // which a live ragdoll has taken away from it (motor disabled, capsule off) — a bot
+            // respawned while still ragdolled would leave its body in the street and come back inert.
+            if (ragdoll is { IsActive: true }) ragdoll.Deactivate();
+            // Undo the street-fall input freeze BEFORE the consequence: a respawned bot must come
+            // back controllable, and the local player's EndRound freezes via timeScale, not this flag.
+            agent.SetInputLocked(false);
+            _streetFallers.Remove(agent);
+            ApplyFallConsequence(agent);
+        }
+    }
+
     private void Start() => StartRound();
 
     public void StartRound()
@@ -240,9 +439,44 @@ public sealed class RoundController : MonoBehaviour
         _roundOver = false;
         _resultMessage = "";
         _playerLost = false;
+        _caughtByName = "";
         _tagCounts.Clear();
+        _taggerClaims.Clear();
+        // A faller mid-sequence when the round ended must not leak into this one and get consequenced
+        // (respawned + converted) seconds after AssignRoles below has already placed them. Un-ragdoll
+        // them on the way out: dropping them from the set is the last chance anything has to, and
+        // AssignRoles' ResetState needs a live motor to land on. Empty (so free) in headless
+        // self-play, which never puts anyone in this set.
+        foreach (TagAgent faller in _streetFallers.Keys)
+        {
+            // ...and undo the street-fall input freeze — a mid-sequence R restart never reaches
+            // UpdateStreetFallers' own unlock, and BeginCountdown's release only fires when a
+            // countdown was armed (free-roam restarts would otherwise strand the player frozen).
+            faller.SetInputLocked(false);
+            if (faller.GetComponent<CharacterRagdoll>() is { IsActive: true } ragdoll) ragdoll.Deactivate();
+        }
+        _streetFallers.Clear();
+        // ...and the shot watching one of them, for the same reason: R pressed MID-FALL never passes
+        // through EndRound, so this is the only thing that would ever give the rig back on that path.
+        // Before SnapToTarget in RestartRound, which is a no-op while the rig is still disabled.
+        _streetDeathCam?.End();
+        _killCam?.Clear(); // stale pre-restart footage must not leak into this round's first kill cam
         SetupTrashCans();
         AssignRoles();
+        BeginCountdown(); // last — the GO! color reads the local player's freshly-assigned role above
+    }
+
+    /// <summary>Resets the best-of-5 score for a fresh match, then starts the first round. Called by
+    /// MainMenuOverlay.Play() and by RestartRound() when restarting from a finished match — StartRound
+    /// itself never touches match state (see the fields' remarks) so a mid-match R only calls this
+    /// indirectly, never resets the score.</summary>
+    public void StartMatch()
+    {
+        _matchPlayerWins = 0;
+        _matchBotWins = 0;
+        _roundHistory.Clear();
+        _matchOver = false;
+        StartRound();
     }
 
     // Rebuild the trash objective for the round: find every can, reset them all, then pick a random
@@ -349,6 +583,111 @@ public sealed class RoundController : MonoBehaviour
     // regardless of this offset's size.
     private static readonly Vector3 TaggerSpawnBackOffset = new(0f, 0f, -1.5f);
 
+    /// <summary>Arms the 3-2-1-GO countdown and freezes every agent at spawn for its duration. Skipped
+    /// for free-roam (0 chasers — nothing to brace for) and for headless self-play, which must keep its
+    /// own match timing: _localPlayerAgent is null there, the same gate the minimap and auto-restart use.
+    /// Bots freeze too — they read through the same CharacterMotor input filter the player does.</summary>
+    private void BeginCountdown()
+    {
+        if (_localPlayerAgent == null || _config.taggerCount <= 0
+            || SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null)
+        {
+            // Restarting INTO free-roam from a countdown-armed round must still release the lock.
+            _countdownEndTime = float.NegativeInfinity;
+            ReleaseCountdownLock();
+            return;
+        }
+
+        _countdownEndTime = Time.time + CountdownDuration;
+        _countdownBeatsPlayed = 0;
+        SetAgentsInputLocked(true);
+        _countdownLocked = true;
+    }
+
+    private void ReleaseCountdownLock()
+    {
+        if (!_countdownLocked) return;
+        SetAgentsInputLocked(false);
+        _countdownLocked = false;
+    }
+
+    private void SetAgentsInputLocked(bool locked)
+    {
+        foreach (TagAgent agent in _agents) agent.SetInputLocked(locked);
+    }
+
+    /// <summary>Drives the countdown blips and releases the movement lock at GO. Runs ABOVE Update's
+    /// _roundOver early-return: a round that somehow ends mid-countdown must still release the lock
+    /// rather than strand every agent frozen.</summary>
+    private void TickCountdown()
+    {
+        if (!_countdownLocked) return;
+
+        if (IsCountdownActive && !_roundOver)
+        {
+            float elapsed = CountdownDuration - (_countdownEndTime - Time.time);
+            int due = Mathf.Min(Mathf.FloorToInt(elapsed / CountdownBeatDuration) + 1, CountdownBeats);
+            while (_countdownBeatsPlayed < due)
+            {
+                PlayCountdownClip(GetCountdownBeepClip());
+                _countdownBeatsPlayed++;
+            }
+            return;
+        }
+
+        if (_roundOver) _countdownEndTime = float.NegativeInfinity; // died in the countdown — no GO! draw, no GO blip
+        else PlayCountdownClip(GetCountdownGoClip());
+        ReleaseCountdownLock();
+    }
+
+    // ---------------------------------------------------------------- Countdown audio
+    //
+    // There is no shared AudioSynth in this project — every one-shot SFX generates and statically
+    // caches its own AudioClip. Mirrors TagAgent.GetBoopClip's pattern exactly; the sample-generation
+    // loop is factored into one helper here since the beep and the GO clip differ only in
+    // name/frequency/duration.
+
+    private static AudioClip? _countdownBeepClip;
+    private static AudioClip? _countdownGoClip;
+
+    private static AudioClip GetCountdownBeepClip()
+    {
+        if (_countdownBeepClip != null) return _countdownBeepClip;
+        _countdownBeepClip = GenerateCountdownClip("CountdownBeep", 660f, 0.10f);
+        return _countdownBeepClip;
+    }
+
+    // Higher + longer than the per-beat beep so GO reads as the payoff, not just another blip.
+    private static AudioClip GetCountdownGoClip()
+    {
+        if (_countdownGoClip != null) return _countdownGoClip;
+        _countdownGoClip = GenerateCountdownClip("CountdownGo", 990f, 0.22f);
+        return _countdownGoClip;
+    }
+
+    private static AudioClip GenerateCountdownClip(string name, float frequency, float duration)
+    {
+        const int sampleRate = 44100;
+        int sampleCount = Mathf.CeilToInt(sampleRate * duration);
+        var samples = new float[sampleCount];
+        for (int i = 0; i < sampleCount; i++)
+        {
+            float t = i / (float)sampleRate;
+            float envelope = Mathf.Sin(Mathf.PI * i / sampleCount); // fade in/out so the clip doesn't click
+            samples[i] = Mathf.Sin(2f * Mathf.PI * frequency * t) * envelope * 0.5f;
+        }
+
+        AudioClip clip = AudioClip.Create(name, sampleCount, 1, sampleRate, false);
+        clip.SetData(samples, 0);
+        return clip;
+    }
+
+    // Routed through GameAudio rather than TagAgent's older PlayClipAtPoint idiom: the countdown is a
+    // round-flow stinger for the local player, not a world event, so it wants true 2D placement (no
+    // distance attenuation off the third-person camera's offset) plus the Ui volume slider — both of
+    // which PlayClipAtPoint gives no way to set.
+    private static void PlayCountdownClip(AudioClip clip) => GameAudio.Play2D(clip, AudioCategory.Ui);
+
     private void Update()
     {
         // Tag slow-mo self-restore, on UNSCALED time so it fires even while timeScale is 0.35. If the
@@ -365,6 +704,8 @@ public sealed class RoundController : MonoBehaviour
             }
         }
 
+        TickCountdown();
+
         // R restarts at any point, not just once the round has ended — mid-round it's the
         // playground-style "reset" the player uses to recover from falling off the map, on top
         // of doubling as the round's own restart-on-win/loss key.
@@ -374,23 +715,37 @@ public sealed class RoundController : MonoBehaviour
             return;
         }
 
-        if (_roundOver)
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        // F10: ragdoll the local player, for feel-checking the ragdoll on its own. Gated exactly like
+        // KillCamPlayback's F9 debug replay — dev builds only, and not while timeScale is 0 (pause,
+        // end screen, kill cam), which is the other owner of the world's state. R restores everything.
+        if (Time.timeScale != 0f && Keyboard.current != null && Keyboard.current.f10Key.wasPressedThisFrame
+            && _localPlayerAgent != null
+            && _localPlayerAgent.GetComponent<CharacterRagdoll>() is { IsActive: false } ragdoll)
         {
-            // Auto-restart only in the human-played game: SelfPlayTests runs 10 headless matches
-            // on its own clock, and an 8s auto-restart firing mid-harness would distort match
-            // counts. _localPlayerAgent is null for every agent there, so this is a no-op in that
-            // harness — the same gate the minimap already uses.
-            if (_localPlayerAgent != null)
-            {
-                _autoRestartRemaining -= Time.deltaTime;
-                if (_autoRestartRemaining <= 0f)
-                {
-                    StartRound();
-                    _cameraRig?.SnapToTarget();
-                }
-            }
-            return;
+            ragdoll.Activate(_localPlayerAgent.transform.forward * 2f + Vector3.up * 3f);
         }
+#endif
+
+        // Kill cam is playing: the round is NOT over yet (_roundOver flips only in the replay's
+        // completion callback), so everything below would otherwise run against agent transforms the
+        // replay has posed to where they were seconds ago. Deliberately below the two blocks above:
+        // the slow-mo restore must still see timeScale==0 and drop its claim (KillCamPlayback.Restore
+        // relies on that — it hands back 1, not 0.35), and R must still restart mid-replay.
+        //
+        // timeScale 0 already neuters the time-driven parts (Time.deltaTime is 0, so the round timer,
+        // the eat channel and the timer-expiry win check can't advance) and FixedUpdate is stopped, so
+        // bot AI can't tag. What it does NOT stop is the position-driven logic: the fall-reset would
+        // read a replayed y and respawn+convert a bot mid-replay, and the eat loop would wipe a live
+        // can's Progress because the runner's 2.5s-ago position is out of range. Presentation must not
+        // mutate rules state — skip the lot.
+        if (_killCamPlayback is { IsPlaying: true }) return;
+
+        // Round-over: no auto-restart any more (the old timer was Time.deltaTime-driven, which
+        // EndRound's timeScale=0 freeze had already zeroed — a dead no-op that never actually
+        // fired). Restart is the explicit R-key/button action; the end screen's draining bar is
+        // purely cosmetic, driven off unscaled time in DrawEndScreen.
+        if (_roundOver) return;
 
         // Unlimited-time mode (free-roam testing): freeze the clock at its start value so it never
         // expires AND never crosses into the late-game speed ramp below — the HUD shows it as ∞.
@@ -403,6 +758,11 @@ public sealed class RoundController : MonoBehaviour
             multiplier = Mathf.Lerp(1f, _config.lateGameMaxSpeedMultiplier, phaseT);
         }
 
+        // Before the loop below, not after: a bot whose sequence ends this frame converts Runner ->
+        // Tagger, and the immediate path has always had that visible to the same frame's
+        // runnersRemaining count (see ApplyFallConsequence's remarks).
+        UpdateStreetFallers();
+
         int runnersRemaining = 0;
         foreach (TagAgent agent in _agents)
         {
@@ -410,30 +770,57 @@ public sealed class RoundController : MonoBehaviour
             // play — skip so they neither fall-respawn nor count toward runnersRemaining.
             if (!agent.isActiveAndEnabled) continue;
 
-            if (agent.transform.position.y < FallResetY
-                && _spawnStates.TryGetValue(agent, out (Vector3 pos, Quaternion rot) spawn))
+            if (agent.transform.position.y < FallResetY && _spawnStates.ContainsKey(agent))
             {
-                if (agent == _localPlayerAgent)
+                // No street under this scene (headless self-play, always): the fall has no
+                // destination, so the consequence lands right here, exactly as it always has.
+                if (!StreetFallEnabled) ApplyFallConsequence(agent);
+                // Otherwise the fall is only STARTING: they keep falling, land on the street slab at
+                // -25 and stand there while the sequence runs (UpdateStreetFallers applies the same
+                // consequence when it ends). ContainsKey because this poll sees them below -15 on
+                // every frame of the sequence — without it they'd be re-timed forever and, worse,
+                // consequenced once per frame.
+                else if (!_streetFallers.ContainsKey(agent))
                 {
-                    // The local player falling off the map is a loss, same flow as being tagged
-                    // (see PlayerCaught) — no respawn, the round is over (EndRound no-ops if it
-                    // already ended this same frame, e.g. via a simultaneous tag).
-                    _playerLost = true;
-                    EndRound("You fell off the map!");
-                }
-                else
-                {
-                    // Bots who fall off the map respawn at their start — there's nothing below the
-                    // rooftop gaps to land on. A Runner is also converted to a Tagger on the way
-                    // back: falling off reads as "the map itself tagged you". A Tagger keeps its
-                    // role. If this converts the last Runner, the runnersRemaining == 0 check below
-                    // ends the round this same frame with the existing "Taggers win" result.
-                    Role respawnRole = agent.Role == Role.Runner ? Role.Tagger : agent.Role;
-                    agent.Motor.ResetState(spawn.pos, spawn.rot);
-                    // Brief grace on respawn so it doesn't reappear right into a tagger's reach (and,
-                    // for a freshly-converted Runner, so the conversion telegraphs the same way a
-                    // normal tag does).
-                    agent.SetRole(respawnRole, startGrace: true);
+                    _streetFallers[agent] = (Time.time + _config.streetSequenceTimeout, float.PositiveInfinity);
+
+                    // The sequence owns them now: freeze input (same motor flag as the round-start
+                    // countdown) so a fallen player can't sprint around the street looking very much
+                    // not-dead while the timeout runs. Unlocked when the sequence resolves
+                    // (UpdateStreetFallers) or is abandoned by a restart (StartRound's faller sweep).
+                    // Never reached headless — this whole branch is StreetFallEnabled-gated.
+                    agent.SetInputLocked(true);
+
+                    // Die on impact, not on a timer (user: "I should just die, currently I freeze and
+                    // do nothing"): ragdoll RIGHT NOW, mid-fall — Activate inherits the fall velocity,
+                    // so the body tumbles the rest of the way down and crumples onto the road, and
+                    // UpdateStreetFallers' IsActive branch then arms the short ragdollLinger + death
+                    // cam instead of the long standing-frozen timeout. Trade-off, accepted: CarImpact
+                    // ignores already-ragdolled bodies, so the car-launch gag no longer fires — the
+                    // crumple IS the death now. Activate no-ops harmlessly if no ragdoll was built
+                    // (capsule-fallback models), leaving the original lock+timeout path as backstop.
+                    agent.GetComponent<CharacterRagdoll>()?.Activate(Vector3.zero);
+
+                    // The local player's loss is decided HERE, not when their sequence ends. Everything
+                    // below -15 is presentation of an outcome, not a new rule — ApplyFallConsequence
+                    // has exactly one branch for them and it is always a loss.
+                    //
+                    // Recording it now closes a race the street sequence opened: the player now stands
+                    // in the road for up to streetSequenceTimeout before EndRound, and the round timer
+                    // can expire inside that window and fire "Runners win! N survived" — handing a
+                    // SURVIVAL WIN to someone lying in the street. (Before the street the window was
+                    // ~0, so the bug had nowhere to happen.)
+                    //
+                    // _playerLost is the honest lever rather than a reuse of convenience: it is read in
+                    // exactly two places (EndRound's session/match tally and DrawEndScreen's verdict),
+                    // both of which run only once the round is over, and both of which already mean
+                    // "the player lost regardless of what the role-based win check computed" — which is
+                    // precisely the claim being made here. Nothing reads it mid-round, so setting it
+                    // early changes no behaviour except the one that was wrong. The alternative —
+                    // excluding them from runnersRemaining — would instead corrupt the count that
+                    // decides whether the TAGGERS win, and a faller is genuinely still a Runner until
+                    // the map converts them.
+                    if (agent == _localPlayerAgent) _playerLost = true;
                 }
             }
 
@@ -527,7 +914,13 @@ public sealed class RoundController : MonoBehaviour
         if (_roundOver) return; // don't let a second same-frame trigger (e.g. fall-loss then win/lose check) stomp the result
         _roundOver = true;
         _resultMessage = message;
-        _autoRestartRemaining = AutoRestartDuration;
+
+        // The end screen needs the camera back. Idempotent, and deliberately not conditional on HOW we
+        // got here: the street sequence's own path already ended the shot (this no-ops for it), but the
+        // round can also end UNDER a live death cam — the timer expiring while the player is still in
+        // the road is exactly the window the fix below opens up.
+        _streetDeathCam?.End();
+        _endScreenOpenedUnscaled = Time.unscaledTime;
         _finalRoundLength = _config.roundDuration - Mathf.Max(_timeRemaining, 0f);
 
         // Session tally — persists across rounds (StartRound never clears these), rendered under the
@@ -542,6 +935,25 @@ public sealed class RoundController : MonoBehaviour
             _sessionRounds++;
             if (localWon) _sessionWins++; else _sessionLosses++;
             _sessionBestSurvival = Mathf.Max(_sessionBestSurvival, _finalRoundLength);
+
+            // Best-of-5 match tally — reuses the localWon just computed above rather than
+            // recomputing it. Gated on MatchActive so free-roam (0 chasers) and headless self-play
+            // stay standalone-round. _matchOver only ever flips false->true here, and this whole
+            // block runs at most once per round (the _roundOver guard at the top of EndRound), so
+            // the PlayerPrefs write below can't double-count a single match.
+            if (MatchActive)
+            {
+                _roundHistory.Add(localWon);
+                if (localWon) _matchPlayerWins++; else _matchBotWins++;
+                _matchOver = _matchPlayerWins >= RoundsToWinMatch || _matchBotWins >= RoundsToWinMatch;
+
+                if (_matchOver)
+                {
+                    string key = _matchPlayerWins > _matchBotWins ? MatchesWonPrefKey : MatchesLostPrefKey;
+                    PlayerPrefs.SetInt(key, PlayerPrefs.GetInt(key, 0) + 1);
+                    PlayerPrefs.Save();
+                }
+            }
         }
 
         // Freeze gameplay so bots don't keep tagging each other (and spamming the boop SFX) behind
@@ -567,22 +979,50 @@ public sealed class RoundController : MonoBehaviour
     /// converts the local player to Tagger) — ends the round immediately with a loss screen, since
     /// the normal "all runners tagged" check in Update never fires with the player staying a Runner
     /// forever.</summary>
-    private void PlayerCaught(TagAgent player)
+    private void PlayerCaught(TagAgent player, TagAgent tagger)
     {
         if (_roundOver) return;
         _playerLost = true;
+        _caughtByName = tagger.DisplayName; // end-screen "caught by <NAME>" subline
+
+        // Tagged while a death cam is up (a tagger following you down to the street): the kill cam is
+        // about to take the rig, and it caches rig.enabled to restore later — if we still held the rig
+        // disabled it would cache FALSE and hand back a dead rig for good. Give it back first so the
+        // kill cam takes over from a live rig, exactly as it does on every other tag. Two owners, one
+        // rig, and this is the only order in which the handoff is lossless.
+        _streetDeathCam?.End();
+
         // Headline already reads "YOU LOSE" (via _playerLost); give the banner a flavour subline
         // instead of repeating the same words twice on the end screen.
+        //
+        // The kill cam replays the catch first and only THEN ends the round — EndRound is deferred
+        // into the completion callback, which fires on a natural finish OR a skip OR immediately if
+        // there's nothing to replay, so the end screen is always reached exactly once either way.
+        // Play freezes timeScale synchronously here, which is also what suppresses the tag slow-mo
+        // that PerformTag triggers a few lines after this event returns (TriggerTagSlowMo no-ops at
+        // timeScale 0) — no explicit suppression needed.
+        if (_killCamPlayback != null)
+        {
+            _killCamPlayback.Play(tagger, player, tagger.DisplayName, () => EndRound("You were tagged!"));
+            return;
+        }
         EndRound("You were tagged!");
     }
 
-    /// <summary>Shared restart logic for both the R-key shortcut and the end screen's RESTART button —
-    /// resets the round, snaps the camera, and unconditionally restores play state (timeScale + cursor
-    /// lock), undoing the EndRound freeze above whether or not it was actually armed (idempotent when
-    /// it wasn't — e.g. R pressed mid-round with nothing frozen).</summary>
+    /// <summary>Shared restart logic for both the R-key shortcut and the end screen's RESTART/NEW MATCH
+    /// button — resets the round, snaps the camera, and unconditionally restores play state (timeScale
+    /// + cursor lock), undoing the EndRound freeze above whether or not it was actually armed (idempotent
+    /// when it wasn't — e.g. R pressed mid-round with nothing frozen). R on a still-open match just
+    /// restarts the round and keeps the score; R once the match is decided (_matchOver) starts a fresh
+    /// best-of-5 instead.</summary>
     private void RestartRound()
     {
-        StartRound();
+        // Before StartRound: Cancel puts back the camera rig, animator update modes and every agent
+        // transform the replay took over, so respawn writes onto restored state rather than being
+        // undone by a later Restore. It also hands timeScale back, which this method's own
+        // Time.timeScale = 1f below then makes final regardless.
+        _killCamPlayback?.Cancel();
+        if (_matchOver) StartMatch(); else StartRound();
         _cameraRig?.SnapToTarget();
         Time.timeScale = 1f;
         if (_cameraRig != null)
@@ -594,33 +1034,35 @@ public sealed class RoundController : MonoBehaviour
 
     // ---------------------------------------------------------------- HUD (IMGUI)
     //
-    // Whole HUD is OnGUI/IMGUI by project convention (no Canvas/UGUI/UI Toolkit anywhere). Styled to
-    // the "golden hour over the construction site" visual pass. Game.Rules can't reference
-    // Game.MapGeometry (asmdef), so the theme colors below are hand-mirrored from VisualThemeConfig
-    // — keep them in sync with it. Role colors come straight from TagRulesConfig (same assembly),
-    // which is the authoritative gameplay color language.
+    // Whole HUD is OnGUI/IMGUI by project convention (no Canvas/UGUI/UI Toolkit anywhere). Styled off
+    // Game.UI.GameUIStyle, the shared IMGUI kit (palette, generated textures, design-space Scale,
+    // Panel/Button/Label helpers, UIEase) — Game.Rules references Game.UI directly, so there's no more
+    // hand-mirroring of theme colors here. Role colors still come straight from TagRulesConfig (same
+    // assembly), the authoritative gameplay color language, rather than GameUIStyle's mirrored copies.
     //
     // NEVER call anything that rebinds render targets (Graphics.Blit / RenderTexture.active) from
     // OnGUI — the minimap composite was moved out to LateUpdate for exactly that reason (see the
     // comment above LateUpdate). OnGUI must stay a pure draw path.
 
-    private static readonly Color HudCream = new Color32(0xFF, 0xE9, 0xC4, 0xFF);     // warm text / runner cream
-    private static readonly Color HudRimOrange = new Color32(0xFF, 0xB6, 0x68, 0xFF); // rim-light accent
-    private static readonly Color HudHorizon = new Color32(0xF0, 0x90, 0x4A, 0xFF);   // sky horizon orange (runners-win accent)
-    private static readonly Color HudPanel = new(0.23f, 0.18f, 0.36f, 0.72f);         // dusk plum, semi-transparent backdrop
-
-    private GUIStyle? _timerStyle;
-    private GUIStyle? _bannerStyle;
-    private GUIStyle? _bannerSubStyle;
-    private GUIStyle? _youStyle;
+    // Every color below now comes from GameUIStyle (see its remarks — it's the one legal home for a
+    // color literal in UI code) except _config.taggerColor/runnerColor, which stay config-driven
+    // rather than pointing at GameUIStyle's mirrored copies, so a per-scene TagRulesConfig override
+    // still reaches the HUD.
 
     private void OnGUI()
     {
-        EnsureHudStyles();
+        // The kill cam owns the screen while it plays: it draws its own letterbox + "CAUGHT BY ..."
+        // and nothing else should sit on top of it. The end screen isn't a concern here (_roundOver
+        // stays false until the replay's completion callback runs EndRound), but the timer, minimap,
+        // spinner, trash HUD and the "YOU'RE IT" flash would all still draw.
+        if (_killCamPlayback is { IsPlaying: true }) return;
+
         DrawTagConversionFlash();
 
         DrawTimer();
         DrawTrashObjective();
+        DrawCountdown();
+        DrawRoundStartBanner();
 
         if (_roundOver) DrawEndScreen();
 
@@ -628,96 +1070,125 @@ public sealed class RoundController : MonoBehaviour
         DrawLungeSpinner();
     }
 
-    // GUIStyle construction touches GUI.skin, so it must happen inside OnGUI — lazily cached here
-    // rather than rebuilt every frame. Per-draw textColor is assigned before each GUI.Label since it
-    // varies (endgame timer warming, win/lose accent).
-    private void EnsureHudStyles()
-    {
-        _timerStyle ??= new GUIStyle(GUI.skin.label) { fontSize = 30, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
-        _bannerStyle ??= new GUIStyle(GUI.skin.label) { fontSize = 26, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
-        _youStyle ??= new GUIStyle(GUI.skin.label) { fontSize = 22, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
-        _bannerSubStyle ??= new GUIStyle(GUI.skin.label) { fontSize = 16, alignment = TextAnchor.MiddleCenter };
-    }
+    // Top-center HUD capsule: timer + (Runner-side) trash bin row merged into one GameUIStyle.Panel
+    // strip instead of two backdrops sitting next to each other. Centered on GameUIStyle.DesignWidth,
+    // never Screen.width (see the kit's remarks on aspect).
+    private const float HudCapsuleHeight = 46f;
+    private const float HudCapsulePad = 18f;
+    private const float TimerColumnWidth = 90f;
+    private const float BinIconWidth = 20f, BinIconHeight = 24f, BinIconGap = 8f;
+    private const float BinBarHeight = 5f;
+    private const float BinPunchDuration = 0.35f;
+
+    private int _lastTrashPointsSeen = -1;
+    private float _binPunchStartUnscaled = float.NegativeInfinity;
+    private bool _eatingBannerActive;
+    private float _eatingBannerStartUnscaled;
 
     // Centered top-middle MM:SS, warming from cream toward tagger red across the late-game phase
-    // (the window where taggers speed up) so mounting pressure is legible at a glance.
+    // (the window where taggers speed up) so mounting pressure is legible at a glance; last 10s adds
+    // a per-second scale punch (same big-to-rest shape DrawBanner's callers use) on top of the color.
     private void DrawTimer()
     {
         int clamped = Mathf.Max(0, Mathf.FloorToInt(_timeRemaining));
         string text = _config.unlimitedTime ? "∞" : $"{clamped / 60:00}:{clamped % 60:00}";
 
-        Color color = HudCream;
+        bool urgent = !_roundOver && !_config.unlimitedTime && _timeRemaining <= 10f && _timeRemaining > 0f;
+        Color color = GameUIStyle.Text;
         if (!_roundOver && _config.lateGamePhaseDuration > 0f && _timeRemaining <= _config.lateGamePhaseDuration)
         {
             float pressure = 1f - Mathf.Clamp01(_timeRemaining / _config.lateGamePhaseDuration);
-            color = Color.Lerp(HudCream, _config.taggerColor, pressure * 0.85f);
+            color = Color.Lerp(GameUIStyle.Text, _config.taggerColor, pressure * 0.85f);
+        }
+        if (urgent) color = _config.taggerColor;
+
+        bool showBins = ShouldShowRunnerBinRow();
+        float capsuleWidth = TimerColumnWidth + HudCapsulePad * 2f
+            + (showBins ? RunnerBinRowWidth() + HudCapsulePad : 0f);
+        var capsule = new Rect((GameUIStyle.DesignWidth - capsuleWidth) * 0.5f, 8f, capsuleWidth, HudCapsuleHeight);
+        GameUIStyle.Panel(capsule);
+
+        var timerRect = new Rect(capsule.x, capsule.y, TimerColumnWidth + HudCapsulePad, capsule.height);
+        Rect scaledTimerRect = GameUIStyle.Scaled(timerRect);
+
+        // Per-second pulse: 1 right on the tick, decaying to rest across the second — the timer is a
+        // single GUI.Label rather than a DrawBanner call, so the punch is a GUI.matrix scale here.
+        float scale = 1f;
+        if (urgent)
+        {
+            float pulseT = 1f - (_timeRemaining - Mathf.Floor(_timeRemaining));
+            scale = Mathf.Lerp(1.35f, 1f, UIEase.Out(pulseT));
         }
 
-        const float w = 150f, h = 46f;
-        var panel = new Rect((Screen.width - w) * 0.5f, 8f, w, h);
-        DrawPanel(panel, HudPanel);
-        _timerStyle!.normal.textColor = color;
-        GUI.Label(panel, text, _timerStyle);
+        Matrix4x4 savedMatrix = GUI.matrix;
+        if (scale != 1f) GUIUtility.ScaleAroundPivot(new Vector2(scale, scale), scaledTimerRect.center);
+        GUIStyle style = GameUIStyle.Label(GameUIStyle.Title, TextAnchor.MiddleCenter, FontStyle.Bold);
+        style.normal.textColor = color;
+        GUI.Label(scaledTimerRect, text, style);
+        GUI.matrix = savedMatrix;
+
+        if (showBins) DrawRunnerBinRow(new Rect(timerRect.xMax, capsule.y, capsuleWidth - timerRect.width, capsule.height));
     }
 
-    // Trash objective HUD, next to the timer. Runner-side: a row of small bin icons — one per point
-    // needed to win (_config.trashPointsToWin) — greyed-out when unfilled and turning HudCream as
-    // points are captured (filled count = _trashPoints), plus a thin fill bar under the row for the
-    // can the local player is currently eating. Tagger-side: a warning banner while any Runner is
-    // mid-eat (unchanged). No cans and no points scored → nothing draws. (Local player null in
-    // headless self-play is treated as Runner-side, but OnGUI doesn't render there anyway.)
-    private void DrawTrashObjective()
+    private bool ShouldShowRunnerBinRow()
     {
-        if (_activeCans.Count == 0 && _trashPoints == 0) return;
+        if (_activeCans.Count == 0 && _trashPoints == 0) return false;
+        return _localPlayerAgent == null || _localPlayerAgent.Role == Role.Runner;
+    }
 
-        bool localIsRunner = _localPlayerAgent == null || _localPlayerAgent.Role == Role.Runner;
+    private float RunnerBinRowWidth()
+    {
+        int target = _config.trashPointsToWin;
+        return target * BinIconWidth + Mathf.Max(0, target - 1) * BinIconGap;
+    }
 
-        if (localIsRunner)
+    // Bin icon row + fill bar, drawn inside DrawTimer's shared capsule (design-space area handed in
+    // by the caller). Icons turn GameUIStyle.AccentBright as points are captured and the most
+    // recently completed one pops with a scale punch (_lastTrashPointsSeen/_binPunchStartUnscaled
+    // track the transition).
+    private void DrawRunnerBinRow(Rect area)
+    {
+        if (_trashPoints != _lastTrashPointsSeen)
         {
-            // Anchored off DrawTimer's panel (Rect((Screen.width - 150) * 0.5f, 8f, 150f, 46f)) —
-            // nothing else draws near top-center (the minimap sits top-RIGHT with its own margin, the
-            // lunge spinner is screen-center vertically, not top), so the icon row sits immediately to
-            // its right, vertically centered against the timer panel's height.
-            const float timerW = 150f, timerH = 46f;
-            var timerPanel = new Rect((Screen.width - timerW) * 0.5f, 8f, timerW, timerH);
-
-            const float iconW = 20f, iconH = 24f, iconGap = 6f;
-            int target = _config.trashPointsToWin;
-            float rowWidth = target * iconW + Mathf.Max(0, target - 1) * iconGap;
-            float startX = timerPanel.xMax + 12f;
-            float rowY = timerPanel.y + (timerPanel.height - iconH) * 0.5f;
-
-            for (int i = 0; i < target; i++)
-            {
-                var iconRect = new Rect(startX + i * (iconW + iconGap), rowY, iconW, iconH);
-                Color color = i < _trashPoints ? HudCream : new Color(1f, 1f, 1f, 0.22f);
-                DrawBinIcon(iconRect, color);
-            }
-
-            float progress = LocalEatingProgress();
-            if (progress > 0f)
-            {
-                var barBg = new Rect(startX, rowY + iconH + 4f, rowWidth, 6f);
-                DrawPanel(barBg, new Color(0f, 0f, 0f, 0.5f));
-                DrawPanel(new Rect(barBg.x, barBg.y, barBg.width * Mathf.Clamp01(progress), barBg.height), HudRimOrange);
-            }
+            if (_lastTrashPointsSeen >= 0 && _trashPoints > _lastTrashPointsSeen)
+                _binPunchStartUnscaled = Time.unscaledTime;
+            _lastTrashPointsSeen = _trashPoints;
         }
-        else if (AnyRunnerEating(out _))
+
+        int target = _config.trashPointsToWin;
+        float rowWidth = RunnerBinRowWidth();
+        float startX = area.x;
+        float rowY = area.y + (area.height - BinIconHeight) * 0.5f;
+        float punchT = Mathf.Clamp01(1f - (Time.unscaledTime - _binPunchStartUnscaled) / BinPunchDuration);
+
+        for (int i = 0; i < target; i++)
         {
-            const float w = 360f, h = 34f;
-            var rect = new Rect((Screen.width - w) * 0.5f, 58f, w, h);
-            DrawPanel(rect, new Color(HudPanel.r, HudPanel.g, HudPanel.b, 0.82f));
-            _bannerStyle!.normal.textColor = _config.taggerColor;
-            GUI.Label(rect, "THE RACCOON IS EATING", _bannerStyle);
+            var iconRect = new Rect(startX + i * (BinIconWidth + BinIconGap), rowY, BinIconWidth, BinIconHeight);
+            bool filled = i < _trashPoints;
+            Color color = filled ? GameUIStyle.AccentBright : GameUIStyle.Hairline;
+            float iconScale = filled && i == _trashPoints - 1 ? 1f + UIEase.Out(punchT) * 0.4f : 1f;
+            DrawBinIcon(GameUIStyle.Scaled(iconRect), color, iconScale);
+        }
+
+        float progress = LocalEatingProgress();
+        if (progress > 0f)
+        {
+            var barBg = new Rect(startX, rowY + BinIconHeight + 4f, rowWidth, BinBarHeight);
+            DrawPanel(GameUIStyle.Scaled(barBg), new Color(0f, 0f, 0f, 0.5f));
+            DrawPanel(GameUIStyle.Scaled(new Rect(barBg.x, barBg.y, barBg.width * Mathf.Clamp01(progress), barBg.height)), GameUIStyle.AccentBright);
         }
     }
 
     /// <summary>Small bin glyph — a thin, full-width "lid" rect over a narrower, inset "body" rect
     /// (the width difference reads as a taper hint) — drawn with the same DrawPanel (GUI.color +
     /// Texture2D.whiteTexture) idiom as the rest of this IMGUI HUD, no bespoke texture needed for a
-    /// shape this simple.</summary>
-    private static void DrawBinIcon(Rect rect, Color color)
+    /// shape this simple. <paramref name="scale"/> &gt; 1 punches it via GUI.matrix around its own
+    /// center — the can-complete pop.</summary>
+    private static void DrawBinIcon(Rect rect, Color color, float scale = 1f)
     {
+        Matrix4x4 savedMatrix = GUI.matrix;
+        if (scale != 1f) GUIUtility.ScaleAroundPivot(new Vector2(scale, scale), rect.center);
+
         float lidHeight = Mathf.Round(rect.height * 0.22f);
         var lid = new Rect(rect.x, rect.y, rect.width, lidHeight);
         DrawPanel(lid, color);
@@ -726,6 +1197,50 @@ public sealed class RoundController : MonoBehaviour
         var body = new Rect(rect.x + bodyInset * 0.5f, rect.y + lidHeight + 1f,
             rect.width - bodyInset, rect.height - lidHeight - 1f);
         DrawPanel(body, color);
+
+        GUI.matrix = savedMatrix;
+    }
+
+    // Tagger-side-only now — the Runner-side bin row moved into DrawTimer's shared capsule above.
+    // Warns while any Runner is mid-eat, sliding/fading in via the same DrawBanner envelope as
+    // "YOU'RE IT" and the countdown, so all three read as one visual language.
+    private void DrawTrashObjective()
+    {
+        if (_activeCans.Count == 0 && _trashPoints == 0) return;
+        bool localIsRunner = _localPlayerAgent == null || _localPlayerAgent.Role == Role.Runner;
+        if (localIsRunner || !AnyRunnerEating(out _))
+        {
+            _eatingBannerActive = false;
+            return;
+        }
+
+        if (!_eatingBannerActive)
+        {
+            _eatingBannerActive = true;
+            _eatingBannerStartUnscaled = Time.unscaledTime;
+        }
+
+        float openT = UIEase.Since(_eatingBannerStartUnscaled, 0.25f); // 0 -> 1
+        var rect = new Rect((GameUIStyle.DesignWidth - 360f) * 0.5f, 58f - (1f - openT) * 8f, 360f, 34f);
+        GameUIStyle.Panel(rect);
+        DrawBanner(rect, "THE RACCOON IS EATING", _config.taggerColor, GameUIStyle.Body, openT);
+    }
+
+    // Shared banner draw for every pop-up HUD banner in this file ("YOU'RE IT", the 3-2-1-GO
+    // countdown, and "THE RACCOON IS EATING") — one font/weight/alignment to tune instead of three
+    // hand-rolled GUIStyle blocks. Callers own their slide/fade/punch math and hand in the
+    // already-eased design-space rect, size, and alpha.
+    private static void DrawBanner(Rect designRect, string text, Color color, float fontSizeDesign, float alpha)
+    {
+        if (alpha <= 0f) return;
+        var style = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = Mathf.RoundToInt(GameUIStyle.Scaled(fontSizeDesign)),
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter,
+            normal = { textColor = new Color(color.r, color.g, color.b, color.a * Mathf.Clamp01(alpha)) },
+        };
+        GUI.Label(GameUIStyle.Scaled(designRect), text, style);
     }
 
     // Highest fill among active cans within eatRadius of the local player — the can their bar tracks.
@@ -743,80 +1258,243 @@ public sealed class RoundController : MonoBehaviour
         return best;
     }
 
-    // Themed win/lose banner. The dark backdrop stays (the golden-hour sky can wash out light text),
-    // but the accent now follows the winner (horizon orange for a runners win, tagger red for a
-    // taggers win), and a "YOU WIN / YOU LOSE" line reads the outcome against the local player's
-    // final role.
+    // Full-screen radial vignette (GameUIStyle.Vignette) instead of a flat dim box, a Display-size
+    // "YOU ESCAPED"/"CAUGHT" verdict that slides+punches in via UIEase off _endScreenOpenedUnscaled,
+    // a cause subline ("survived the timer" / "caught by <NAME>" — the latter from PlayerCaught, see
+    // _caughtByName's remarks), a label/value stats grid with hairline separators, a quieter Caption
+    // session-tally row, and GameUIStyle.Button restart/menu buttons with a cosmetic unscaled-time
+    // draining bar underneath (replaces the old dead Time.deltaTime auto-restart countdown — see
+    // EndRound's remarks).
+    //
+    // MatchActive adds a round/score line above the verdict and a pip row below it (score pips
+    // mid-match, the full round-history strip once the match is decided) — see
+    // DrawScorePipRow/DrawRoundHistoryStrip. SEAM: those pips currently render inside the end-screen
+    // body; a later pass can lift DrawScorePipRow into the in-round HUD header instead (top-center,
+    // beside the timer capsule) without touching the match-state fields it reads.
     private void DrawEndScreen()
     {
+        bool matchActive = MatchActive;
+        bool matchEnd = matchActive && _matchOver;
+
         bool runnersWon = _resultMessage.StartsWith("Runners");
-        Color accent = runnersWon ? HudHorizon : _config.taggerColor;
         bool localWon = _playerLost
             ? false
             : _localPlayerAgent == null
                 ? runnersWon
                 : runnersWon == (_localPlayerAgent.Role == Role.Runner);
+        bool playerWonMatch = _matchPlayerWins > _matchBotWins;
 
-        // Full-screen dim so the frozen scene behind the end screen reads as inactive, and so the
-        // buttons below have contrast regardless of what's directly behind them.
-        DrawPanel(new Rect(0f, 0f, Screen.width, Screen.height), new Color(0f, 0f, 0f, 0.6f));
+        float openT = UIEase.Since(_endScreenOpenedUnscaled, 0.3f); // 0 -> 1, eased-out
+        GameUIStyle.Vignette(0.85f * openT);
 
-        const float w = 540f, h = 296f;
-        var panel = new Rect((Screen.width - w) * 0.5f, (Screen.height - h) * 0.5f, w, h);
-        DrawPanel(panel, new Color(HudPanel.r, HudPanel.g, HudPanel.b, 0.82f));
+        const float w = 540f;
+        float h = matchActive ? 430f : 380f;
+        var panel = new Rect((GameUIStyle.DesignWidth - w) * 0.5f, (GameUIStyle.DesignHeight - h) * 0.5f, w, h);
+        GameUIStyle.Panel(panel);
 
-        if (_localPlayerAgent != null)
+        float rowY = panel.y + 14f;
+        if (matchActive && !matchEnd)
         {
-            _youStyle!.normal.textColor = localWon ? HudRimOrange : _config.taggerColor;
-            GUI.Label(new Rect(panel.x, panel.y + 16f, panel.width, 26f), localWon ? "YOU WIN" : "YOU LOSE", _youStyle);
+            string roundLine = $"ROUND {_roundHistory.Count} OF 5" + (MatchPointNow ? " — MATCH POINT" : "");
+            GUIStyle roundStyle = GameUIStyle.Label(GameUIStyle.Caption, TextAnchor.MiddleCenter);
+            roundStyle.normal.textColor = GameUIStyle.TextDim;
+            GUI.Label(GameUIStyle.Scaled(new Rect(panel.x, rowY, panel.width, 18f)), roundLine, roundStyle);
+            rowY += 26f;
         }
 
-        _bannerStyle!.normal.textColor = accent;
-        GUI.Label(new Rect(panel.x, panel.y + 50f, panel.width, 40f), _resultMessage, _bannerStyle);
+        // Verdict: "YOU ESCAPED" / "CAUGHT" (round-level), or the match-level headline once the
+        // match itself is decided — pop-in punch + a short upward slide, both driven by openT.
+        // "CAUGHT" only fits a loss with a catcher; a street fall has none (_caughtByName is set
+        // exclusively by PlayerCaught) and reads as "YOU DIED" instead (user).
+        string verdict = matchEnd
+            ? (playerWonMatch ? $"MATCH WON {_matchPlayerWins}-{_matchBotWins}" : $"MATCH LOST {_matchPlayerWins}-{_matchBotWins}")
+            : (localWon ? "YOU ESCAPED" : (string.IsNullOrEmpty(_caughtByName) ? "YOU DIED" : "CAUGHT"));
+        bool verdictWon = matchEnd ? playerWonMatch : localWon;
+        Color verdictColor = verdictWon ? GameUIStyle.AccentBright : _config.taggerColor;
+        int verdictSize = matchEnd ? GameUIStyle.Title : GameUIStyle.Display;
 
-        _bannerSubStyle!.normal.textColor = new Color(HudCream.r, HudCream.g, HudCream.b, 0.85f);
-        // The auto-restart countdown below (_autoRestartRemaining) is driven off Time.deltaTime,
-        // which is 0 while the freeze in EndRound holds timeScale at 0 — so for a local player it
-        // never actually reaches 0 anymore (restart is now the explicit R-key/button action instead).
-        // The label reflects that: no dead countdown number, just the still-live shortcut.
-        GUI.Label(new Rect(panel.x, panel.y + 96f, panel.width, 22f), "Press R to restart", _bannerSubStyle);
+        // Height = fontSize + 30 (was +14): the 1.12x punch-in overshoot needs headroom or the
+        // glyph tops/bottoms clip mid-animation (same class of clipping as the countdown fix).
+        var verdictDesignRect = new Rect(panel.x, rowY - (1f - openT) * 24f, panel.width, verdictSize + 30f);
+        Rect verdictRect = GameUIStyle.Scaled(verdictDesignRect);
+        float overshoot = 1f + Mathf.Sin(Mathf.Clamp01(openT) * Mathf.PI) * 0.12f; // 1 frame of scale overshoot on the way in
+        Matrix4x4 savedMatrix = GUI.matrix;
+        GUIUtility.ScaleAroundPivot(new Vector2(overshoot, overshoot), verdictRect.center);
+        GUIStyle verdictStyle = GameUIStyle.Label(verdictSize, TextAnchor.MiddleCenter, FontStyle.Bold);
+        // Fit-to-width: "YOU ESCAPED" at Display size overflows the panel (user screenshot). Shrink
+        // the font so the text fits at 0.85x of the rect width — the extra margin below 1.0 covers
+        // the 1.12x punch-in overshoot so it can't clip even at the animation's widest frame.
+        Vector2 verdictTextSize = verdictStyle.CalcSize(new GUIContent(verdict));
+        if (verdictTextSize.x > verdictRect.width * 0.85f)
+            verdictStyle.fontSize = Mathf.FloorToInt(verdictStyle.fontSize * verdictRect.width * 0.85f / verdictTextSize.x);
+        verdictStyle.normal.textColor = new Color(verdictColor.r, verdictColor.g, verdictColor.b, Mathf.Clamp01(openT * 2f));
+        GUI.Label(verdictRect, verdict, verdictStyle);
+        GUI.matrix = savedMatrix;
+        rowY += verdictSize + 22f;
 
-        // Per-player round summary (local player only): tags landed, runners left, round length.
-        // runnersRemaining is recomputed live here (it was a local in the role-update loop); roles
-        // are frozen once _roundOver, so counting current Runners is accurate.
+        // Cause subline — "caught by <NAME>" reads the catcher straight off PlayerCaught's capture
+        // (_caughtByName); falls back to a generic line for any other loss (falling off the map).
+        if (!matchEnd)
+        {
+            string subline = localWon
+                ? "survived the timer"
+                : (!string.IsNullOrEmpty(_caughtByName) ? $"caught by {_caughtByName}" : "the street broke your fall");
+            GUIStyle sublineStyle = GameUIStyle.Label(GameUIStyle.Body, TextAnchor.MiddleCenter);
+            sublineStyle.normal.textColor = new Color(GameUIStyle.TextDim.r, GameUIStyle.TextDim.g, GameUIStyle.TextDim.b, Mathf.Clamp01(openT * 2f));
+            GUI.Label(GameUIStyle.Scaled(new Rect(panel.x, rowY, panel.width, 22f)), subline, sublineStyle);
+            rowY += 30f;
+        }
+
+        var pipRect = new Rect(panel.x, rowY, panel.width, 24f);
+        if (matchActive)
+        {
+            if (matchEnd) DrawRoundHistoryStrip(pipRect); else DrawScorePipRow(pipRect);
+            rowY += 34f;
+        }
+
+        DrawHairline(new Rect(panel.x + 32f, rowY, panel.width - 64f, 1f));
+        rowY += 14f;
+
         if (_localPlayerAgent != null)
         {
-            int runnersRemaining = 0;
-            foreach (TagAgent agent in _agents)
-                if (agent.Role == Role.Runner) runnersRemaining++;
+            // Stats grid: tags / survival time / cans, three even columns under one hairline-framed
+            // row instead of the old concatenated string.
+            float colWidth = panel.width / 3f;
+            // 44 -> 54 tall: the value line needs ~34px for Body-bold digits without clipping.
+            DrawStatCell(new Rect(panel.x, rowY, colWidth, 54f), "TAGS", _tagCounts.GetValueOrDefault(_localPlayerAgent).ToString());
+            DrawStatCell(new Rect(panel.x + colWidth, rowY, colWidth, 54f), "SURVIVED", $"{_finalRoundLength:0.0}s");
+            DrawStatCell(new Rect(panel.x + colWidth * 2f, rowY, colWidth, 54f), "CANS", _cansEatenThisMatch.ToString());
+            rowY += 54f;
 
-            GUI.Label(new Rect(panel.x, panel.y + 118f, panel.width, 22f),
-                $"Your tags: {_tagCounts.GetValueOrDefault(_localPlayerAgent)}    Runners left: {runnersRemaining}    Round length: {_finalRoundLength:0.0}s",
-                _bannerSubStyle);
+            DrawHairline(new Rect(panel.x + 32f, rowY, panel.width - 64f, 1f));
+            rowY += 12f;
 
-            // Session tally (persists across R-restarts) — dimmer than the per-round line so it reads
-            // as a running footer, not part of this round's result.
-            _bannerSubStyle.normal.textColor = new Color(HudCream.r, HudCream.g, HudCream.b, 0.55f);
-            GUI.Label(new Rect(panel.x, panel.y + 140f, panel.width, 22f),
+            // Session tally — quieter Caption row, persists across R-restarts.
+            GUIStyle sessionStyle = GameUIStyle.Label(GameUIStyle.Caption, TextAnchor.MiddleCenter);
+            sessionStyle.normal.textColor = GameUIStyle.TextDim;
+            GUI.Label(GameUIStyle.Scaled(new Rect(panel.x, rowY, panel.width, 18f)),
                 $"Session — Rounds: {_sessionRounds}    Wins: {_sessionWins}    Losses: {_sessionLosses}    Best survival: {_sessionBestSurvival:0.0}s",
-                _bannerSubStyle);
+                sessionStyle);
+            rowY += 22f;
+
+            // Lifetime match record — match-end only, same dim footer style as the session line just
+            // above. Written once in EndRound when _matchOver first flips true; read fresh here.
+            if (matchEnd)
+            {
+                GUI.Label(GameUIStyle.Scaled(new Rect(panel.x, rowY, panel.width, 18f)),
+                    $"Lifetime — Matches won: {PlayerPrefs.GetInt(MatchesWonPrefKey, 0)}    Matches lost: {PlayerPrefs.GetInt(MatchesLostPrefKey, 0)}",
+                    sessionStyle);
+                rowY += 22f;
+            }
 
             // RESTART / MAIN MENU — clickable only where there's a human to click them; the headless
-            // self-play harness never registers a local player, so this whole block stays a no-op
-            // there (same gate as the stats above).
+            // self-play harness never registers a local player, so this whole block stays a no-op there.
+            rowY += 8f;
             const float buttonW = 200f, buttonH = 40f, buttonGap = 8f;
             float buttonX = panel.x + (panel.width - buttonW) * 0.5f;
-            float buttonY = panel.y + 168f;
 
-            if (GUI.Button(new Rect(buttonX, buttonY, buttonW, buttonH), "RESTART"))
+            if (GameUIStyle.Button(new Rect(buttonX, rowY, buttonW, buttonH), matchEnd ? "NEW MATCH" : "RESTART"))
                 RestartRound();
-
             // MAIN MENU only draws once TagArenaBootstrap has wired the callback (see
             // SetMainMenuCallback) — absent in a bare test-built RoundController.
             if (_requestMainMenu != null
-                && GUI.Button(new Rect(buttonX, buttonY + buttonH + buttonGap, buttonW, buttonH), "MAIN MENU"))
+                && GameUIStyle.Button(new Rect(buttonX, rowY + buttonH + buttonGap, buttonW, buttonH), "MAIN MENU"))
                 _requestMainMenu();
+            rowY += buttonH * 2f + buttonGap + 14f;
+
+            // Cosmetic draining bar — replaces the old broken Time.deltaTime auto-restart countdown
+            // (see EndRound's remarks). Purely visual: nothing is armed off it, R is still the actual
+            // restart shortcut.
+            float barT = Mathf.Clamp01(1f - (Time.unscaledTime - _endScreenOpenedUnscaled) / EndScreenBarDuration);
+            var barBg = new Rect(buttonX, rowY, buttonW, 3f);
+            DrawPanel(GameUIStyle.Scaled(barBg), new Color(0f, 0f, 0f, 0.35f));
+            DrawPanel(GameUIStyle.Scaled(new Rect(barBg.x, barBg.y, barBg.width * barT, barBg.height)), GameUIStyle.Accent);
         }
+    }
+
+    private static void DrawHairline(Rect designRect) => DrawPanel(GameUIStyle.Scaled(designRect), GameUIStyle.Hairline);
+
+    private static void DrawStatCell(Rect designRect, string label, string value)
+    {
+        GUIStyle labelStyle = GameUIStyle.Label(GameUIStyle.Caption, TextAnchor.UpperCenter);
+        labelStyle.normal.textColor = GameUIStyle.TextDim;
+        GUI.Label(GameUIStyle.Scaled(new Rect(designRect.x, designRect.y, designRect.width, 18f)), label, labelStyle);
+
+        GUIStyle valueStyle = GameUIStyle.Label(GameUIStyle.Body, TextAnchor.UpperCenter, FontStyle.Bold);
+        valueStyle.normal.textColor = GameUIStyle.Text;
+        // Fill the remaining cell height rather than a fixed 24 — Body-bold digits ("12.3s") clipped
+        // their descenders/tops in a 24px box (user report on the CAUGHT screen stats).
+        GUI.Label(GameUIStyle.Scaled(new Rect(designRect.x, designRect.y + 20f, designRect.width, designRect.height - 20f)), value, valueStyle);
+    }
+
+    // Score-pip row for a match still in progress: RoundsToWinMatch pips per side, filled from each
+    // group's OUTER edge inward toward the score as that side nears the win — the gap between the
+    // two groups visibly closes as the match tightens, same plain-rect DrawPanel composition
+    // DrawBinIcon uses for the trash icons, just a bare filled/hairline pip instead of a lid+body glyph.
+    private void DrawScorePipRow(Rect area)
+    {
+        const float pipSize = 14f, pipGap = 5f, groupGap = 14f;
+        float groupWidth = RoundsToWinMatch * pipSize + (RoundsToWinMatch - 1) * pipGap;
+
+        string scoreText = $"{_matchPlayerWins}-{_matchBotWins}";
+        GUIStyle scoreStyle = GameUIStyle.Label(GameUIStyle.Caption, TextAnchor.MiddleCenter);
+        scoreStyle.normal.textColor = GameUIStyle.Text;
+        // CalcSize measures the already-scaled style in real screen pixels; convert back to design
+        // units so it can mix with the rest of this method's design-space layout math without drifting
+        // at any resolution other than the 1080p dev default (where the two units coincide).
+        Vector2 scoreSize = scoreStyle.CalcSize(new GUIContent(scoreText)) / Mathf.Max(GameUIStyle.Scale, 0.0001f);
+
+        float totalWidth = groupWidth * 2f + scoreSize.x + groupGap * 2f;
+        float startX = area.x + (area.width - totalWidth) * 0.5f;
+        float pipY = area.y + (area.height - pipSize) * 0.5f;
+
+        for (int i = 0; i < RoundsToWinMatch; i++)
+            DrawPanel(GameUIStyle.Scaled(new Rect(startX + i * (pipSize + pipGap), pipY, pipSize, pipSize)),
+                i < _matchPlayerWins ? GameUIStyle.AccentBright : GameUIStyle.Hairline);
+
+        GUI.Label(GameUIStyle.Scaled(new Rect(startX + groupWidth + groupGap, area.y, scoreSize.x, area.height)), scoreText, scoreStyle);
+
+        float botStartX = startX + groupWidth + groupGap * 2f + scoreSize.x;
+        for (int i = 0; i < RoundsToWinMatch; i++)
+        {
+            bool filled = i >= RoundsToWinMatch - _matchBotWins; // outer-edge-first, mirrored from the player group
+            DrawPanel(GameUIStyle.Scaled(new Rect(botStartX + i * (pipSize + pipGap), pipY, pipSize, pipSize)),
+                filled ? _config.taggerColor : GameUIStyle.Hairline);
+        }
+    }
+
+    // Full round-by-round history strip for a decided match: one pip per round played (3-5), in
+    // order, colored by who won it — no empty pips here, every slot is a played round.
+    private void DrawRoundHistoryStrip(Rect area)
+    {
+        int count = _roundHistory.Count;
+        if (count == 0) return;
+
+        const float pipSize = 16f, pipGap = 6f;
+        float rowWidth = count * pipSize + (count - 1) * pipGap;
+        float startX = area.x + (area.width - rowWidth) * 0.5f;
+        float pipY = area.y + (area.height - pipSize) * 0.5f;
+
+        for (int i = 0; i < count; i++)
+            DrawPanel(GameUIStyle.Scaled(new Rect(startX + i * (pipSize + pipGap), pipY, pipSize, pipSize)),
+                _roundHistory[i] ? GameUIStyle.AccentBright : _config.taggerColor);
+    }
+
+    /// <summary>Round/match-point callout while the countdown grace holds, so the player knows which
+    /// round of the best-of-5 they're on before movement unlocks. Sits well above DrawCountdown's
+    /// screen-center 3-2-1-GO text so the two never overlap. Fades out across the same grace window
+    /// IsPastStartGrace gates tagging on. Gated on MatchActive so free-roam and headless self-play
+    /// never draw it.</summary>
+    private void DrawRoundStartBanner()
+    {
+        if (!MatchActive || _roundOver || IsPastStartGrace) return;
+
+        float elapsed = Time.time - _roundStartTime;
+        float t = 1f - Mathf.Clamp01(elapsed / _config.roundStartGraceDuration); // 1 -> 0 over the grace window
+
+        string text = $"ROUND {_roundHistory.Count + 1}" + (MatchPointNow ? " — MATCH POINT" : "");
+        var rect = new Rect(0f, GameUIStyle.DesignHeight * 0.5f - 200f, GameUIStyle.DesignWidth, 50f);
+        DrawBanner(rect, text, GameUIStyle.Text, GameUIStyle.Title, t);
     }
 
     private static void DrawPanel(Rect rect, Color color)
@@ -851,17 +1529,50 @@ public sealed class RoundController : MonoBehaviour
 
         GUI.color = prevColor;
 
-        // "YOU'RE IT" pulse: pops in large and shrinks toward a resting size while fading — same big
-        // centered look as the round-result headline (~:315).
-        int fontSize = Mathf.RoundToInt(Mathf.Lerp(36f, 64f, t));
-        var itStyle = new GUIStyle(GUI.skin.label)
+        // "YOU'RE IT" pop: big font that shrinks toward rest while sliding a few px into place and
+        // fading — the shared envelope every banner in this file uses (see DrawBanner).
+        var rect = new Rect(0f, GameUIStyle.DesignHeight * 0.5f - 120f - t * 6f, GameUIStyle.DesignWidth, 80f);
+        DrawBanner(rect, "YOU'RE IT", GameUIStyle.Text, Mathf.Lerp(36f, 64f, t), t);
+    }
+
+    /// <summary>3-2-1-GO round-start countdown: a big digit punches in and shrinks across each beat,
+    /// then a role-colored "GO!" does the same punch while fading out — routed through the same
+    /// DrawBanner envelope as "YOU'RE IT"/"THE RACCOON IS EATING" so all three read as one banner
+    /// language instead of three hand-tuned copies.</summary>
+    private void DrawCountdown()
+    {
+        if (_roundOver) return;
+
+        float sinceEnd = Time.time - _countdownEndTime;
+        // Also covers the never-armed case: _countdownEndTime starts at float.NegativeInfinity, so
+        // sinceEnd is +inf here and this bails immediately.
+        if (sinceEnd > CountdownGoDisplayDuration) return;
+
+        string text;
+        Color color;
+        float beatT;
+
+        if (IsCountdownActive) // sinceEnd < 0
         {
-            fontSize = fontSize,
-            fontStyle = FontStyle.Bold,
-            alignment = TextAnchor.MiddleCenter,
-            normal = { textColor = new Color(1f, 1f, 1f, t) },
-        };
-        GUI.Label(new Rect(0, Screen.height / 2f - 120, Screen.width, 80), "YOU'RE IT", itStyle);
+            float remaining = -sinceEnd;
+            int digit = Mathf.Clamp(Mathf.CeilToInt(remaining / CountdownBeatDuration), 1, CountdownBeats);
+            beatT = (remaining - (digit - 1) * CountdownBeatDuration) / CountdownBeatDuration; // 1 -> 0 within the beat
+            text = digit.ToString();
+            color = GameUIStyle.Text;
+        }
+        else
+        {
+            beatT = 1f - Mathf.Clamp01(sinceEnd / CountdownGoDisplayDuration); // 1 -> 0 across the GO window
+            text = "GO!";
+            // Role colors come straight from TagRulesConfig (see the HUD region note above) — reuse
+            // them rather than introducing a separate literal red/blue pair.
+            color = _localPlayerAgent != null && _localPlayerAgent.Role == Role.Tagger ? _config.taggerColor : _config.runnerColor;
+        }
+
+        // Rect must be comfortably taller than the biggest font (140) or MiddleCenter clips the
+        // glyph's ascender/descender top-and-bottom (user report) — 200 leaves margin both sides.
+        var rect = new Rect(0f, GameUIStyle.DesignHeight * 0.5f - 160f - beatT * 6f, GameUIStyle.DesignWidth, 200f);
+        DrawBanner(rect, text, color, Mathf.Lerp(72f, 140f, beatT), beatT);
     }
 
     // ---------------------------------------------------------------- Minimap
@@ -883,12 +1594,12 @@ public sealed class RoundController : MonoBehaviour
     // view centered on nothing would be a pure leak with no teardown between matches — this hook
     // means self-play skips minimap setup entirely for free.
 
-    private const int MinimapSize = 210;
+    private const int MinimapSize = 280; // 210 -> 280 (user: minimap too small)
     private const int MinimapMargin = 12;
     private const int MinimapTextureSize = 256;
     private const float MinimapOrthographicSize = 25f;
     private const float MinimapCameraHeight = 40f;
-    private const float MinimapIconSize = 14f;
+    private const float MinimapIconSize = 16f; // slightly larger than the old 14 — role-colored blips read better
 
     private Camera? _minimapCamera;
     private RenderTexture? _minimapRenderTexture;
@@ -979,7 +1690,16 @@ public sealed class RoundController : MonoBehaviour
     {
         if (_minimapCamera == null || _minimapRenderTexture == null || _localPlayerAgent == null) return;
 
-        Rect mapRect = new(Screen.width - MinimapSize - MinimapMargin, MinimapMargin, MinimapSize, MinimapSize);
+        var mapRectDesign = new Rect(GameUIStyle.DesignWidth - MinimapSize - MinimapMargin, MinimapMargin, MinimapSize, MinimapSize);
+        Rect mapRect = GameUIStyle.Scaled(mapRectDesign);
+        float iconSize = GameUIStyle.Scaled(MinimapIconSize);
+
+        // Soft contact shadow — reuses GameUIStyle's generated ShadowTex with the same
+        // strip-below-the-bottom-edge idiom GameUIStyle.Panel uses, so the map reads as sitting ON the
+        // screen instead of floating flat against the 3D scene behind it.
+        Texture2D? shadowTex = GameUIStyle.ShadowTex;
+        if (shadowTex != null)
+            GUI.DrawTexture(new Rect(mapRect.x, mapRect.yMax, mapRect.width, GameUIStyle.Scaled(10f)), shadowTex, ScaleMode.StretchToFill, true);
 
         GUI.color = Color.white;
         if (_minimapMaskMaterial != null && _minimapCompositeTexture != null)
@@ -995,15 +1715,15 @@ public sealed class RoundController : MonoBehaviour
 
         Vector3 playerPos = _localPlayerAgent.transform.position;
         float playerYaw = _localPlayerAgent.transform.eulerAngles.y;
-        float worldToMinimapScale = (MinimapSize * 0.5f) / MinimapOrthographicSize;
+        float worldToMinimapScale = (mapRect.width * 0.5f) / MinimapOrthographicSize;
         Vector2 mapCenter = new(mapRect.x + mapRect.width * 0.5f, mapRect.y + mapRect.height * 0.5f);
         // Icons half in/out of the circle read as cut off — clamp target radius stays one icon-radius
         // inside the map's true edge so a rim-pinned blip stays fully visible.
-        float clampRadius = MinimapSize * 0.5f - MinimapIconSize * 0.5f;
+        float clampRadius = mapRect.width * 0.5f - iconSize * 0.5f;
 
         // Local player marker — white triangle, always pointing map-up (the map itself rotates to
         // match facing, per rotate-to-facing above), centered.
-        DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, mapCenter, 0f, Color.white);
+        DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, mapCenter, 0f, Color.white, iconSize);
 
         // Trash cans: a faint amber blip at every active can (always), and a bright pulsing blip at any
         // can currently being eaten — the "ping" that tells a Tagger a channel is live. Same world→map
@@ -1015,10 +1735,16 @@ public sealed class RoundController : MonoBehaviour
             if (canMapOffset.magnitude > clampRadius) canMapOffset = canMapOffset.normalized * clampRadius;
 
             bool eating = can.Progress > 0f;
-            Color canColor = eating ? new Color(1f, 0.85f, 0.3f) : new Color(0.8f, 0.7f, 0.2f);
+            Color canColor = eating ? GameUIStyle.AccentBright : GameUIStyle.Accent;
             float canAlpha = eating ? 0.6f + 0.4f * Mathf.Sin(Time.unscaledTime * 8f) : 0.4f;
-            DrawMinimapIcon(_minimapDotTexture!, _minimapDotOutlineTexture!, mapCenter + canMapOffset, 0f, canColor, canAlpha);
+            DrawMinimapIcon(_minimapDotTexture!, _minimapDotOutlineTexture!, mapCenter + canMapOffset, 0f, canColor, iconSize, canAlpha);
         }
+
+        // Role-colored blips: a friendly agent (same role as the local player) reads in the local
+        // player's own role color, an opposing one in the opposite role's — sourced straight from
+        // _config.taggerColor/runnerColor, the same authoritative role palette the rest of the HUD uses.
+        Color friendlyColor = _localPlayerAgent.Role == Role.Runner ? _config.runnerColor : _config.taggerColor;
+        Color enemyColor = _localPlayerAgent.Role == Role.Runner ? _config.taggerColor : _config.runnerColor;
 
         foreach (TagAgent agent in _agents)
         {
@@ -1034,7 +1760,7 @@ public sealed class RoundController : MonoBehaviour
             // Edge-clamp: an off-range agent (outside the map's true radius, same threshold the old
             // culling `continue` used) still shows as a blip pinned to the rim — at reduced alpha —
             // instead of vanishing outright. In-range icons are untouched.
-            bool outOfRange = mapOffset.magnitude > MinimapSize * 0.5f;
+            bool outOfRange = mapOffset.magnitude > mapRect.width * 0.5f;
             if (outOfRange) mapOffset = mapOffset.normalized * clampRadius;
             float iconAlpha = outOfRange ? 0.5f : 1f;
 
@@ -1042,22 +1768,22 @@ public sealed class RoundController : MonoBehaviour
             bool isFriendly = agent.Role == _localPlayerAgent.Role;
 
             if (isFriendly)
-                DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, iconPos, agent.transform.eulerAngles.y - playerYaw, new Color(0.3f, 0.6f, 1f), iconAlpha);
+                DrawMinimapIcon(_minimapTriangleTexture!, _minimapTriangleOutlineTexture!, iconPos, agent.transform.eulerAngles.y - playerYaw, friendlyColor, iconSize, iconAlpha);
             else
-                DrawMinimapIcon(_minimapDotTexture!, _minimapDotOutlineTexture!, iconPos, 0f, new Color(1f, 0.25f, 0.2f), iconAlpha);
+                DrawMinimapIcon(_minimapDotTexture!, _minimapDotOutlineTexture!, iconPos, 0f, enemyColor, iconSize, iconAlpha);
         }
 
-        // Border ring drawn last, on top of everything — gives the map a clean frame instead of
-        // just stopping at a bare circular cutout.
-        GUI.color = Color.white;
+        // Hairline ring frame, drawn last so it sits on top of everything. GameUIStyle.Hairline at a
+        // brighter alpha than its default (a border needs more presence than a body-text separator).
+        GUI.color = new Color(GameUIStyle.Hairline.r, GameUIStyle.Hairline.g, GameUIStyle.Hairline.b, 0.55f);
         GUI.DrawTexture(mapRect, _minimapRingTexture!);
         GUI.color = Color.white;
     }
 
     /// <summary>Draws a small dark outline copy underneath the colored icon so it stays legible against any background color the top-down render happens to show there. <paramref name="alpha"/> additionally fades the whole icon (outline included) — used to mark an edge-clamped, out-of-range blip as distinct from a normal in-range one.</summary>
-    private static void DrawMinimapIcon(Texture2D fillTexture, Texture2D outlineTexture, Vector2 center, float yawDegrees, Color color, float alpha = 1f)
+    private static void DrawMinimapIcon(Texture2D fillTexture, Texture2D outlineTexture, Vector2 center, float yawDegrees, Color color, float size, float alpha = 1f)
     {
-        Rect rect = new(center.x - MinimapIconSize * 0.5f, center.y - MinimapIconSize * 0.5f, MinimapIconSize, MinimapIconSize);
+        Rect rect = new(center.x - size * 0.5f, center.y - size * 0.5f, size, size);
         Matrix4x4 savedMatrix = GUI.matrix;
         GUIUtility.RotateAroundPivot(yawDegrees, center);
 
@@ -1092,15 +1818,17 @@ public sealed class RoundController : MonoBehaviour
         return tex;
     }
 
-    /// <summary>Thin light ring right at the circular crop's edge, drawn last — gives the minimap a clean frame instead of just stopping at a bare cutout.</summary>
+    /// <summary>Thin (2px on screen) ring shape right at the circular crop's edge, drawn last — gives
+    /// the minimap a clean frame instead of just stopping at a bare cutout. Plain white alpha shape;
+    /// tinted at draw time via GUI.color (see DrawMinimap) with GameUIStyle.Hairline rather than a
+    /// baked-in color, so the border stays a kit color instead of a separate literal.</summary>
     private static Texture2D BuildRingTexture(int size)
     {
         var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
         float radius = size * 0.5f;
-        const float ringThickness = 4f;
+        const float ringThickness = 2.5f;
         Vector2 center = new(radius, radius);
         var pixels = new Color[size * size];
-        var ringColor = new Color(0.9f, 0.9f, 0.9f, 0.85f);
         for (int y = 0; y < size; y++)
         {
             for (int x = 0; x < size; x++)
@@ -1108,7 +1836,7 @@ public sealed class RoundController : MonoBehaviour
                 float dist = Vector2.Distance(new Vector2(x + 0.5f, y + 0.5f), center);
                 float bandDist = radius - dist; // 0 right at the edge, growing inward
                 float alpha = Mathf.Clamp01(Mathf.Min(bandDist, ringThickness - bandDist) / 1.5f);
-                pixels[y * size + x] = new Color(ringColor.r, ringColor.g, ringColor.b, alpha * ringColor.a);
+                pixels[y * size + x] = new Color(1f, 1f, 1f, alpha);
             }
         }
         tex.SetPixels(pixels);
@@ -1179,7 +1907,7 @@ public sealed class RoundController : MonoBehaviour
     private const int SpinnerFrameCount = 65; // frame i sweeps (i / 64) * 360° clockwise — 5.6° steps read as a smooth wipe
     private const int SpinnerTextureSize = 64;
     private const float SpinnerOuterRadius = 30f;
-    private const float SpinnerInnerRadius = 22f;
+    private const float SpinnerInnerRadius = 26f; // thin hairline ring (was 22 — an 8-unit solid band); behavior unchanged, just thinner
     private const float SpinnerOnScreenSize = 34f; // sized down per feel-test — subtle, not a crosshair takeover
     private const float SpinnerDeniedWindow = 0.75f; // how long a single denied press stays visible
     private const float SpinnerFadeWindow = 0.25f;   // trailing portion of the window that eases out
@@ -1217,10 +1945,10 @@ public sealed class RoundController : MonoBehaviour
         float fill = Mathf.Clamp01(1f - _localPlayerAgent.LungeCooldownRemaining / Mathf.Max(_config.lungeCooldown, 0.0001f));
         bool ready = _localPlayerAgent.LungeCooldownRemaining <= 0f;
 
-        var rect = new Rect(
-            Screen.width * 0.5f - SpinnerOnScreenSize * 0.5f,
-            Screen.height * 0.5f - SpinnerOnScreenSize * 0.5f,
-            SpinnerOnScreenSize, SpinnerOnScreenSize);
+        Rect rect = GameUIStyle.Scaled(new Rect(
+            GameUIStyle.DesignWidth * 0.5f - SpinnerOnScreenSize * 0.5f,
+            GameUIStyle.DesignHeight * 0.5f - SpinnerOnScreenSize * 0.5f,
+            SpinnerOnScreenSize, SpinnerOnScreenSize));
 
         // Fade out over the last SpinnerFadeWindow seconds of the denied-press window rather than
         // popping off abruptly.
@@ -1228,13 +1956,16 @@ public sealed class RoundController : MonoBehaviour
         float alphaFade = elapsed <= fadeStart ? 1f : 1f - Mathf.Clamp01((elapsed - fadeStart) / SpinnerFadeWindow);
 
         // Faint full-ring backdrop so the progress arc reads against something even near frame 0.
-        GUI.color = new Color(1f, 1f, 1f, 0.18f * alphaFade);
+        GUI.color = new Color(GameUIStyle.Text.r, GameUIStyle.Text.g, GameUIStyle.Text.b, 0.18f * alphaFade);
         GUI.DrawTexture(rect, _lungeSpinnerFrames[SpinnerFrameCount - 1]);
 
         // "Ready" flourish: cooldown finished inside the still-open denied window — full ring pops
-        // to bright white as the "go" cue; the progress wipe itself is a neutral grey (feel-test:
-        // the amber read as too loud against the golden-hour palette).
-        Color tint = ready ? new Color(1f, 1f, 1f, alphaFade) : new Color(0.85f, 0.85f, 0.85f, 0.9f * alphaFade);
+        // to GameUIStyle.AccentBright as the "go" cue; the progress wipe itself is the calmer
+        // GameUIStyle.Accent (feel-test: full white/amber read as too loud against the palette).
+        Color readyTint = GameUIStyle.AccentBright;
+        Color tint = ready
+            ? new Color(readyTint.r, readyTint.g, readyTint.b, alphaFade)
+            : new Color(GameUIStyle.Accent.r, GameUIStyle.Accent.g, GameUIStyle.Accent.b, 0.9f * alphaFade);
         int frameIndex = Mathf.Clamp(Mathf.RoundToInt(fill * (SpinnerFrameCount - 1)), 0, SpinnerFrameCount - 1);
         GUI.color = tint;
         GUI.DrawTexture(rect, _lungeSpinnerFrames[frameIndex]);

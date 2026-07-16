@@ -1,6 +1,7 @@
 #nullable enable
 
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Game.Movement;
 
@@ -50,6 +51,23 @@ public static class CharacterModelAttacher
         animator.applyRootMotion = false;
         var bridge = root.AddComponent<CharacterAnimatorBridge>();
         bridge.Configure(motor, animator);
+
+        // Ragdoll: real-model path only (the procedural capsule has no bones to build from), and never
+        // headless — self-play runs 12 agents and must not pay for ~11 Rigidbodies each for a ragdoll
+        // no one will ever see. Built inert; nothing about the agent changes until CharacterRagdoll
+        // .Activate. Deliberately NOT returned in the tuple: the tuple's three members all feed
+        // TagAgent.Configure, whereas the ragdoll's only consumer wants it at ragdoll-time from
+        // whatever it already has (the agent root), so a GetComponent there beats threading a fourth
+        // member through two call sites and a Configure signature.
+        // RE-USED, not re-added, across model swaps: TagAgent.SwapModel destroys the CharacterModel
+        // child (taking the old bones with it) and re-enters here, and Destroy is deferred to end of
+        // frame — so destroying + re-adding this component would leave two of them live for a frame
+        // and GetComponent could hand out the doomed one. Build() resets its own state instead.
+        if (SystemInfo.graphicsDeviceType != GraphicsDeviceType.Null)
+        {
+            CharacterRagdoll ragdoll = root.GetComponent<CharacterRagdoll>() ?? root.AddComponent<CharacterRagdoll>();
+            ragdoll.Build(animator, motor, bridge);
+        }
 
         return (model.GetComponentInChildren<SkinnedMeshRenderer>(), false, bridge);
     }

@@ -114,9 +114,27 @@ public sealed class TagAgent : MonoBehaviour
 
     public Role Role { get; private set; } = Role.Runner;
 
+    /// <summary>Name shown when this agent catches the player ("CAUGHT BY DALE" on the kill cam).
+    /// Assigned in RoundController.RegisterAgent from TagRulesConfig.botNames; never empty in a
+    /// registered round, but defaults to a usable string for agents built outside one (tests).</summary>
+    public string DisplayName { get; set; } = "SOMEONE";
+
     public bool IsInGrace => _graceRemaining > 0f;
     public float LungeCooldownRemaining => Mathf.Max(0f, _lungeCooldownRemaining);
     public CharacterMotor Motor => _motor;
+
+    /// <summary>How far a lunge from <paramref name="currentSpeed"/> actually carries this agent. The
+    /// dive is a COMMITTED window (see TryLunge / CharacterMotor.BeginDive), so a bot has to know its
+    /// reach to check what it would land on BEFORE committing — and reach exceeds lungeRange, so
+    /// "target is close enough to dive at" is not "the dive lands somewhere safe". Arriving faster
+    /// than diveSpeed is preserved rather than clamped, hence the max.</summary>
+    public float DiveReachAt(float currentSpeed) => Mathf.Max(currentSpeed, _config.diveSpeed) * _config.diveDuration;
+
+    // Exposed for the main menu's key legend (same "read the real binding, don't hardcode a key
+    // name" reasoning as PlayerInputProvider's JumpAction/etc.). Null until Configure builds them
+    // for the local player.
+    public InputAction? LungeAction => _lungeAction;
+    public InputAction? TagAction => _tagAction;
 
     /// <summary>Time.time of the most recent lunge press that was denied purely by cooldown (Tagger,
     /// not in grace, cooldown still ticking) — drives the HUD lunge-cooldown spinner. Left at
@@ -124,8 +142,10 @@ public sealed class TagAgent : MonoBehaviour
     /// cooldown should see the spinner.</summary>
     public float LastDeniedLungeTime { get; private set; } = float.NegativeInfinity;
 
-    /// <summary>Raised on the agent that was just converted to Tagger.</summary>
-    public event Action<TagAgent>? WasTagged;
+    /// <summary>Raised on the agent that was just converted to Tagger; args are (victim, tagger).
+    /// The tagger rides along for the kill cam (whose shot is from their shoulder, captioned with
+    /// their <see cref="DisplayName"/>) — see RoundController.PlayerCaught.</summary>
+    public event Action<TagAgent, TagAgent>? WasTagged;
 
     /// <summary>Raised the moment a lunge actually fires (past cooldown/grace) — drives the dive-roll animation.</summary>
     public event Action? Lunged;
@@ -156,6 +176,12 @@ public sealed class TagAgent : MonoBehaviour
 
         _motor.Landed -= OnLanded; // idempotent in case Configure is ever called more than once
         _motor.Landed += OnLanded;
+        _motor.Jumped -= OnJumped;
+        _motor.Jumped += OnJumped;
+        _motor.MantleStarted -= OnMantleStarted;
+        _motor.MantleStarted += OnMantleStarted;
+        _motor.SwingReleased -= OnSwingReleased;
+        _motor.SwingReleased += OnSwingReleased;
 
         // Own the bridge's dive-animation wiring here (rather than the bootstrap wiring it externally).
         // Subscribe a STABLE TagAgent method — not a delegate bound to the current bridge instance — so a
@@ -206,12 +232,18 @@ public sealed class TagAgent : MonoBehaviour
     /// <summary>Needed so <see cref="TryTagInRange"/> can find the nearest opposing agent, the same way bots already do via <see cref="RoundController.FindNearestOpposingAgent"/>.</summary>
     public void SetRoundController(RoundController controller) => _roundController = controller;
 
+    /// <summary>Countdown freeze, pushed down to the motor's input filter — see RoundController.BeginCountdown.</summary>
+    public void SetInputLocked(bool locked) => _motor.InputLocked = locked;
+
     private void OnDestroy()
     {
         _lungeAction?.Dispose();
         _tagAction?.Dispose();
         if (_reachRing != null) Destroy(_reachRing.gameObject);
         _motor.Landed -= OnLanded;
+        _motor.Jumped -= OnJumped;
+        _motor.MantleStarted -= OnMantleStarted;
+        _motor.SwingReleased -= OnSwingReleased;
     }
 
     private void OnLanded()
@@ -224,6 +256,12 @@ public sealed class TagAgent : MonoBehaviour
         if (SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null)
             AudioSource.PlayClipAtPoint(GetLandingThumpClip(), transform.position, 0.5f);
     }
+
+    private void OnJumped() => GameAudio.Play(GameAudio.JumpGrunt, transform.position);
+
+    private void OnMantleStarted() => GameAudio.Play(GameAudio.ScuffMantle, transform.position);
+
+    private void OnSwingReleased() => GameAudio.Play(GameAudio.WhooshSwing, transform.position);
 
     private void Update()
     {
@@ -347,6 +385,11 @@ public sealed class TagAgent : MonoBehaviour
     /// </summary>
     public void TryLunge()
     {
+        // Frozen time = kill cam (F9/tag replay) or pause/end-screen. Input callbacks aren't
+        // timeScale-gated, so without this a lunge fired during a freeze would arm the motor/contact-tag
+        // window against stale or paused state.
+        if (Time.timeScale == 0f) return;
+
         // Swallow only the spawn-frame click, not the whole round-start grace. Root cause of the
         // "lunge on spawn" bug: the local player's lunge is bound to <Mouse>/leftButton, so the
         // main-menu PLAY click (or an R-restart click) leaks a leftButton press that fires TryLunge on
@@ -355,6 +398,10 @@ public sealed class TagAgent : MonoBehaviour
         // in"). A brief post-spawn swallow eats the leaked click while leaving the dash available
         // immediately after. A real TAG still can't land in grace — OnCollisionEnter re-checks it.
         if (Time.time - _spawnTime < SpawnLungeSwallowSeconds) return;
+
+        // Lunge is a separate InputAction — it bypasses the motor's input filter entirely, so the
+        // countdown's movement freeze can't stop it on its own.
+        if (_roundController?.IsCountdownActive == true) return;
 
         // The dive locks the character in for its whole active window (CharacterMotor.IsDiving), and
         // that lock — not a cooldown timer — is the rate limiter now. Block re-entry while it runs so
@@ -385,6 +432,7 @@ public sealed class TagAgent : MonoBehaviour
         // roll. Animation ONLY — BeginDive and the contact-tag window below are identical either way.
         _lungeIsCatch = Role == Role.Tagger && IsLungeCatch();
         Lunged?.Invoke(); // drives the dive-roll / diving-catch animation on the model (no-op for the capsule fallback)
+        GameAudio.Play(GameAudio.WhooshLunge, transform.position);
 
         // Dive gesture: both arms thrust fully forward and hold out through the lunge before easing
         // back — reads as a committed dive rather than the quick jab of a ranged tag reach. Skipped
@@ -506,6 +554,11 @@ public sealed class TagAgent : MonoBehaviour
 
     public void TryTagInRange()
     {
+        // Frozen time = kill cam (F9/tag replay) or pause/end-screen. Input callbacks aren't
+        // timeScale-gated, so without this a right-click during a freeze would land a REAL tag against
+        // 2.5s-stale replayed (or paused) positions.
+        if (Time.timeScale == 0f) return;
+
         if (Role != Role.Tagger || IsInGrace) return;
 
         // The reach animation plays on every attempt, not just a successful one — it's feedback
@@ -519,8 +572,25 @@ public sealed class TagAgent : MonoBehaviour
         TagAgent? nearest = _roundController.FindNearestOpposingAgent(this);
         if (nearest == null || nearest.IsInGrace) return;
 
-        float distance = Vector3.Distance(transform.position, nearest.transform.position);
-        if (distance > CurrentReachRadius()) return;
+        // "Actually catching you" checks (user: bots tagged from visibly far away). Applies to the
+        // player's right-click identically — same chokepoint, same fairness. Three tighteners:
+        // 1) HORIZONTAL reach, with a separate vertical band — the old 3D distance let a tag land on
+        //    someone ~2m directly above/below (a different roof) while looking nowhere near them.
+        // 2) The reach values themselves are tighter (see TagRulesConfig) — 2.0m center-to-center
+        //    left ~1.2m of visible daylight between two 0.4-radius bodies at the moment of the tag.
+        // 3) LINE OF SIGHT — no tagging through a thin wall or roof lip; chest-to-chest linecast
+        //    must reach the target (or hit nothing but the participants).
+        Vector3 delta = nearest.transform.position - transform.position;
+        if (Mathf.Abs(delta.y) > _config.tagReachVerticalTolerance) return;
+        if (Vector3.ProjectOnPlane(delta, Vector3.up).magnitude > CurrentReachRadius()) return;
+
+        Vector3 myChest = transform.position + Vector3.up * 1.2f;
+        Vector3 theirChest = nearest.transform.position + Vector3.up * 1.2f;
+        if (Physics.Linecast(myChest, theirChest, out RaycastHit block, ~0, QueryTriggerInteraction.Ignore))
+        {
+            TagAgent? hitAgent = block.collider.GetComponentInParent<TagAgent>();
+            if (hitAgent != nearest && hitAgent != this) return; // something solid between us — no tag
+        }
 
         PerformTag(nearest);
     }
@@ -546,7 +616,7 @@ public sealed class TagAgent : MonoBehaviour
         // which has no local player at all) keeps the normal Runner->Tagger infection model.
         if (!other._isLocalPlayer)
             other.SetRole(Role.Tagger, startGrace: true);
-        other.WasTagged?.Invoke(other);
+        other.WasTagged?.Invoke(other, this);
         AudioSource.PlayClipAtPoint(GetBoopClip(), other.transform.position);
         _roundController?.RecordTag(this);
 
@@ -785,7 +855,4 @@ public sealed class TagAgent : MonoBehaviour
         _convertedClip.SetData(samples, 0);
         return _convertedClip;
     }
-
-    /// <summary>Local player's lunge "whoosh": a rising pitch-SWEEP sine (phase-accumulated like the
-    /// landing thump's sweep, not noise). Static-cached like GetBoopClip.</summary>
 }

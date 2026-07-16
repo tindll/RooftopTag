@@ -319,12 +319,17 @@ public static class RooftopArena
         for (int i = 0; i < Roofs.Length; i++)
         {
             Roof r = Roofs[i];
-            // A building: a tall box whose TOP face is the walkable roof at height r.Center.y.
+            // A building: a tall box whose TOP face is the walkable roof at height r.Center.y, with a
+            // windowed facade on its sides and a concrete deck on top. The facade column passed here is
+            // the WHOLE building (street level -> roof), not just this box: SceneStyler's cosmetic mass
+            // continues the same column from BuildingSkirt down to buildingBaseY and passes the same
+            // pair, so the window rows run continuously across the seam between the two boxes.
             float bodyHeight = r.Center.y + BuildingSkirt; // extends below ground for a solid look
             float centerY = r.Center.y - bodyHeight * 0.5f;
-            GameObject roofBox = TagArenaMapGeometry.CreateBox(r.Name, root.transform,
+            GameObject roofBox = TagArenaMapGeometry.CreateBuildingBox(r.Name, root.transform,
                 new Vector3(r.Center.x, centerY, r.Center.z),
-                new Vector3(r.SizeX, bodyHeight, r.SizeZ), TagArenaMapGeometry.SurfaceRole.WallBody, seed: i + 1);
+                new Vector3(r.SizeX, bodyHeight, r.SizeZ),
+                facadeBottomY: TagArenaMapGeometry.Theme.buildingBaseY, facadeTopY: r.Center.y, seed: i + 1);
             TagArenaMapGeometry.AddTopRim(roofBox);
         }
 

@@ -11,6 +11,11 @@ using UnityEngine;
 /// </summary>
 public sealed class CharacterImportPostprocessor : AssetPostprocessor
 {
+    // Bump whenever the import rules below change, so Unity reimports the affected FBXs instead of
+    // leaving them on settings baked by an older version of this file. Editing the consts alone does
+    // NOT retrigger an import — a stale .meta silently wins and the change looks like it did nothing.
+    public override uint GetVersion() => 2;
+
     const string CharacterFolder = "Assets/Art/Characters";
 
     // Clips that should loop (continuous motion). Everything else stays one-shot (jump, landing,
@@ -88,6 +93,17 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
     // f72 where the floor-catch impact has fully settled (fwdDisp plateaued, body prone) and before the
     // 36-frame dead lie-still tail — the round's tag conversion takes over visually and the tag lands
     // mid-clip anyway, so the get-up/lie-still tail is wasted budget. Re-render via DivingCatchFrames if retuning.
+    //
+    // Re-verified through the REAL controller (Tests/PlayMode/DiveSheetTests, applyRootMotion=false as
+    // shipped) after adding lockRootHeightY below — hipsY/headY over the 0.8s window, 12 samples.
+    // BEFORE the flag both rigs failed: hipsY sat pinned at 0.43-0.48 (pest_control) / 0.37-0.42
+    // (raccoon) for the whole window — the tagger leapt and then hung inverted in mid-air, never
+    // landing, because the authored descent is rigid root-Y travel and root motion is discarded.
+    // AFTER, both reproduce the raw-clip arc above (apex ~0.436, floor ~0.045, head dips negative):
+    //   pest_control  hipsY 0.433 -> 0.498 apex -> 0.061 floor -> 0.073 settle; headY 0.717 -> -0.029
+    //   raccoon       hipsY 0.369 -> 0.435 apex -> 0.055 floor -> 0.057 settle; headY 0.652 -> -0.017
+    // So f12-72 is correct as-is on BOTH rigs — no per-model trim needed. The small negative headY is
+    // authored (see f46-57) — the head passes a few cm under the origin plane during the floor catch.
     const string DivingCatchClip = "DivingCatch";
     const int CatchFirstFrame = 12;  // low coiled launch pose, just before forward motion accelerates
     const int CatchLastFrame = 72;   // floor-catch impact settled, before the dead lie-still prone tail
@@ -131,6 +147,17 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
                 clips[i].lastFrame = CatchLastFrame;
                 // ONE-SHOT: the tagger finishing dive is a committed lunge, not a cycle — do NOT set
                 // loopTime/loopPose. loop is already false here (DivingCatch isn't in LoopClips).
+                // Bake Root Transform Position (Y) into the pose. Both characters run with
+                // applyRootMotion=false (CharacterAnimatorBridge/CharacterModelAttacher — the motor
+                // owns translation), which DISCARDS any motion left as root motion. This clip's
+                // dive-to-floor is authored as rigid root Y travel, not as a body fold, so without
+                // this the whole descent evaporates and the tagger hangs inverted in mid-air for the
+                // back half of the window (measured: hipsY pinned 0.43-0.48 vs the 0.045 floor-catch
+                // the table below expects — on BOTH models, raccoon included). Dive Roll needs no
+                // such flag: its descent is pose-space (spine/legs tuck), so it survives regardless.
+                // XZ is deliberately left as root motion — CharacterMotor.BeginDive drives forward
+                // travel, and baking XZ too would double it up.
+                clips[i].lockRootHeightY = true;
             }
         }
         if (clips.Length > 0)

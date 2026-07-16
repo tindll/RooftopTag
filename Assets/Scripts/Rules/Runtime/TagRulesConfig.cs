@@ -58,8 +58,14 @@ public sealed class TagRulesConfig : ScriptableObject
 
     /// <summary>Tag reach radius is a binary still-vs-moving check, not a continuous function of speed — sprinting or jumping shouldn't extend it beyond the same "moving" value.</summary>
     [Header("Tag reach")]
-    public float tagReachStill = 1.2f;
-    public float tagReachMoving = 2.0f;
+    // Tightened (2.0/1.2 -> 1.6/1.0): the old center-to-center 2.0 landed tags with ~1.2m of visible
+    // daylight between two 0.4-radius bodies (user: bots "catch" from really far away). Reach is now
+    // measured HORIZONTALLY, with the vertical band below as a separate gate (see TryTagInRange).
+    public float tagReachStill = 1.0f;
+    public float tagReachMoving = 1.6f;
+    // Max height difference for a ranged tag — stops tags landing on someone on a different roof
+    // level who merely passes within reach horizontally.
+    public float tagReachVerticalTolerance = 1.5f;
 
     [Header("Late-game tagger speed curve")]
     /// <summary>Flat base speed edge taggers get at all times (a small pursuit advantage over runners). The late-game curve below multiplies on top of this, so taggers run at this early game and this * lateGameMaxSpeedMultiplier late.</summary>
@@ -88,4 +94,28 @@ public sealed class TagRulesConfig : ScriptableObject
     public float eatRadius = 1.6f;      // runner must be within this of a can to eat (proximity only — no stand-still gate)
     public float eatDurationSmall = 2.5f; // tier-1 small can eat time (+1 pt)
     public float eatDurationLarge = 5f;   // tier-2 dumpster eat time (+2 pts)
+
+    [Header("Street fall")]
+    /// <summary>Falling off the rooftops now lands you on a real street (SceneStyler.CreateRoads'
+    /// ground slab) instead of the void, so the round consequence waits for that little sequence to
+    /// play out rather than firing the instant you cross RoundController.FallResetY mid-air. This is
+    /// the hard backstop: however the sequence goes (or doesn't — the cars that make it interesting
+    /// are a later phase), the consequence lands this long after the fall. Long enough for a car to
+    /// arrive and matter, short enough that a bot standing in the road doesn't stall the round.</summary>
+    public float streetSequenceTimeout = 4f;
+    /// <summary>How long a ragdolled body is left lying in the street before the consequence lands —
+    /// the sequence is over the moment something hits you, so this replaces the full
+    /// <see cref="streetSequenceTimeout"/> wait once CharacterRagdoll.IsActive goes true. Inert until
+    /// something actually activates a ragdoll down there.</summary>
+    public float ragdollLingerSeconds = 1.5f;
+
+    [Header("Kill cam")]
+    /// <summary>Bot names for the kill cam's "CAUGHT BY ..." caption, handed out in registration order
+    /// (wrapping if there are more bots than names). Deadpan municipal pest-control roster — the joke is
+    /// that the thing which just dove across a rooftop to catch you files paperwork about it.</summary>
+    public string[] botNames =
+    {
+        "DALE", "UNIT 3", "AGENT PIGEON", "BARRY FROM PEST CONTROL", "THE INSPECTOR", "GARY, PROBABLY",
+        "CONTRACTOR #7", "MIDGE", "SENIOR TECHNICIAN KEVIN", "THE SUPERVISOR", "UNIT 12", "DOUG (TEMP)",
+    };
 }
