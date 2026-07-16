@@ -73,6 +73,25 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
     const int DiveFirstFrame = 41;  // bottom of the launch coil, just before forward motion begins
     const int DiveLastFrame = 108;  // upright recovery complete, before the dead idle-settle tail
 
+    // Diving Catch trim knobs (the tagger's finishing-move variant of the lunge). The Mixamo clip is
+    // 108 frames (30fps). Per-frame Hips/Head world-Y and Hips world-Z forward displacement, measured
+    // by CharacterPreviewShot.DivingCatchFrames (humanoid-retargeted onto the raccoon, raw untrimmed clip):
+    //   frames   0-  8  standing windup / crouch dip (hipsY 0.406->0.367->0.383, fwdDisp ~0/negative — no travel)
+    //   frames   9- 13  coil flattens, launch loads (hipsY ~0.37, fwdDisp 0.001 -> 0.021)
+    //   frames  13- 30  forward launch + leap UP (hipsY 0.375 -> 0.436 apex at f30, fwdDisp 0.021 -> 0.147)
+    //   frames  30- 46  dive DOWN to floor (hipsY 0.436 -> 0.045, headY 0.631 -> 0.112, boundsMinY -> -0.366)
+    //   frames  46- 57  floor-catch impact (prone; headY dips NEGATIVE to -0.040, fwdDisp plateaus ~0.40)
+    //   frames  57- 72  impact settle/slide (fwdDisp 0.407 -> 0.444 plateau, hipsY 0.027 -> 0.073)
+    //   frames  72-108  dead lie-still prone tail (hipsY ~0.071, headY ~0.05, fwdDisp ~0.43 — fully static)
+    // Open on the launch (f12, the low coiled pose right at the forward-accel threshold) so the trim
+    // starts on a loaded leap, not the standing crouch-dip windup (f0-11, zero forward travel). Cut at
+    // f72 where the floor-catch impact has fully settled (fwdDisp plateaued, body prone) and before the
+    // 36-frame dead lie-still tail — the round's tag conversion takes over visually and the tag lands
+    // mid-clip anyway, so the get-up/lie-still tail is wasted budget. Re-render via DivingCatchFrames if retuning.
+    const string DivingCatchClip = "DivingCatch";
+    const int CatchFirstFrame = 12;  // low coiled launch pose, just before forward motion accelerates
+    const int CatchLastFrame = 72;   // floor-catch impact settled, before the dead lie-still prone tail
+
     // Static prop bins living under the Characters folder — no skeleton/animation, must stay
     // Generic or Unity throws trying to build a Humanoid avatar for them.
     static readonly HashSet<string> StaticPropBins = new() { "big_bin", "small_bin" };
@@ -105,6 +124,13 @@ public sealed class CharacterImportPostprocessor : AssetPostprocessor
                 clips[i].lastFrame = DiveLastFrame;
                 // ONE-SHOT: the dive is a committed lunge, not a cycle — do NOT set loopTime/loopPose.
                 // loop is already false here (Dive Roll isn't in LoopClips).
+            }
+            else if (fileName == DivingCatchClip)
+            {
+                clips[i].firstFrame = CatchFirstFrame;
+                clips[i].lastFrame = CatchLastFrame;
+                // ONE-SHOT: the tagger finishing dive is a committed lunge, not a cycle — do NOT set
+                // loopTime/loopPose. loop is already false here (DivingCatch isn't in LoopClips).
             }
         }
         if (clips.Length > 0)

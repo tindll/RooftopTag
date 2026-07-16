@@ -107,6 +107,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
 
         var mainMenu = playerRoot.AddComponent<MainMenuOverlay>();
         mainMenu.Configure(this, roundController, rig);
+        // Lets the end screen's "MAIN MENU" button reopen this overlay — see RoundController's
+        // remarks on _requestMainMenu for why this is a delegate rather than a direct field.
+        roundController.SetMainMenuCallback(mainMenu.ShowMenu);
         playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig, roundController, this, mainMenu);
 
         var bots = new System.Collections.Generic.List<ParkourBotInput>(botRoots.Length);

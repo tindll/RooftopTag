@@ -203,6 +203,79 @@ public static class CharacterPreviewShot
         Debug.Log("DIVE_FRAMES_OK");
     }
 
+    // Diving-catch frame diagnostic (tagger finishing-move animation). Identical to DiveFrames but
+    // reads the RAW (untrimmed) "DivingCatch" clip so we can choose CatchFirst/LastFrame from the
+    // per-frame Hips/Head world-Y (phase: windup vs. launch vs. floor-catch impact vs. get-up tail)
+    // and Hips world-Z forward displacement (where the forward launch fires / plateaus).
+    // Run: Unity.exe -batchmode -quit -projectPath . -executeMethod Game.EditorTools.CharacterPreviewShot.DivingCatchFrames -logFile Tools/divingcatchframes.log
+    public static void DivingCatchFrames()
+    {
+        Directory.CreateDirectory("Tools/screenshots/divingcatch");
+        EditorSceneManager.OpenScene("Assets/Scenes/RooftopArena.unity", OpenSceneMode.Single);
+
+        const string clipPath = "Assets/Art/Characters/Animations/DivingCatch.fbx";
+        AnimationClip? clip = null;
+        foreach (var o in AssetDatabase.LoadAllAssetsAtPath(clipPath))
+            if (o is AnimationClip c && !c.name.StartsWith("__preview")) { clip = c; break; }
+        if (clip == null) { Debug.LogError("CATCH_NO_CLIP"); return; }
+
+        var prefab = Resources.Load<GameObject>("raccoon");
+        GameObject model = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+        model.transform.position = Vector3.zero;
+        model.transform.rotation = Quaternion.identity;
+        var anim = model.GetComponent<Animator>();
+        if (anim == null) anim = model.AddComponent<Animator>();
+
+        int totalFrames = Mathf.RoundToInt(clip.length * clip.frameRate);
+        Debug.Log($"CATCH_CLIP length={clip.length:0.000}s frameRate={clip.frameRate} totalFrames={totalFrames}");
+
+        var camGo = new GameObject("CatchCam");
+        Camera cam = camGo.AddComponent<Camera>();
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = new Color(0.2f, 0.22f, 0.28f);
+        cam.fieldOfView = 35f;
+        var rt = new RenderTexture(700, 700, 24, RenderTextureFormat.ARGB32);
+        cam.targetTexture = rt;
+
+        float startZ = 0f;
+        bool haveStart = false;
+
+        AnimationMode.StartAnimationMode();
+        for (int f = 0; f <= totalFrames; f++)
+        {
+            float t = totalFrames == 0 ? 0f : (float)f / totalFrames * clip.length;
+            AnimationMode.BeginSampling();
+            AnimationMode.SampleAnimationClip(model, clip, t);
+            AnimationMode.EndSampling();
+
+            Transform? hips = anim.GetBoneTransform(HumanBodyBones.Hips);
+            Transform? head = anim.GetBoneTransform(HumanBodyBones.Head);
+            var renderers = model.GetComponentsInChildren<Renderer>();
+            Bounds b = renderers[0].bounds;
+            foreach (var r in renderers) b.Encapsulate(r.bounds);
+            float hipsY = hips != null ? hips.position.y : -1f;
+            float headY = head != null ? head.position.y : -1f;
+            float hipsZ = hips != null ? hips.position.z : model.transform.position.z;
+            if (!haveStart) { startZ = hipsZ; haveStart = true; }
+            float forwardDisp = hipsZ - startZ;
+            Debug.Log($"CATCH_FRAME f={f} hipsY={hipsY:0.000} headY={headY:0.000} fwdDisp={forwardDisp:0.000} boundsMinY={b.min.y:0.000} boundsHeight={b.size.y:0.000}");
+
+            cam.transform.position = b.center + new Vector3(3.2f, 0.15f, 0f);
+            cam.transform.LookAt(b.center);
+            cam.Render();
+            RenderTexture.active = rt;
+            var tex = new Texture2D(700, 700, TextureFormat.RGB24, false);
+            tex.ReadPixels(new Rect(0, 0, 700, 700), 0, 0);
+            tex.Apply();
+            RenderTexture.active = null;
+            File.WriteAllBytes($"Tools/screenshots/divingcatch/frame_{f:000}.png", tex.EncodeToPNG());
+            Object.DestroyImmediate(tex);
+        }
+        AnimationMode.StopAnimationMode();
+        cam.targetTexture = null;
+        Debug.Log("CATCH_FRAMES_OK");
+    }
+
     static GameObject Spawn(string resourceName, Vector3 pos)
     {
         var prefab = Resources.Load<GameObject>(resourceName);

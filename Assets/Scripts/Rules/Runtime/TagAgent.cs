@@ -130,6 +130,10 @@ public sealed class TagAgent : MonoBehaviour
     /// <summary>Raised the moment a lunge actually fires (past cooldown/grace) — drives the dive-roll animation.</summary>
     public event Action? Lunged;
 
+    // Decided at lunge fire-time (TryLunge): true = play the tagger's DivingCatch finishing move,
+    // false = the generic dive roll. Read by DriveLungeAnimation, which routes it to the CURRENT _bridge.
+    private bool _lungeIsCatch;
+
     public void Configure(TagRulesConfig config, CharacterMotor motor, Renderer? bodyRenderer, bool isLocalPlayer, bool proceduralBody = true,
         CharacterAnimatorBridge? bridge = null, RuntimeAnimatorController? animController = null, string? modelResourceName = null)
     {
@@ -153,9 +157,13 @@ public sealed class TagAgent : MonoBehaviour
         _motor.Landed -= OnLanded; // idempotent in case Configure is ever called more than once
         _motor.Landed += OnLanded;
 
-        // Own the bridge's dive-roll wiring here (rather than the bootstrap wiring it externally)
-        // since a later role swap (SwapModel) has to unhook and rehook it as the model gets replaced.
-        if (_bridge != null) Lunged += _bridge.TriggerDiveRoll;
+        // Own the bridge's dive-animation wiring here (rather than the bootstrap wiring it externally).
+        // Subscribe a STABLE TagAgent method — not a delegate bound to the current bridge instance — so a
+        // later role swap (SwapModel) that destroys and replaces the bridge never needs to rehook this,
+        // and can never leak a captured reference to a destroyed bridge (DriveLungeAnimation reads the
+        // live _bridge field). Idempotent in case Configure is ever called more than once.
+        Lunged -= DriveLungeAnimation;
+        Lunged += DriveLungeAnimation;
 
         if (_isLocalPlayer && _lungeAction == null)
         {
@@ -308,13 +316,10 @@ public sealed class TagAgent : MonoBehaviour
 
         // Destroy the old model + bridge before attaching the new one. The bridge lives on this root
         // (not the model child, see AttachCharacterModel), so it needs its own Destroy; that also fires
-        // its OnDestroy, which unsubscribes its own Motor.DoubleJumped handler. Unsubscribing Lunged
-        // here first (TagAgent's own event) avoids leaking a reference to the about-to-be-destroyed bridge.
-        if (_bridge != null)
-        {
-            Lunged -= _bridge.TriggerDiveRoll;
-            Destroy(_bridge);
-        }
+        // its OnDestroy, which unsubscribes its own Motor.DoubleJumped handler. The Lunged subscription
+        // is a STABLE TagAgent method (DriveLungeAnimation, wired once in Configure) that reads the live
+        // _bridge field, so there is nothing bridge-specific to unhook/rehook here — just swap the field.
+        if (_bridge != null) Destroy(_bridge);
         Transform oldModel = transform.Find("CharacterModel");
         if (oldModel != null) Destroy(oldModel.gameObject);
 
@@ -324,7 +329,6 @@ public sealed class TagAgent : MonoBehaviour
         _proceduralBody = procedural;
         _bridge = bridge;
         _currentModelResource = wanted;
-        if (_bridge != null) Lunged += _bridge.TriggerDiveRoll;
 
         if (_bodyRenderer != null)
         {
@@ -375,7 +379,12 @@ public sealed class TagAgent : MonoBehaviour
         // never netting speed. The dive-lock replaces the old cooldown as the rate limiter.
         _motor.BeginDive(_config.diveSpeed, _config.diveDuration, _config.diveRecovery, _config.diveSteeringScale);
         _lungeCooldownRemaining = _config.lungeCooldown; // 0 now — harmless no-op, keeps the HUD/gate plumbing wired
-        Lunged?.Invoke(); // drives the dive-roll animation on the model (no-op for the capsule fallback)
+
+        // Finishing-move variant, decided at fire time: a Tagger's committed dive AT a catchable victim
+        // (nearest opponent within catchRange AND ahead) plays the DivingCatch clip instead of the generic
+        // roll. Animation ONLY — BeginDive and the contact-tag window below are identical either way.
+        _lungeIsCatch = Role == Role.Tagger && IsLungeCatch();
+        Lunged?.Invoke(); // drives the dive-roll / diving-catch animation on the model (no-op for the capsule fallback)
 
         // Dive gesture: both arms thrust fully forward and hold out through the lunge before easing
         // back — reads as a committed dive rather than the quick jab of a ranged tag reach. Skipped
@@ -391,6 +400,31 @@ public sealed class TagAgent : MonoBehaviour
             _lungeTagWindowRemaining = _config.diveDuration; // arm contact-tag for exactly the dive's locked-in window
             _lungeTagUsed = false;
         }
+    }
+
+    /// <summary>Routes a fired lunge to the CURRENT bridge's dive animation — the tagger's finishing
+    /// catch (DivingCatch) when this lunge was a catch, else the generic roll. Reads the live _bridge
+    /// field (never a captured delegate), so a model/role swap that replaces the bridge can't leave this
+    /// pointing at a destroyed one. Null-safe: headless self-play capsules have no bridge.</summary>
+    private void DriveLungeAnimation()
+    {
+        if (_bridge == null) return;
+        if (_lungeIsCatch) _bridge.TriggerDivingCatch();
+        else _bridge.TriggerDiveRoll();
+    }
+
+    /// <summary>True when this Tagger's lunge is a finishing catch: the nearest opposing agent (same
+    /// lookup bots/TryTagInRange use) is within <see cref="TagRulesConfig.catchRange"/> and roughly
+    /// ahead (dot(forward, toTarget) &gt; 0.5). Animation-selection only — never gates the tag itself.</summary>
+    private bool IsLungeCatch()
+    {
+        if (_roundController == null) return false;
+        TagAgent? nearest = _roundController.FindNearestOpposingAgent(this);
+        if (nearest == null) return false;
+
+        Vector3 toTarget = nearest.transform.position - transform.position;
+        if (toTarget.sqrMagnitude > _config.catchRange * _config.catchRange) return false;
+        return Vector3.Dot(transform.forward, toTarget.normalized) > 0.5f;
     }
 
     // Contact tag — active ONLY during the lunge window, and only the first runner touched per lunge.
@@ -498,6 +532,14 @@ public sealed class TagAgent : MonoBehaviour
 
     private void PerformTag(TagAgent other)
     {
+        // Race guard: once the round has ended (e.g. the local player was just tagged elsewhere this
+        // same frame), Time.timeScale=0 stops FixedUpdate/physics going forward, but any Update calls
+        // already queued for THIS frame (another bot's TryTagInRange, a still-in-flight
+        // OnCollisionEnter) still run before that takes effect. Bail before any of it — role
+        // conversion, the WasTagged event, and the boop SFX — so a same-frame tag can't land (and
+        // spam audio) after the round is already over.
+        if (_roundController != null && _roundController.IsRoundOver) return;
+
         // The local human player is never converted to Tagger on tag — RoundController subscribes to
         // WasTagged on the local player and ends the round with a "You lose" screen instead (see
         // RoundController.PlayerCaught). Every other agent (bots, and the headless self-play harness,

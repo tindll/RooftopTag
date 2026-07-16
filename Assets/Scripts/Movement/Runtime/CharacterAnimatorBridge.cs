@@ -23,6 +23,7 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     private static readonly int AirDivingId = Animator.StringToHash("AirDiving");
     private static readonly int FlippingId = Animator.StringToHash("Flipping");
     private static readonly int DivingId = Animator.StringToHash("Diving");
+    private static readonly int CatchingId = Animator.StringToHash("Catching");
     private static readonly int EatingId = Animator.StringToHash("Eating");
     private static readonly int EatStopId = Animator.StringToHash("EatStop");
     private static readonly int EatStartId = Animator.StringToHash("EatStart");
@@ -44,6 +45,9 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     private float _flipTimer;
     private bool _diving;
     private float _diveTimer;
+    // Selects the tagger's finishing-catch clip (DivingCatch) over the generic roll while _diving.
+    // Shares the same _diveTimer/hold — it's only a variant flag, not a second window.
+    private bool _catching;
 
     // Eating (bin objective): SetEating(true) is pushed each frame the agent fills a can. Eating is
     // held true through the stand-up clip (EatStandUpHold) so the exit plays without the locomotion
@@ -81,10 +85,22 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         _flipTimer = FlipHoldSeconds;
     }
 
-    /// <summary>Play the dive-roll clip; called by TagAgent the moment a lunge fires.</summary>
+    /// <summary>Play the generic dive-roll clip; called by TagAgent the moment a plain lunge fires (and
+    /// by the motor's HardLanded for a cosmetic landing roll). Explicitly clears _catching so a plain
+    /// roll can never inherit a stale catch flag from a previous finishing-move lunge.</summary>
     public void TriggerDiveRoll()
     {
         _diving = true;
+        _catching = false;
+        _diveTimer = DiveHoldSeconds;
+    }
+
+    /// <summary>Play the tagger's finishing-catch clip (DivingCatch); called by TagAgent when a Tagger's
+    /// lunge fires at a catchable victim. Same dive hold/window as the roll — only the clip differs.</summary>
+    public void TriggerDivingCatch()
+    {
+        _diving = true;
+        _catching = true;
         _diveTimer = DiveHoldSeconds;
     }
 
@@ -107,7 +123,7 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         if (_diving)
         {
             _diveTimer -= Time.deltaTime;
-            if (_diveTimer <= 0f) _diving = false;
+            if (_diveTimer <= 0f) { _diving = false; _catching = false; }
         }
         // Eating: a ONE-SHOT EatStart trigger drives the crouch-down on the rising edge — a trigger,
         // NOT the held bool, because an AnyState transition gated on the bool re-fires every frame and
@@ -138,6 +154,7 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         _animator.SetBool(AirDivingId, _motor.AirDiving);
         _animator.SetBool(FlippingId, _flipping);
         _animator.SetBool(DivingId, _diving);
+        _animator.SetBool(CatchingId, _catching);
         _animator.SetBool(EatingId, _eatingTarget || _eatExiting); // held true through the stand-up
         _animator.SetBool(EatStopId, _eatExiting);
     }

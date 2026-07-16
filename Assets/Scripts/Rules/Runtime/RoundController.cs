@@ -31,6 +31,14 @@ public sealed class RoundController : MonoBehaviour
     private TagAgent? _localPlayerAgent;
     private ThirdPersonCameraRig? _cameraRig;
 
+    // Reopens MainMenuOverlay from the end screen's "MAIN MENU" button. A plain delegate rather than
+    // a typed field: MainMenuOverlay compiles into Assembly-CSharp (no asmdef, per its own remarks),
+    // and Game.Rules (this asmdef) can't reference back into it — Assembly-CSharp depends on asmdefs,
+    // never the reverse. TagArenaBootstrap (itself in Assembly-CSharp) wires this to
+    // MainMenuOverlay.ShowMenu after constructing both. Null in scenes with no main menu (e.g. a
+    // bare test-built RoundController) — the button simply doesn't draw without it.
+    private System.Action? _requestMainMenu;
+
     // Tag-moment slow-mo: on a local-player-involved tag, dip to 0.35x for ~0.25s. The restore is
     // driven off Time.unscaledTime (never a timeScale-scaled timer) so it self-restores even at 0.35x,
     // and it fully defers to the pause menu's timeScale ownership (SettingsMenu sets timeScale=0 while
@@ -119,6 +127,11 @@ public sealed class RoundController : MonoBehaviour
     public void Configure(TagRulesConfig config) => _config = config;
 
     public void SetCameraRig(ThirdPersonCameraRig cameraRig) => _cameraRig = cameraRig;
+
+    /// <summary>Wires the end screen's "MAIN MENU" button to MainMenuOverlay.ShowMenu — see the
+    /// remarks on <see cref="_requestMainMenu"/> for why this is a delegate rather than a direct
+    /// reference.</summary>
+    public void SetMainMenuCallback(System.Action requestMainMenu) => _requestMainMenu = requestMainMenu;
 
     public void RegisterAgent(TagAgent agent, bool isLocalPlayer)
     {
@@ -357,8 +370,7 @@ public sealed class RoundController : MonoBehaviour
         // of doubling as the round's own restart-on-win/loss key.
         if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame)
         {
-            StartRound();
-            _cameraRig?.SnapToTarget();
+            RestartRound();
             return;
         }
 
@@ -531,6 +543,24 @@ public sealed class RoundController : MonoBehaviour
             if (localWon) _sessionWins++; else _sessionLosses++;
             _sessionBestSurvival = Mathf.Max(_sessionBestSurvival, _finalRoundLength);
         }
+
+        // Freeze gameplay so bots don't keep tagging each other (and spamming the boop SFX) behind
+        // the end screen — human play ONLY. The headless self-play harness (SelfPlayTests) never sets
+        // a local player and runs several matches back-to-back on its own clock; touching timeScale
+        // here would stall or distort that batch, so this is fully gated on _localPlayerAgent.
+        // Mirrors the exact freeze pattern MainMenuOverlay/SettingsMenu already use elsewhere: pause
+        // via timeScale=0, then unlock + suppress-auto-relock so the end-screen buttons are clickable
+        // (SuppressAutoRelock stops the camera rig's click-to-relock from yanking the cursor back the
+        // instant the player clicks a button).
+        if (_localPlayerAgent != null)
+        {
+            Time.timeScale = 0f;
+            if (_cameraRig != null)
+            {
+                _cameraRig.CursorUnlocked = true;
+                _cameraRig.SuppressAutoRelock = true;
+            }
+        }
     }
 
     /// <summary>Fired on the local player's WasTagged event (see TagAgent.PerformTag, which never
@@ -543,7 +573,23 @@ public sealed class RoundController : MonoBehaviour
         _playerLost = true;
         // Headline already reads "YOU LOSE" (via _playerLost); give the banner a flavour subline
         // instead of repeating the same words twice on the end screen.
-        EndRound("The chasers caught you");
+        EndRound("You were tagged!");
+    }
+
+    /// <summary>Shared restart logic for both the R-key shortcut and the end screen's RESTART button —
+    /// resets the round, snaps the camera, and unconditionally restores play state (timeScale + cursor
+    /// lock), undoing the EndRound freeze above whether or not it was actually armed (idempotent when
+    /// it wasn't — e.g. R pressed mid-round with nothing frozen).</summary>
+    private void RestartRound()
+    {
+        StartRound();
+        _cameraRig?.SnapToTarget();
+        Time.timeScale = 1f;
+        if (_cameraRig != null)
+        {
+            _cameraRig.CursorUnlocked = false;
+            _cameraRig.SuppressAutoRelock = false;
+        }
     }
 
     // ---------------------------------------------------------------- HUD (IMGUI)
@@ -711,8 +757,12 @@ public sealed class RoundController : MonoBehaviour
                 ? runnersWon
                 : runnersWon == (_localPlayerAgent.Role == Role.Runner);
 
-        const float w = 540f, h = 176f;
-        var panel = new Rect((Screen.width - w) * 0.5f, Screen.height * 0.5f - 80f, w, h);
+        // Full-screen dim so the frozen scene behind the end screen reads as inactive, and so the
+        // buttons below have contrast regardless of what's directly behind them.
+        DrawPanel(new Rect(0f, 0f, Screen.width, Screen.height), new Color(0f, 0f, 0f, 0.6f));
+
+        const float w = 540f, h = 296f;
+        var panel = new Rect((Screen.width - w) * 0.5f, (Screen.height - h) * 0.5f, w, h);
         DrawPanel(panel, new Color(HudPanel.r, HudPanel.g, HudPanel.b, 0.82f));
 
         if (_localPlayerAgent != null)
@@ -725,11 +775,11 @@ public sealed class RoundController : MonoBehaviour
         GUI.Label(new Rect(panel.x, panel.y + 50f, panel.width, 40f), _resultMessage, _bannerStyle);
 
         _bannerSubStyle!.normal.textColor = new Color(HudCream.r, HudCream.g, HudCream.b, 0.85f);
-        GUI.Label(new Rect(panel.x, panel.y + 96f, panel.width, 22f),
-            _localPlayerAgent != null
-                ? $"Next round in {Mathf.Max(0, Mathf.CeilToInt(_autoRestartRemaining))}s   —   Press R to restart"
-                : "Press R to restart",
-            _bannerSubStyle);
+        // The auto-restart countdown below (_autoRestartRemaining) is driven off Time.deltaTime,
+        // which is 0 while the freeze in EndRound holds timeScale at 0 — so for a local player it
+        // never actually reaches 0 anymore (restart is now the explicit R-key/button action instead).
+        // The label reflects that: no dead countdown number, just the still-live shortcut.
+        GUI.Label(new Rect(panel.x, panel.y + 96f, panel.width, 22f), "Press R to restart", _bannerSubStyle);
 
         // Per-player round summary (local player only): tags landed, runners left, round length.
         // runnersRemaining is recomputed live here (it was a local in the role-update loop); roles
@@ -750,6 +800,22 @@ public sealed class RoundController : MonoBehaviour
             GUI.Label(new Rect(panel.x, panel.y + 140f, panel.width, 22f),
                 $"Session — Rounds: {_sessionRounds}    Wins: {_sessionWins}    Losses: {_sessionLosses}    Best survival: {_sessionBestSurvival:0.0}s",
                 _bannerSubStyle);
+
+            // RESTART / MAIN MENU — clickable only where there's a human to click them; the headless
+            // self-play harness never registers a local player, so this whole block stays a no-op
+            // there (same gate as the stats above).
+            const float buttonW = 200f, buttonH = 40f, buttonGap = 8f;
+            float buttonX = panel.x + (panel.width - buttonW) * 0.5f;
+            float buttonY = panel.y + 168f;
+
+            if (GUI.Button(new Rect(buttonX, buttonY, buttonW, buttonH), "RESTART"))
+                RestartRound();
+
+            // MAIN MENU only draws once TagArenaBootstrap has wired the callback (see
+            // SetMainMenuCallback) — absent in a bare test-built RoundController.
+            if (_requestMainMenu != null
+                && GUI.Button(new Rect(buttonX, buttonY + buttonH + buttonGap, buttonW, buttonH), "MAIN MENU"))
+                _requestMainMenu();
         }
     }
 

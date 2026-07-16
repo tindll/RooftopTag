@@ -54,6 +54,7 @@ public sealed class TagRulesConfig : ScriptableObject
     public float diveDuration = 0.8f;     // locked-in dive window; also the tagger contact-tag window (kept == CharacterAnimatorBridge.DiveHoldSeconds so the roll animation and the lock end together)
     public float diveRecovery = 0.35f;    // ease speed back down to pre-dive speed over this — zero net momentum gain
     public float diveSteeringScale = 0.15f; // steering authority during the dive (committed, minimal correction)
+    public float catchRange = 4.5f;       // a Tagger lunging AT a victim within this (and ahead) plays the DivingCatch finishing move instead of the generic roll (animation only); matches the bots' lungeRange so a bot's committed dive at someone is exactly a catch
 
     /// <summary>Tag reach radius is a binary still-vs-moving check, not a continuous function of speed — sprinting or jumping shouldn't extend it beyond the same "moving" value.</summary>
     [Header("Tag reach")]

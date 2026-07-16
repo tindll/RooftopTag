@@ -51,6 +51,9 @@ public static class BuildCharacterAnimator
         ctrl.AddParameter("AirDiving", AnimatorControllerParameterType.Bool);
         ctrl.AddParameter("Flipping", AnimatorControllerParameterType.Bool);
         ctrl.AddParameter("Diving", AnimatorControllerParameterType.Bool);
+        // Catching selects the tagger's finishing-move variant of the dive (DivingCatch) over the
+        // generic DiveRoll. Both share the Diving bool/window; Catching just picks the clip.
+        ctrl.AddParameter("Catching", AnimatorControllerParameterType.Bool);
         // Eating (bin objective): Eating held for the whole crouch sequence; EatStop pulses the stand-up.
         ctrl.AddParameter("Eating", AnimatorControllerParameterType.Bool);
         ctrl.AddParameter("EatStop", AnimatorControllerParameterType.Bool);
@@ -129,6 +132,16 @@ public static class BuildCharacterAnimator
         // this from the new frame range / window — it is NOT a fixed constant.)
         diveRoll.speed = 2.233f / 0.8f;
 
+        // Diving catch: the TAGGER's finishing-move variant of the lunge (same BeginDive, same tag
+        // window — only the clip differs). Import-trimmed (CharacterImportPostprocessor: CatchFirstFrame=12,
+        // CatchLastFrame=72, 60 frames @30fps = 2.000s) to the launch → dive → floor-catch-impact window,
+        // cutting the standing windup (f0-11) and the dead lie-still prone tail (f72-108). Same 0.8s
+        // committed-dive window as the roll (diveDuration / CharacterAnimatorBridge.DiveHoldSeconds), so
+        // it is played back at trimmedSeconds/0.8 to land the whole catch inside that window:
+        // 2.000s / 0.8s = 2.5x. (Recompute from the frame range / window if either changes — NOT a fixed constant.)
+        var divingCatch = Simple(sm, "DivingCatch", Clip("DivingCatch", "X Bot@Dive Roll"));
+        divingCatch.speed = 2.000f / 0.8f;
+
         // Eating (bin objective): Standing To Crouched -> Crouching Idle (loop) -> Crouched To Standing.
         // Crouching Idle loops (CharacterImportPostprocessor); the two transitions are one-shots. Driven
         // by the bridge's Eating bool (held through the WHOLE sequence, incl. the stand-up) plus EatStop
@@ -141,12 +154,25 @@ public static class BuildCharacterAnimator
 
         sm.defaultState = grounded;
 
-        // Dive roll owns the moment whenever Diving is set, over any locomotion state.
+        // Dive roll owns the moment whenever Diving is set (but NOT Catching — the tagger's finishing
+        // catch takes that case), over any locomotion state. The other AnyState transitions guard
+        // IfNot Diving, which already protects BOTH dive states (Catching implies Diving), so no extra
+        // guard is needed on them.
         var diveT = sm.AddAnyStateTransition(diveRoll);
         diveT.hasExitTime = false;
         diveT.duration = 0.05f;
         diveT.canTransitionToSelf = false;
         diveT.AddCondition(AnimatorConditionMode.If, 0, "Diving");
+        diveT.AddCondition(AnimatorConditionMode.IfNot, 0, "Catching");
+
+        // Diving catch owns the moment when a TAGGER's lunge fires at a catchable victim (Diving AND
+        // Catching), over any locomotion state and over the plain dive roll.
+        var catchT = sm.AddAnyStateTransition(divingCatch);
+        catchT.hasExitTime = false;
+        catchT.duration = 0.05f;
+        catchT.canTransitionToSelf = false;
+        catchT.AddCondition(AnimatorConditionMode.If, 0, "Diving");
+        catchT.AddCondition(AnimatorConditionMode.If, 0, "Catching");
 
         // AnyState → EatEnter when eating begins (and not already standing back up).
         var eatT = sm.AddAnyStateTransition(eatEnter);
