@@ -1,6 +1,8 @@
 #nullable enable
 
 using System.Collections.Generic;
+using System.Linq;
+using Game.EditorTools;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -37,6 +39,9 @@ public static class SceneStyler
         if (GameObject.Find("RooftopArena") != null)
         {
             CreateBuildingExtensions(theme);
+            CreateGlbShells(theme);
+            CreateGlbCranes(theme);
+            CreateGlbPipes(theme);
             CreateRoads(theme);
             CreateCars(theme);
             CreateFacadeProps(theme);
@@ -655,9 +660,14 @@ public static class SceneStyler
 
         for (int i = 0; i < theme.cloudCount; i++)
         {
-            float length = Mathf.Lerp(theme.cloudLengthMin, theme.cloudLengthMax, (float)rng.NextDouble());
-            float width = Mathf.Lerp(theme.cloudWidthMin, theme.cloudWidthMax, (float)rng.NextDouble());
-            float thickness = Mathf.Lerp(theme.cloudThicknessMin, theme.cloudThicknessMax, (float)rng.NextDouble());
+            // 3 discrete size tiers (small/medium/large) so the sky reads as varied clouds rather than
+            // one repeated puff. Width derives from length via aspect, keeping every cloud a
+            // wider-than-tall ridge; puff sets how tall/rounded its lobes dome up off the flat base.
+            float tier = rng.Next(3) / 2f; // 0, 0.5, 1
+            float length = Mathf.Lerp(theme.cloudLengthMin, theme.cloudLengthMax, tier);
+            float aspect = Mathf.Lerp(theme.cloudAspectMin, theme.cloudAspectMax, (float)rng.NextDouble());
+            float width = length / aspect;
+            float puff = Mathf.Lerp(theme.cloudPuffMin, theme.cloudPuffMax, (float)rng.NextDouble());
             float height = Mathf.Lerp(theme.cloudHeightMin, theme.cloudHeightMax, (float)rng.NextDouble());
             float placeAngle = (float)rng.NextDouble() * Mathf.PI * 2f;
             float placeDist = (float)rng.NextDouble() * theme.cloudDriftRadius;
@@ -677,7 +687,7 @@ public static class SceneStyler
             // scale would shear the blobs and wreck the flat-shaded facets.
 
             var meshFilter = cloud.AddComponent<MeshFilter>();
-            meshFilter.sharedMesh = BuildCloudMesh(theme, length, width, thickness, rng);
+            meshFilter.sharedMesh = BuildCloudMesh(theme, length, width, puff, rng);
             var renderer = cloud.AddComponent<MeshRenderer>();
             renderer.sharedMaterial = material;
             // Backdrop: a cloud shadow sweeping the rooftops would fight ledge readability at speed.
@@ -691,44 +701,45 @@ public static class SceneStyler
         }
     }
 
-    /// <summary>Builds one cloud's mesh: a cluster of overlapping icosphere blobs scattered along the
-    /// cloud's long (local X) axis within the length x thickness x width envelope, each jittered into
-    /// an irregular lump and flat-shaded so facets catch the sun. All blobs land in ONE mesh (one
-    /// draw call per cloud) — overlapping blob interiors are fine since the material is opaque and
-    /// they are never seen. Local-space axes match the old scaled-box convention (X = length, Y =
-    /// thickness, Z = width) so CreateClouds' existing per-cloud rotation/placement needed no
-    /// changes.</summary>
-    private static Mesh BuildCloudMesh(VisualThemeConfig theme, float length, float width, float thickness, System.Random rng)
+    /// <summary>Builds one cloud's mesh: overlapping flat-bottomed DOME lobes packed along the cloud's
+    /// long (local X) axis, each jittered into an irregular lump and flat-shaded so facets catch the
+    /// moonlight. All lobes land in ONE mesh (one draw call per cloud) — overlapping interiors are fine
+    /// since the material is opaque and never seen. Local axes: X = length (drift axis), Z = width
+    /// (ridge depth), Y up from the flat base at y=0, so CreateClouds' per-cloud rotation/placement
+    /// needs no changes.</summary>
+    private static Mesh BuildCloudMesh(VisualThemeConfig theme, float length, float width, float puff, System.Random rng)
     {
         var vertices = new System.Collections.Generic.List<Vector3>();
         var normals = new System.Collections.Generic.List<Vector3>();
         var triangles = new System.Collections.Generic.List<int>();
 
-        // FLAT-BOTTOMED cloud: every blob is a Y-SQUASHED ellipsoid (wider than tall) and its UNDERSIDE
-        // is planted on the same local y=0 plane, so the cluster's silhouette is a flat base with a
-        // puffy, varied top — the asymmetry that reads as "cloud" instead of "cluster of spheres".
-        // yScale is the squash (0.3..0.9) and is driven by the cloud's own sampled thickness/width so
-        // thin, wide clouds and fat, tall ones both occur; per-cloud not per-blob so the whole base
-        // stays coplanar.
-        float yScale = Mathf.Clamp(thickness / (width * 0.5f), 0.3f, 0.9f);
+        // FLAT-BOTTOMED cloud: every lobe is a DOME — an icosphere with all below-plane verts clamped
+        // onto the local y=0 plane (see AppendIcosphereBlob), so its underside is a flat disc and its
+        // top puffs up. Domes packed along the long (local X) axis share ONE flat base and give a
+        // puffy, staggered top — the flat-base / puffy-top asymmetry that reads as "cloud" instead of
+        // "cluster of spheres" (the old tangent-ellipsoid version scalloped its underside and read round).
         int blobCount = rng.Next(theme.cloudBlobsMin, theme.cloudBlobsMax + 1);
         for (int b = 0; b < blobCount; b++)
         {
-            // Spread blob centres along the long (local X) axis across the full length, plus a slight
-            // irregular XZ jitter so they don't sit on a perfect line; local Z wanders across the width.
+            // Spread lobe centres along the long (local X) axis, with slight jitter so they don't sit on
+            // a perfect line; local Z stays a TIGHT ridge (±width*0.4) so the cloud is a ridge, not a field.
             float t = blobCount > 1 ? b / (float)(blobCount - 1) : 0.5f;
-            float lx = (t - 0.5f) * length + ((float)rng.NextDouble() - 0.5f) * length * 0.12f;
-            float lz = ((float)rng.NextDouble() - 0.5f) * width;
+            float lx = (t - 0.5f) * length + ((float)rng.NextDouble() - 0.5f) * length * 0.06f;
+            float lz = ((float)rng.NextDouble() - 0.5f) * width * 0.3f;
 
-            // Varied radii (size tiers fall out of the min..max lerp) so tops are puffy, not uniform.
+            // Taper the end lobes smaller so the cloud rounds off at its ends instead of being cut square.
+            // Floor kept high (0.72) so end lobes still OVERLAP their neighbours into one mass rather than
+            // detaching into floating rocks; varied radii then stagger the puffy tops.
+            float taper = Mathf.Lerp(0.72f, 1f, 1f - Mathf.Abs(t - 0.5f) * 2f);
             float radiusFrac = Mathf.Lerp(theme.cloudBlobRadiusMin, theme.cloudBlobRadiusMax, (float)rng.NextDouble());
-            float radius = radiusFrac * (width * 0.5f);
+            float radius = radiusFrac * (width * 0.5f) * taper;
 
-            // Lift the centre by the blob's squashed half-height so its underside lands flush on y=0 —
-            // this is what aligns every blob bottom to one plane (the flat base).
-            var blobCenter = new Vector3(lx, radius * yScale, lz);
+            // Base essentially on y=0. A hair of per-lobe lift (b*0.04m, invisible in a 30-90m cloud)
+            // separates the coplanar bottom discs in depth so the underside doesn't z-fight when seen
+            // from below (looking up from a roof).
+            var blobCenter = new Vector3(lx, b * 0.04f, lz);
 
-            AppendIcosphereBlob(vertices, normals, triangles, blobCenter, radius, yScale, theme.cloudBlobSubdivisions, theme.cloudVertexJitter, rng);
+            AppendIcosphereBlob(vertices, normals, triangles, blobCenter, radius, puff, theme.cloudBlobSubdivisions, theme.cloudVertexJitter, rng);
         }
 
         var mesh = new Mesh { name = "CloudMesh" };
@@ -744,7 +755,7 @@ public static class SceneStyler
     /// by vertex index, BEFORE the flat-shade split below — jittering after the split would let
     /// adjacent faces move their shared corner differently and crack the blob open.</summary>
     private static void AppendIcosphereBlob(System.Collections.Generic.List<Vector3> vertices, System.Collections.Generic.List<Vector3> normals,
-        System.Collections.Generic.List<int> triangles, Vector3 center, float radius, float yScale, int subdivisions, float jitter, System.Random rng)
+        System.Collections.Generic.List<int> triangles, Vector3 center, float radius, float puff, int subdivisions, float jitter, System.Random rng)
     {
         (System.Collections.Generic.List<Vector3> sphereVerts, System.Collections.Generic.List<int> sphereTris) = IcosphereBase();
         SubdivideIcosphere(sphereVerts, sphereTris, subdivisions);
@@ -752,11 +763,12 @@ public static class SceneStyler
         for (int i = 0; i < sphereVerts.Count; i++)
         {
             float scale = 1f + ((float)rng.NextDouble() * 2f - 1f) * jitter;
-            // Squash Y BEFORE the flat-shade split below so face normals are computed from the actual
-            // (squashed) geometry — squashing the final positions instead would leave sphere normals on
-            // an ellipsoid and mis-light every facet.
+            // Reshape into a flat-bottomed DOME BEFORE the flat-shade split below (so face normals come
+            // from the actual reshaped geometry): scale Y by puff for a tall/rounded top, then clamp any
+            // vertex below the plane up to y=0. That collapses the whole lower hemisphere into a flat
+            // disc — the flat cloud base — while the upper hemisphere keeps its puffy dome.
             Vector3 v = sphereVerts[i] * scale;
-            sphereVerts[i] = new Vector3(v.x, v.y * yScale, v.z);
+            sphereVerts[i] = new Vector3(v.x, Mathf.Max(v.y * puff, 0f), v.z);
         }
 
         // Flat shading: 3 fresh verts per triangle with a single face normal — no shared verts, no
@@ -959,11 +971,14 @@ public static class SceneStyler
     /// GetFacadeMaterial's (tint, intensity) cache still yields exactly that many shared materials — 4 —
     /// rather than one per building.
     ///
-    /// The skyline blocks carry the SAME generated window grid as the playable buildings (feel-check:
-    /// a windowed play area ending at a blank horizon was the visible break), via
-    /// TagArenaMapGeometry's shared facade material + mesh — the atlas and the mesh math are NOT
-    /// duplicated into this Editor assembly. The CRANES stay plain <c>SurfaceRole.Silhouette</c>: they
-    /// are cranes, not buildings.</summary>
+    /// PHASE 4 of the GLB integration plan: every slot is now one Tripo building GLB, not a flat
+    /// windowed box — <see cref="ChooseSkylineFit"/> / <see cref="SilhouetteBoxGlb"/> below. Forced on
+    /// every slot, no procedural fallback (project decision — up to ~3.2x stretch on the thinnest/
+    /// tallest towers is accepted, and they are also the most distant and most fogged). The window
+    /// grid comment above is now historical: the GLBs bring their OWN painted windows (lit by
+    /// GlbCityKit.BuildLitMaterial), so TagArenaMapGeometry's atlas is no longer read here at all. The
+    /// CRANES stay plain <c>SurfaceRole.Silhouette</c>: they are cranes, not buildings, and Phase 5
+    /// owns them.</summary>
     public static void CreateSilhouettes(VisualThemeConfig theme)
     {
         var root = new GameObject("SilhouetteDressing");
@@ -976,24 +991,34 @@ public static class SceneStyler
         (_, List<Rect> blocks) = BuildBackdropNetwork(theme);
         (_, Rect keepOut) = BackdropBounds(theme);
 
-        // Built up-front and unconditionally: exactly this many materials exist regardless of how the
-        // blocks fall, which is the draw-call guarantee (see skylineHazeBandCount).
+        // Per-band (tint, emissive) NUMBERS, not built Materials: the old flat-colour boxes minted one
+        // shared TagArenaMapGeometry.GetFacadeMaterial per band; the GLB skyline below tints via
+        // GlbCityKit.BuildLitMaterial instead (a baseColor multiply over the model's own painted
+        // texture), which wants the raw (tint, intensity) pair, not a pre-built Material — so building
+        // one here would just be 4 orphaned, never-assigned materials.
         int bands = Mathf.Max(1, theme.skylineHazeBandCount);
-        var bandMats = new Material[bands];
+        var bandTint = new Color[bands];
+        var bandEmissive = new float[bands];
         for (int b = 0; b < bands; b++)
         {
             float bt = bands > 1 ? b / (float)(bands - 1) : 0f;  // 0 nearest .. 1 farthest
             // Pushed toward the fog with distance (atmospheric perspective). Window glow fades with the
             // same distance but never to zero — the far band keeps (1 - silhouetteWindowHazeFade) of it so
             // distant windows still read at dusk. Identical maths to the old per-ring material.
-            bandMats[b] = TagArenaMapGeometry.GetFacadeMaterial(
-                Color.Lerp(theme.silhouetteColor, theme.fogColor, theme.skylineHazeBlend * bt),
-                theme.silhouetteWindowEmissiveIntensity * (1f - theme.silhouetteWindowHazeFade * bt));
+            bandTint[b] = Color.Lerp(theme.silhouetteColor, theme.fogColor, theme.skylineHazeBlend * bt);
+            bandEmissive[b] = theme.silhouetteWindowEmissiveIntensity * (1f - theme.silhouetteWindowHazeFade * bt);
         }
 
         int windowSeed = 1; // running, so every skyline block gets its own window pattern (0 would be
                             // fine for the mesh, but 1-based matches the roofs' seed convention)
         int placed = 0, tooSmall = 0;
+        var modelCounts = new Dictionary<string, int>();
+        var materialKeys = new HashSet<string>(); // mirrors GlbCityKit.BuildLitMaterial's cache key —
+                                                    // lets the report state the MEASURED material count,
+                                                    // not just the models x bands x seedVariants ceiling.
+        int variantsForKey = Mathf.Max(1, theme.glbWindowSeedVariants);
+        float worstAnisotropy = 0f;
+        long totalVerts = 0;
 
         for (int i = 0; i < blocks.Count; i++)
         {
@@ -1043,17 +1068,134 @@ public static class SceneStyler
             if (keepOut.Overlaps(Rect.MinMaxRect(px - halfW, pz - halfW, px + halfW, pz + halfW))) continue;
 
             int band = Mathf.Clamp(Mathf.RoundToInt(t * (bands - 1)), 0, bands - 1);
-            SilhouetteBoxMat(root.transform, $"Skyline_{band}_{i}",
+            int seed = windowSeed++;
+            (GlbCityKit.GlbModel model, bool yaw90, float anisotropy) = ChooseSkylineFit(width, fullHeight, seed);
+            // Prefixed "SkylineGlb_" rather than "Skyline_" (the old box's name) on purpose: every slot
+            // is a GLB now, and CreateFacadeProps' roof-prop pass keys off an exact "Skyline_" prefix
+            // match — renaming is what makes it skip these silently rather than needing its own edit.
+            // The GLBs already carry baked rooftop clutter (water towers, gantries, stair huts); a
+            // procedural water tower dropped on a GLB's bounds-top would float on top of that.
+            SilhouetteBoxGlb(root.transform, $"SkylineGlb_{band}_{i}", model, yaw90,
                 new Vector3(px, (theme.buildingBaseY + topY) * 0.5f, pz),
-                new Vector3(width, fullHeight, width), bandMats[band], windowSeed++);
+                new Vector3(width, fullHeight, width), bandTint[band], bandEmissive[band], seed);
             placed++;
+
+            modelCounts.TryGetValue(model.Name, out int mc);
+            modelCounts[model.Name] = mc + 1;
+            worstAnisotropy = Mathf.Max(worstAnisotropy, anisotropy);
+            totalVerts += GetSkylineMesh(model).vertexCount;
+            materialKeys.Add($"{model.Name}:{ColorUtility.ToHtmlStringRGBA(bandTint[band])}:{bandEmissive[band]:F3}:{Mathf.Abs(seed % variantsForKey)}");
         }
 
+        var modelDist = new System.Text.StringBuilder();
+        foreach (var kv in modelCounts) modelDist.Append($"{kv.Key}={kv.Value} ");
         Debug.Log($"ROOFTOP_SKYLINE: {placed} backdrop buildings placed in {blocks.Count} BSP blocks " +
-            $"({tooSmall} blocks skipped as too small for skylineWidthMin), {bands} shared haze materials.");
+            $"({tooSmall} blocks skipped as too small for skylineWidthMin), {bands} haze bands, " +
+            $"GLB model distribution: {modelDist}worst anisotropy={worstAnisotropy:F3}, " +
+            $"{materialKeys.Count} measured GLB materials (ceiling {GlbCityKit.Models.Count(m => m.BodyRect.HasValue) * bands * variantsForKey}), " +
+            $"{totalVerts} scene verts from the skyline alone (draw calls stay 1/building).");
+        // ponytail: the two decorative silhouette cranes were removed (user report — they read as
+        // clutter). The functional GlbCrane swing cranes (CreateGlbCranes) are unrelated and kept.
+    }
 
-        CreateCrane(root.transform, new Vector3(45f, 0f, 40f), 28f, theme);
-        CreateCrane(root.transform, new Vector3(-40f, 0f, 55f), 24f, theme);
+    private static readonly Dictionary<string, Mesh> SkylineMeshCache = new();
+
+    /// <summary>A model's own mesh for the skyline (full clutter, uncalled — see
+    /// <see cref="SilhouetteBoxGlb"/>), cached per model name. Thin wrapper over
+    /// <see cref="LoadModelMesh"/> (Phase 3's loader, reused rather than duplicated): that method's own
+    /// AssetDatabase calls are idempotent but not free, and the skyline calls this ~128 times against
+    /// only 4 distinct models.</summary>
+    private static Mesh GetSkylineMesh(GlbCityKit.GlbModel model)
+    {
+        if (SkylineMeshCache.TryGetValue(model.Name, out Mesh cached) && cached != null) return cached;
+        Mesh mesh = LoadModelMesh(model);
+        SkylineMeshCache[model.Name] = mesh;
+        return mesh;
+    }
+
+    /// <summary>Which model best fits one skyline slot, judged by the model's FULL mesh bounds — not
+    /// <see cref="GlbCityKit.GlbModel.DeckY"/>/<see cref="GlbCityKit.GlbModel.BodyRect"/>, which is
+    /// <see cref="CreateGlbShells"/>' playable-roof concern. Nobody stands on a skyline building, so the
+    /// deck is irrelevant and the baked-in clutter (gantries, water towers, stair huts) becomes free
+    /// silhouette interest instead of something to cull.
+    ///
+    /// Restricted to the 4 buildings (<c>BodyRect.HasValue</c>) — the same set <see cref="ChooseShellFit"/>
+    /// picks from — because crane_swing/modular_pipe are props, not buildings, even though they DO have
+    /// full bounds to fit against.
+    ///
+    /// Every skyline slot is square in XZ (the old flat-box convention, preserved),
+    /// so per <see cref="SkylineBoundsScale"/>'s remarks a yaw never changes the fit — there is nothing
+    /// to rank a yaw against, unlike <see cref="ChooseShellFit"/>'s oblong roofs. Yaw is instead a free,
+    /// independent coin purely for facade variety. Model choice reuses CreateGlbShells' own seeded
+    /// best-of-2 tie-break (rank by <see cref="Anisotropy"/>, sorted, then a 50/50 coin between 1st and
+    /// 2nd place) so neighbouring slots aren't clones of "the one true best fit."</summary>
+    private static (GlbCityKit.GlbModel model, bool yaw90, float anisotropy) ChooseSkylineFit(float width, float fullHeight, int seed)
+    {
+        var rng = new System.Random(seed); // per-slot and fixed, like every other seed in the visual pass
+        var perModel = new List<(GlbCityKit.GlbModel model, float aniso)>();
+        foreach (GlbCityKit.GlbModel m in GlbCityKit.Models)
+        {
+            if (!m.BodyRect.HasValue) continue; // buildings only — crane_swing/modular_pipe aren't buildings
+            Vector3 scale = SkylineBoundsScale(GetSkylineMesh(m).bounds.size, width, fullHeight);
+            perModel.Add((m, Anisotropy(scale)));
+        }
+
+        perModel.Sort((a, b) => a.aniso.CompareTo(b.aniso));
+        (GlbCityKit.GlbModel model, float aniso) picked = perModel[perModel.Count > 1 && rng.Next(2) == 0 ? 1 : 0];
+        bool yaw90 = rng.Next(2) == 0; // cosmetic only on a square slot — see the summary
+        return (picked.model, yaw90, picked.aniso);
+    }
+
+    /// <summary>Per-axis scale mapping a model's own FULL bounds (clutter included) onto a
+    /// <paramref name="width"/> x <paramref name="fullHeight"/> x <paramref name="width"/> skyline slot,
+    /// in the model's own local axes — what Unity's TRS actually applies (world = pos + R * (S * local)).
+    /// Since every slot is square in XZ the target for local X and local Z is identical
+    /// (<paramref name="width"/>), so this vector is the SAME regardless of a 90-degree yaw — that is
+    /// the fact <see cref="ChooseSkylineFit"/> leans on to skip ranking yaws at all.</summary>
+    private static Vector3 SkylineBoundsScale(Vector3 boundsSize, float width, float fullHeight) =>
+        new(width / boundsSize.x, fullHeight / boundsSize.y, width / boundsSize.z);
+
+    /// <summary>One skyline slot, GLB instead of a flat box: a bare GameObject + MeshFilter/MeshRenderer
+    /// (structurally incapable of carrying a collider, same guarantee <see cref="CreateGlbShells"/>
+    /// relies on) standing where the old <c>CreatePrimitive(Cube)</c> box used to draw.
+    ///
+    /// Position/scale solve the same way <see cref="CreateGlbShells"/> aligns a playable shell — invert
+    /// Unity's own TRS for the one model-local point whose world position is known — except anchored on
+    /// the model's own BASE (<c>bounds.min.y</c>) instead of its deck: there is no deck concern here, only
+    /// "the model's own bottom lands on the slot's own bottom" (<paramref name="center"/>.y -
+    /// <paramref name="size"/>.y/2, which <see cref="CreateSilhouettes"/> already places at
+    /// <c>buildingBaseY</c> — the street line every skyline slot was built to stand on). XZ centres on the
+    /// model's own bounds centre rather than assuming it's centred at the origin (it usually isn't —
+    /// see GlbCityKit's class doc on building2's asymmetric annex).
+    ///
+    /// The mesh is the model's UNCULLED, shared source mesh — the opposite of CreateGlbShells'
+    /// CullAboveDeck: nobody stands on a skyline building, so the baked clutter stays and is free
+    /// silhouette interest instead of something to strip. Tint/emission go through
+    /// <see cref="GlbCityKit.BuildLitMaterial"/> exactly like a playable shell, just at this slot's own
+    /// haze-band (tint, intensity) and a per-slot seed.</summary>
+    private static void SilhouetteBoxGlb(Transform parent, string name, GlbCityKit.GlbModel model, bool yaw90,
+        Vector3 center, Vector3 size, Color tint, float emissiveIntensity, int seed)
+    {
+        Mesh mesh = GetSkylineMesh(model);
+        Bounds bounds = mesh.bounds;
+        Vector3 scale = SkylineBoundsScale(bounds.size, size.x, size.y);
+        Quaternion rotation = Quaternion.Euler(0f, yaw90 ? 90f : 0f, 0f);
+
+        var localAnchor = new Vector3(bounds.center.x, bounds.min.y, bounds.center.z);
+        var worldAnchor = new Vector3(center.x, center.y - size.y * 0.5f, center.z);
+        Vector3 position = worldAnchor - rotation * Vector3.Scale(scale, localAnchor);
+
+        var go = new GameObject(name);
+        int dressingLayer = LayerMask.NameToLayer("Dressing");
+        if (dressingLayer >= 0) go.layer = dressingLayer;
+        go.transform.SetParent(parent, false);
+        go.transform.SetPositionAndRotation(position, rotation);
+        go.transform.localScale = scale;
+        go.AddComponent<MeshFilter>().sharedMesh = mesh; // shared across every instance of this model
+        go.AddComponent<MeshRenderer>().sharedMaterial =
+            GlbCityKit.BuildLitMaterial(model.Name, tint, emissiveIntensity, seed);
+        // No collider to destroy: unlike the old CreatePrimitive(Cube) box, this GameObject never had
+        // one — pure backdrop, incapable of touching movement.
     }
 
     /// <summary>Cosmetic building masses: one box per playable roof, continuing its exact footprint
@@ -1096,6 +1238,480 @@ public static class SceneStyler
                 new Vector3(r.SizeX, height, r.SizeZ),
                 facadeBottomY: theme.buildingBaseY, facadeTopY: r.Center.y, seed: i + 1);
         }
+    }
+
+    /// <summary>PHASE 3 of the GLB integration plan: one painterly Tripo building model skinned over each
+    /// of RooftopArena's 31 playable roofs as a pure VISUAL SHELL — a renderer standing exactly where the
+    /// flat windowed boxes used to draw, spanning the whole column those two boxes covered between them
+    /// (r.Center.y down to buildingBaseY). Gated on <see cref="VisualThemeConfig.glbShellEnabled"/> and
+    /// called from <see cref="Apply"/>'s RooftopArena block, after <see cref="CreateBuildingExtensions"/>
+    /// has built the masses this strips.
+    ///
+    /// NOTHING HERE TOUCHES SIMULATION, and the reasoning is stronger than "it happens not to": a shell is
+    /// a bare GameObject with a MeshFilter and a MeshRenderer, so unlike a CreatePrimitive it has no
+    /// collider to remember to destroy — it is structurally incapable of carrying one. That is the specific
+    /// guarantee this pass needs, because the one real scar in this area was the PHANTOM LEDGE: stacked and
+    /// coplanar COLLIDERS near a wall, which CharacterMotor's deliberately broad ground/wall probes read as
+    /// a surface. A renderer cannot reproduce it. What the shell does instead is strip the two now-hidden
+    /// MeshRenderers it replaces (see <see cref="StripRenderer"/>) — their GameObjects, their BoxColliders
+    /// and the AddTopRim trims (separate sibling objects, and FUNCTIONAL: they are how a ledge reads at
+    /// speed) are all left exactly as they were.
+    ///
+    /// Left on the Default layer, like the masses and the ground slab — so the minimap draws painterly
+    /// rooftops instead of grey squares. Accepted deliberately; layer gates nothing but
+    /// RoundController.SetupMinimap's cullingMask.</summary>
+    public static void CreateGlbShells(VisualThemeConfig theme)
+    {
+        if (!theme.glbShellEnabled) return;
+
+        // Scoped lookups, not a global GameObject.Find per box: the rim trims are SIBLINGS of the roof
+        // body under the same root and are named "{r.Name}_Rim", so a name-scoped child search cannot
+        // reach them (Transform.Find is an exact-name match) — which is exactly the guarantee wanted
+        // when the thing being removed is a renderer and the thing that must survive is next to it.
+        Transform? arena = GameObject.Find("RooftopArena")?.transform;
+        Transform? masses = GameObject.Find("BuildingMasses")?.transform;
+        var root = new GameObject("GlbShells");
+        var report = new System.Text.StringBuilder();
+
+        for (int i = 0; i < RooftopArena.Roofs.Length; i++)
+        {
+            RooftopArena.Roof r = RooftopArena.Roofs[i];
+            (GlbCityKit.GlbModel model, bool yaw90, float anisotropy) = ChooseShellFit(r, theme, i);
+            Rect rect = model.BodyRect!.Value;
+            Vector3 scale = ShellScale(r, theme, model, yaw90);
+            Quaternion rotation = Quaternion.Euler(0f, yaw90 ? 90f : 0f, 0f);
+
+            // THE alignment, and the only place it is decided. Solve the transform from the ONE
+            // model-local point whose world position is known — the centre of BodyRect, at the deck —
+            // by inverting Unity's own TRS composition (world = pos + R * (S * local)) for it. One line,
+            // both jobs, exactly, with no reliance on the model being centred (BodyRect generally is NOT
+            // centred on the origin: building2's is 0.10 off in X, the annex wing's doing) and none on
+            // bounds (which the clutter overhang pollutes):
+            //   XZ — the rect's edges land ON the BoxCollider's faces, so the wall you SEE and the wall
+            //        CharacterMotor probes are the same plane and a wall-run reads true.
+            //   Y  — DeckY lands ON r.Center.y, so feet land on the visible deck. And since ShellScale's
+            //        sy is the column over DeckAboveBase, the model's own base then lands on exactly
+            //        buildingBaseY for free: one shell spans the roof body AND the mass under it.
+            var deckCentreLocal = new Vector3(rect.center.x, model.DeckY!.Value, rect.center.y);
+            Vector3 position = r.Center - rotation * Vector3.Scale(scale, deckCentreLocal);
+
+            var shell = new GameObject($"{r.Name}_Shell");
+            shell.transform.SetParent(root.transform, false);
+            shell.transform.SetPositionAndRotation(position, rotation);
+            shell.transform.localScale = scale;
+            shell.AddComponent<MeshFilter>().sharedMesh = CullAboveDeck(model, theme);
+            // seed i, not i+1: this is a free-running instance index that GlbCityKit BUCKETS into
+            // glbWindowSeedVariants patterns (it is not RooftopArena's per-building tint seed), so 31
+            // roofs mint at most 6 materials per model rather than 31 emission textures.
+            shell.AddComponent<MeshRenderer>().sharedMaterial =
+                GlbCityKit.BuildLitMaterial(model.Name, Color.white, theme.windowEmissiveIntensity, seed: i);
+
+            // The shell's walls are now coplanar with both boxes' walls and its deck with the roof body's
+            // top face: they are pure z-fight, and one shell already covers the whole column they spanned.
+            StripRenderer(arena?.Find(r.Name));
+            StripRenderer(masses?.Find($"{r.Name}_Mass"));
+
+            report.AppendLine($"  {r.Name,-12} {model.Name} yaw={(yaw90 ? "90" : " 0")} " +
+                $"footprint={r.SizeX:F0}x{r.SizeZ:F0} column={r.Center.y - theme.buildingBaseY:F1}m " +
+                $"anisotropy={anisotropy:F3}");
+        }
+
+        Debug.Log($"GLBSHELL_FIT {RooftopArena.Roofs.Length} shells built; renderers stripped from the same " +
+            "count of roof bodies + masses (colliders and rim trims untouched). Residual anisotropy is the " +
+            "worst pairwise log-ratio between the three axes — 0 would be a uniform rescale; these columns " +
+            $"are ~3.6x taller than wide, so nothing lands near it.\n{report}");
+    }
+
+    /// <summary>PHASE 5: the crane_swing.glb model over each RooftopArena swing link — VISUAL crane, so the
+    /// procedural crane's boxes (built by the live ChainSwingInteractable) keep their COLLIDERS but stop
+    /// rendering. A bare GameObject + MeshFilter/MeshRenderer on the Dressing layer, ZERO colliders (same
+    /// structural guarantee as the shells: it cannot carry one, so it cannot touch simulation).
+    ///
+    /// THE HOOK-MEETS-PIVOT SOLVE. The chain already anchors at SwingPivot; the model is placed so its
+    /// measured hook tip (GlbCityKit HookLocal, model-local Unity space) lands exactly on that pivot, so
+    /// the existing chain visually hangs from the hook with no change to the chain system. Unity composes
+    /// world = pos + R * (S ⊙ local); solving that for the one local point whose world position is known
+    /// (HookLocal → pivot) gives  pos = pivot - R * (S ⊙ HookLocal). R = LookRotation(exit): it sends the
+    /// model's +Z to the swing's exit direction and therefore its long jib axis (+X) to Cross(up,exit) =
+    /// side — the jib runs perpendicular to the swing, counterweight off to the +side, exactly like the
+    /// procedural crane (whose mast/counterweight also sit at +side, off the swing arc). S is uniform
+    /// (craneModelScale). A craneHookNudge knob covers final cm.
+    ///
+    /// Only the two RooftopArena Swing LINKS are craned (matched to their scene markers by pivot, whose
+    /// craneRenderersVisible flag the bootstraps thread into the live interactable). The hand-placed extra
+    /// swings and the corridor chasm swing keep their procedural crane. Gated with the shells on
+    /// glbShellEnabled — a flat-box A/B build keeps every crane procedural (and thus rendered).</summary>
+    public static void CreateGlbCranes(VisualThemeConfig theme)
+    {
+        if (!theme.glbShellEnabled) return;
+
+        GlbCityKit.GlbModel model = GlbCityKit.Get("crane_swing");
+        Vector3 hookLocal = model.HookLocal!.Value; // measured hook tip, model-local Unity space
+        Mesh mesh = GetSkylineMesh(model);          // full uncelled crane mesh, reused loader, shared
+        Material material = CraneModelMaterial(model);
+        float s = theme.craneModelScale;
+        var scale = new Vector3(s, s, s); // uniform — it's a machine, no aspect stretch
+        int dressingLayer = LayerMask.NameToLayer("Dressing");
+
+        var root = new GameObject("GlbCranes");
+        // Built right after the swing markers (PlaygroundBuilder runs before SceneStyler.Apply), so the
+        // markers to flag are already in the scene.
+        InteractableMarker[] markers = Object.FindObjectsByType<InteractableMarker>(FindObjectsInactive.Exclude);
+
+        foreach (RooftopArena.Link link in RooftopArena.Links)
+        {
+            if (link.Kind != RooftopArena.LinkKind.Swing) continue;
+            RooftopArena.Roof from = RooftopArena.Roofs[link.From];
+            RooftopArena.Roof to = RooftopArena.Roofs[link.To];
+            Vector3 pivot = RooftopArena.SwingPivot(from, to, link.Param);
+            Vector3 exit = new Vector3(to.Center.x - from.Center.x, 0f, to.Center.z - from.Center.z).normalized;
+
+            Quaternion rot = Quaternion.LookRotation(exit, Vector3.up); // +X -> side, +Z -> exit
+            Vector3 position = pivot + theme.craneHookNudge - rot * Vector3.Scale(scale, hookLocal);
+
+            var go = new GameObject($"SwingCrane_{from.Name}_to_{to.Name}");
+            if (dressingLayer >= 0) go.layer = dressingLayer;
+            go.transform.SetParent(root.transform, false);
+            go.transform.SetPositionAndRotation(position, rot);
+            go.transform.localScale = scale;
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;   // shared across both crane instances
+            go.AddComponent<MeshRenderer>().sharedMaterial = material;
+
+            // GROUND THE TOWER: the hook-meets-pivot solve leaves the model's mast base floating ~30m
+            // over the swing chasm (user report — "crane tower base ends above the roof/street"). Drop a
+            // plain mast column from the model's measured tower-base foot (model-local XZ (-0.092,-0.083),
+            // from a base-band vertex scan of crane_swing.glb) straight down to street level so the crane
+            // reads as standing on the ground rather than hovering. Bare renderer, no collider — same
+            // dressing guarantee as the crane model, so nothing solid drops into the chasm the swing crosses.
+            Vector3 towerBase = go.transform.TransformPoint(new Vector3(-0.092f, mesh.bounds.min.y, -0.083f));
+            float streetY = theme.buildingBaseY;
+            var mast = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            mast.name = "TowerBase";
+            if (dressingLayer >= 0) mast.layer = dressingLayer;
+            Object.DestroyImmediate(mast.GetComponent<BoxCollider>());
+            mast.transform.SetParent(root.transform, false);
+            mast.transform.position = new Vector3(towerBase.x, (streetY + towerBase.y) * 0.5f, towerBase.z);
+            mast.transform.localScale = new Vector3(1.2f, towerBase.y - streetY, 1.2f);
+            mast.GetComponent<MeshRenderer>().sharedMaterial = material;
+
+            // Suppress the procedural crane's renderers on the matching swing (by pivot) so its boxes
+            // don't double-render under the model. Colliders stay — physics/camp behaviour is unchanged.
+            InteractableMarker? marker = FindSwingMarkerNear(markers, pivot);
+            if (marker != null) marker.craneRenderersVisible = false;
+            else Debug.LogWarning($"GLBCRANE: no Swing marker found at pivot {pivot} for " +
+                $"{from.Name}->{to.Name} — its procedural crane will double-render under the model.");
+        }
+        Debug.Log($"GLBCRANE: placed crane_swing over {root.transform.childCount} swing links at scale {s:F1}.");
+    }
+
+    /// <summary>PHASE 7 of the GLB integration plan: modular_pipe.glb tiled up every climbable wall pipe
+    /// (TagArenaMapGeometry.BuildClimbPipeVisual's "ClimbPipeVisual" groups), replacing the flat
+    /// matte-grey cylinder primitive with a rusty, collared segment run. Purely cosmetic, same guarantee
+    /// as the shells/cranes: every added GameObject is a bare MeshFilter/MeshRenderer — structurally
+    /// incapable of a collider — and the procedural pipe/bracket colliders were already stripped at
+    /// build time (BuildClimbPipeVisual's StripCollider); this pass only ever touches renderers, and
+    /// re-checks that survivorship rather than assuming it (see the per-pipe warning below).
+    ///
+    /// FINDING THE PIPES: a flat <c>FindObjectsByType&lt;Transform&gt;</c> scan filtered by the exact
+    /// name "ClimbPipeVisual" — not a scoped child search off one known root, because the groups are
+    /// built by BuildRoofLadder at one nesting depth per hand-placed/graph ladder (each under its own
+    /// "RoofLadderSection" scene-root, of which there are many, same name, un-findable by a single
+    /// GameObject.Find) — the flat name scan is what stays correct regardless of which builder or how
+    /// deep a group sits, same reasoning as CreateGlbCranes' InteractableMarker scan just applied to
+    /// GameObjects that aren't components.
+    ///
+    /// TILING: one segment scaled to the pipe's own diameter is
+    /// <c>nominalSegHeight = diameter * (bounds.size.y / longestXZBoundsSide)</c> tall — that ratio is
+    /// exactly GlbCityKit.NativeAspect for modular_pipe, re-derived live from the mesh's own bounds
+    /// (rather than trusting the cached constant) so the uniform XZ scale and the resulting height always
+    /// agree by construction. <c>segments = max(1, round(height / nominalSegHeight))</c>, then every
+    /// segment actually gets <c>height / segments</c> exactly — the exact count, not the nominal size —
+    /// so segments tile bottom-to-top with the collar joints landing flush at the seams and no gap or
+    /// overlap at the top. Stretching one copy over the whole height instead would smear the collar the
+    /// model was prompted with, which is the entire point of a tileable segment.
+    ///
+    /// ORIENTATION: recovered from a sibling "ClimbPipeBracket" child's own transform.forward — that
+    /// child's rotation is set to LookRotation(fwd, up) in BuildClimbPipeVisual, so .forward IS fwd
+    /// directly, no inversion needed. Every group is built with at least 2 brackets (BuildClimbPipeVisual's
+    /// own Mathf.Max(2, ...)), so the Vector3.forward fallback below is defensive, not expected to fire —
+    /// it logs if it ever does. Each segment is yawed so the model's own local +Z faces -fwd (into the
+    /// wall, where its bracket clamp was modelled) — the same +Z-is-front convention CreateGlbCranes
+    /// already assumes for crane_swing.glb; glbPipeYawOffsetDegrees is the hand-tune lever if that axis
+    /// guess is wrong for this particular GLB.</summary>
+    public static void CreateGlbPipes(VisualThemeConfig theme)
+    {
+        if (!theme.glbShellEnabled) return;
+
+        GlbCityKit.GlbModel model = GlbCityKit.Get("modular_pipe");
+        Mesh mesh = GetSkylineMesh(model); // full source mesh, reused loader — no deck to cull on a pipe
+        Material material = ImportedGlbMaterial(model, new Color(0.35f, 0.30f, 0.26f)); // rust-brown fallback only if the GLB ships no material sub-asset
+        Bounds bounds = mesh.bounds;
+        float longestXZ = Mathf.Max(bounds.size.x, bounds.size.z);
+        int dressingLayer = LayerMask.NameToLayer("Dressing");
+
+        var groups = new List<Transform>();
+        foreach (Transform t in Object.FindObjectsByType<Transform>(FindObjectsInactive.Exclude))
+            if (t.name == "ClimbPipeVisual") groups.Add(t);
+
+        var root = new GameObject("GlbPipes");
+        int totalSegments = 0, colliderSurvivors = 0, missingBracket = 0;
+
+        for (int p = 0; p < groups.Count; p++)
+        {
+            Transform group = groups[p];
+            Transform? pipe = group.Find("ClimbPipe");
+            if (pipe == null)
+            {
+                Debug.LogWarning($"GLBPIPE: ClimbPipeVisual under {group.parent?.name ?? "(no parent)"} has no ClimbPipe child — skipped.");
+                continue;
+            }
+
+            Vector3 pipeCenter = pipe.position;
+            float height = pipe.localScale.y * 2f; // undo BuildClimbPipeVisual's cylinder half-scale (Unity's primitive is 2m tall)
+            float radius = pipe.localScale.x * 0.5f;
+            float diameter = radius * 2f * theme.glbPipeDiameterScale;
+
+            if (pipe.TryGetComponent(out Collider _))
+            {
+                colliderSurvivors++;
+                Debug.LogWarning($"GLBPIPE: {group.parent?.name}'s ClimbPipe still carries a collider — expected stripped by BuildClimbPipeVisual.");
+            }
+
+            Vector3 fwd = Vector3.forward;
+            Transform? bracket = null;
+            foreach (Transform child in group)
+                if (child.name == "ClimbPipeBracket") { bracket = child; break; }
+            if (bracket != null) fwd = bracket.forward;
+            else
+            {
+                missingBracket++;
+                Debug.LogWarning($"GLBPIPE: ClimbPipeVisual under {group.parent?.name} has no ClimbPipeBracket child — orientation fell back to Vector3.forward.");
+            }
+
+            float xzScale = diameter / longestXZ;
+            float nominalSegHeight = bounds.size.y * xzScale;
+            int segments = Mathf.Max(1, Mathf.RoundToInt(height / nominalSegHeight));
+            float segHeight = height / segments; // exact — recomputed from the real height so there's no gap/overlap at the top
+            var finalScale = new Vector3(xzScale, segHeight / bounds.size.y, xzScale);
+
+            Quaternion rotation = Quaternion.LookRotation(-fwd, Vector3.up) * Quaternion.Euler(0f, theme.glbPipeYawOffsetDegrees, 0f);
+            Vector3 xzOffset = fwd * theme.glbPipeOutwardNudge;
+            float bottomY = pipeCenter.y - height * 0.5f;
+
+            var pipeRoot = new GameObject($"GlbPipe_{p}");
+            pipeRoot.transform.SetParent(root.transform, false);
+
+            for (int i = 0; i < segments; i++)
+            {
+                var seg = new GameObject($"Segment_{i}");
+                if (dressingLayer >= 0) seg.layer = dressingLayer;
+                seg.transform.SetParent(pipeRoot.transform, false);
+                seg.transform.SetPositionAndRotation(
+                    new Vector3(pipeCenter.x, bottomY + segHeight * (i + 0.5f), pipeCenter.z) + xzOffset, rotation);
+                seg.transform.localScale = finalScale;
+                seg.AddComponent<MeshFilter>().sharedMesh = mesh; // shared across every segment of every pipe
+                seg.AddComponent<MeshRenderer>().sharedMaterial = material; // one shared material — batches
+                totalSegments++;
+            }
+
+            // Hide (not destroy) the procedural renderers this replaces — same policy as CreateGlbShells's
+            // StripRenderer, so nothing that might still reference the group breaks.
+            if (pipe.TryGetComponent(out MeshRenderer pipeRenderer)) pipeRenderer.enabled = false;
+            foreach (Transform child in group)
+                if (child.name == "ClimbPipeBracket" && child.TryGetComponent(out MeshRenderer bracketRenderer))
+                    bracketRenderer.enabled = false;
+        }
+
+        Debug.Log($"GLBPIPE: {groups.Count} climb pipes found, {totalSegments} modular_pipe segments placed " +
+            $"(one shared mesh + one shared material — draw calls stay flat regardless of pipe/segment count). " +
+            $"{colliderSurvivors} unexpected collider survivors, {missingBracket} pipes fell back to " +
+            "Vector3.forward for orientation (no ClimbPipeBracket child found).");
+    }
+
+    /// <summary>The swing InteractableMarker whose pivot (pointA) matches <paramref name="pivot"/>, or null.
+    /// pointA is set to the exact SwingPivot at build time, so a tight epsilon suffices.</summary>
+    private static InteractableMarker? FindSwingMarkerNear(InteractableMarker[] markers, Vector3 pivot)
+    {
+        foreach (InteractableMarker m in markers)
+            if (m.kind == InteractableMarker.Kind.Swing && m.pointA != null &&
+                (m.pointA.position - pivot).sqrMagnitude < 0.01f)
+                return m;
+        return null;
+    }
+
+    private static readonly Dictionary<string, Material> ImportedGlbMaterialCache = new();
+
+    /// <summary>A model's own Tripo-painted material (glTFast imports one under the active pipeline),
+    /// cached per model name. NOT GlbCityKit.BuildLitMaterial: that keys "glass" panes and lights a
+    /// seeded subset — meaningful on a building, nonsense on a machine or a pipe. Shared by
+    /// <see cref="CraneModelMaterial"/> and <see cref="CreateGlbPipes"/> — neither wants window-keying,
+    /// and the previous crane-only version cached a single field, which would have silently reused the
+    /// crane's own material for the pipe. Falls back to <paramref name="fallbackColor"/> if the GLB
+    /// somehow carries no material sub-asset.</summary>
+    private static Material ImportedGlbMaterial(GlbCityKit.GlbModel model, Color fallbackColor)
+    {
+        if (ImportedGlbMaterialCache.TryGetValue(model.Name, out Material cached) && cached != null) return cached;
+        UnityEditor.AssetDatabase.ImportAsset(model.Path); // idempotent; meshopt GLBs can need it (see LoadModelMesh)
+        Material? imported = UnityEditor.AssetDatabase.LoadAllAssetsAtPath(model.Path)
+            .OfType<Material>().FirstOrDefault();
+        Material material = imported ?? new Material(LitOrStandardShader()) { color = fallbackColor };
+        ImportedGlbMaterialCache[model.Name] = material;
+        return material;
+    }
+
+    /// <summary>The crane's own imported material — thin wrapper over <see cref="ImportedGlbMaterial"/>
+    /// with the crane's dark-metal fallback, kept as a named method since every call site already reads
+    /// "CraneModelMaterial(model)".</summary>
+    private static Material CraneModelMaterial(GlbCityKit.GlbModel model) =>
+        ImportedGlbMaterial(model, new Color(0.30f, 0.29f, 0.27f));
+
+    /// <summary>Which model, and at which yaw, best fits one roof — plus the residual anisotropy it is
+    /// accepting. Candidates are the four models that HAVE a deck (crane_swing/modular_pipe are skipped:
+    /// no BodyRect, nothing to fit) at 0 and 90 degrees.
+    ///
+    /// Ranks ONE candidate per MODEL (its own better yaw), not one per (model, yaw) pair, and that is the
+    /// whole point of the tie-break rather than a detail of it: on a SQUARE roof — 24 of the 31 — both
+    /// yaws need the IDENTICAL scales and therefore tie exactly, so ranking pairs would spend the entire
+    /// tie-break choosing a yaw of the same model and hand every 8x8 roof the same building. Deduping by
+    /// model first is what makes the seeded coin choose a BUILDING, which is what "adjacent roofs aren't
+    /// clones" actually asks for. The yaw ties are then broken by their own seeded coin (free variety: a
+    /// 90-degree turn puts a different painted facade toward the player), and on an oblong roof the better
+    /// yaw simply wins outright.
+    ///
+    /// The second-place model is a real choice, not a compromise smuggled in: on a typical 8x8 roof the
+    /// top two land ~0.34 and ~0.43 (building3 and building1, the two slim models — the only ones near
+    /// these 3.6:1 columns), so the coin is picking between two comparable fits, not sacrificing one.</summary>
+    private static (GlbCityKit.GlbModel model, bool yaw90, float anisotropy) ChooseShellFit(
+        RooftopArena.Roof r, VisualThemeConfig theme, int seed)
+    {
+        var rng = new System.Random(seed); // per-roof and fixed, like every other seed in the visual pass
+        var perModel = new List<(GlbCityKit.GlbModel model, bool yaw90, float aniso)>();
+        foreach (GlbCityKit.GlbModel m in GlbCityKit.Models)
+        {
+            if (!m.BodyRect.HasValue || !m.DeckAboveBase.HasValue) continue; // no deck: not a building
+            float a0 = Anisotropy(ShellScale(r, theme, m, yaw90: false));
+            float a90 = Anisotropy(ShellScale(r, theme, m, yaw90: true));
+            bool yaw90 = Mathf.Approximately(a0, a90) ? rng.Next(2) == 0 : a90 < a0;
+            perModel.Add((m, yaw90, Mathf.Min(a0, a90)));
+        }
+
+        perModel.Sort((a, b) => a.aniso.CompareTo(b.aniso));
+        return perModel[perModel.Count > 1 && rng.Next(2) == 0 ? 1 : 0];
+    }
+
+    /// <summary>The per-axis scale — in the model's OWN local axes, which is what Unity's TRS applies
+    /// (world = pos + R * (S * local)) — that maps <paramref name="m"/>'s BodyRect exactly onto this
+    /// roof's collider footprint and its deck exactly onto the roof surface.</summary>
+    private static Vector3 ShellScale(RooftopArena.Roof r, VisualThemeConfig theme, GlbCityKit.GlbModel m, bool yaw90)
+    {
+        Rect rect = m.BodyRect!.Value; // an XZ rect: .width is the model's X, .height its Z
+        // A 90-degree yaw turns the model's local X onto world Z, so the footprint each local axis has to
+        // cover swaps with it.
+        float alongLocalX = yaw90 ? r.SizeZ : r.SizeX;
+        float alongLocalZ = yaw90 ? r.SizeX : r.SizeZ;
+        // Y solves from DeckAboveBase — never from bounds, and never DeckY + 0.5f: building4 is 0.9809
+        // tall with its base at -0.4899, so assuming a clean -0.5 misplaces its roof by ~1% of the
+        // building's height (see GlbCityKit.GlbModel.DeckAboveBase).
+        return new Vector3(alongLocalX / rect.width,
+                           (r.Center.y - theme.buildingBaseY) / m.DeckAboveBase!.Value,
+                           alongLocalZ / rect.height);
+    }
+
+    /// <summary>Worst pairwise stretch between the three axes, measured in LOG space so a 2x squash and a
+    /// 2x stretch score the same (a plain ratio would rank them 0.5 and 2 and quietly prefer squashing).
+    /// 0 = a uniform rescale, i.e. the model kept its own proportions exactly.</summary>
+    private static float Anisotropy(Vector3 s) => Mathf.Max(
+        Mathf.Abs(Mathf.Log(s.x / s.y)),
+        Mathf.Max(Mathf.Abs(Mathf.Log(s.z / s.y)), Mathf.Abs(Mathf.Log(s.x / s.z))));
+
+    /// <summary>Removes ONLY the MeshRenderer, leaving the GameObject, its BoxCollider and its (sibling)
+    /// rim trims alone — the box stops drawing and stays exactly as solid as it was. Null-tolerant on
+    /// purpose: BuildingMasses does not exist if CreateBuildingExtensions bailed on a misconfigured
+    /// buildingBaseY, and a shell over a roof whose mass is missing is still correct.</summary>
+    private static void StripRenderer(Transform? box)
+    {
+        if (box != null && box.TryGetComponent(out MeshRenderer renderer)) Object.DestroyImmediate(renderer);
+    }
+
+    private static readonly Dictionary<string, Mesh> CulledMeshCache = new();
+
+    /// <summary>The model's mesh with every triangle standing ENTIRELY above its deck dropped, cached per
+    /// model (4 meshes for 31 roofs — building4's is 12k triangles' worth of work not worth doing 31
+    /// times).
+    ///
+    /// Why cull at all: Tripo baked the water towers, stair huts and billboard gantries into the same
+    /// fused mesh as the building, and the shells carry no colliders — so left in, they are scenery players
+    /// walk straight through on the roof they are trying to play on. (The far skyline keeps its clutter:
+    /// nobody stands on it.) See <see cref="VisualThemeConfig.glbShellCullEpsilon"/> for why the cut is
+    /// where it is, and note building1 dropping ~nothing is CORRECT rather than a bug — it has no rooftop
+    /// clutter geometry at all.</summary>
+    private static Mesh CullAboveDeck(GlbCityKit.GlbModel model, VisualThemeConfig theme)
+    {
+        if (CulledMeshCache.TryGetValue(model.Name, out Mesh cached) && cached != null) return cached;
+
+        Mesh source = LoadModelMesh(model);
+        // Instantiate then overwrite the triangles: vertices, normals, UVs, tangents, index format and
+        // submesh count all come across for free, so the culled mesh differs from the source in exactly
+        // the one thing this method is for — and the submesh->material mapping survives by construction
+        // rather than by being rebuilt correctly.
+        Mesh culled = Object.Instantiate(source);
+        culled.name = $"{model.Name}_CulledAboveDeck";
+
+        Vector3[] verts = source.vertices;
+        float cutY = model.DeckY!.Value + theme.glbShellCullEpsilon;
+        var kept = new List<int>();
+        int dropped = 0, total = 0;
+        for (int sub = 0; sub < source.subMeshCount; sub++)
+        {
+            int[] tris = source.GetTriangles(sub);
+            total += tris.Length / 3;
+            kept.Clear();
+            for (int t = 0; t < tris.Length; t += 3)
+            {
+                // ENTIRELY above, not merely touching: a triangle with even one vertex at or below the cut
+                // is part of the deck or the wall the clutter stands on, and dropping it would punch a hole
+                // in the roof players land on.
+                if (verts[tris[t]].y > cutY && verts[tris[t + 1]].y > cutY && verts[tris[t + 2]].y > cutY)
+                {
+                    dropped++;
+                    continue;
+                }
+                kept.Add(tris[t]);
+                kept.Add(tris[t + 1]);
+                kept.Add(tris[t + 2]);
+            }
+            culled.SetTriangles(kept, sub);
+        }
+        culled.RecalculateBounds();
+
+        // ponytail: the now-unreferenced vertices stay in the buffer rather than being compacted out —
+        // it is 4 cached meshes, and compacting means re-indexing every submesh to save a few hundred KB.
+        CulledMeshCache[model.Name] = culled;
+        Debug.Log($"GLBSHELL_CULL model={model.Name} deckY={model.DeckY:F4} cutY={cutY:F4} " +
+            $"droppedTris={dropped}/{total} ({100f * dropped / Mathf.Max(1, total):F1}%)");
+        return culled;
+    }
+
+    /// <summary>A model's mesh. building4's comes from the PHASE 1 DECIMATION ASSET, not from its GLB: the
+    /// raw import is 1,016,677 verts (the others are 7-8k), which is unusable skinned over a roof. The rest
+    /// are the largest Mesh sub-asset of their own GLB — every Tripo model is one fused mesh, so "largest"
+    /// is just a safe way to say "the model" — behind an explicit ImportAsset first, because these GLBs are
+    /// EXT_meshopt_compression and a fresh Library has been observed to return zero sub-assets without one
+    /// (see GlbCityKit.GetBaseColorTextureCpu's remarks). Throws rather than returning null: a silently
+    /// missing shell is a hole in the city discovered far from its cause.</summary>
+    private static Mesh LoadModelMesh(GlbCityKit.GlbModel model)
+    {
+        const string building4Decimated = "Assets/Art/building4_10k.asset";
+        if (model.Name == "building4")
+            return UnityEditor.AssetDatabase.LoadAssetAtPath<Mesh>(building4Decimated)
+                ?? throw new System.InvalidOperationException(
+                    $"GLBSHELL: {building4Decimated} is missing — run RooftopTag/Art/Decimate building4.");
+
+        UnityEditor.AssetDatabase.ImportAsset(model.Path);
+        Mesh? best = null;
+        foreach (Object o in UnityEditor.AssetDatabase.LoadAllAssetsAtPath(model.Path))
+            if (o is Mesh m && (best == null || m.vertexCount > best.vertexCount)) best = m;
+        return best ?? throw new System.InvalidOperationException($"GLBSHELL: no Mesh sub-asset at {model.Path}");
     }
 
     /// <summary>Mid-height facade life for WORK ITEM 3 of the city-grounding brief: props on the bare
@@ -1147,6 +1763,11 @@ public static class SceneStyler
         int roofPropCount = 0, wallPropCount = 0;
 
         // --- 1. Roof props: water towers / AC units on far-skyline building tops (unreachable). ---
+        // PHASE 4: every skyline slot is now a GLB (CreateSilhouettes, named "SkylineGlb_..."), never
+        // the old "Skyline_..." box, so this prefix match now finds nothing and roofPropCount is always
+        // 0 — deliberately, not a stale check: the GLBs already carry baked rooftop clutter (water
+        // towers, gantries, stair huts), and a procedural water tower dropped on a GLB's bounds-top
+        // would float on top of that clutter instead of standing on a real deck.
         GameObject? skylineRoot = GameObject.Find("SilhouetteDressing");
         if (skylineRoot != null)
         {
@@ -1639,78 +2260,6 @@ public static class SceneStyler
         Face(Vector3.back, Vector3.up, size.x, size.y);
         Face(Vector3.up, Vector3.forward, size.x, size.z);
         Face(Vector3.down, Vector3.forward, size.x, size.z);
-    }
-
-    /// <summary><paramref name="height"/> is the jib's height above <paramref name="basePos"/> — i.e.
-    /// where the crane's working gear sits, which is the only thing a caller cares about. The MAST is
-    /// the one part that touches the ground, so it alone runs down to street level; the jib, counter-jib,
-    /// cable and hook all stay pinned to basePos + height and do not move. (Callers pass basePos.y = 0,
-    /// which used to be the mast's foot too — leaving both cranes standing on nothing, 25m above the
-    /// street, the same floating-skyline bug as CreateSilhouettes.)</summary>
-    private static void CreateCrane(Transform parent, Vector3 basePos, float height, VisualThemeConfig theme)
-    {
-        var root = new GameObject("Crane");
-        root.transform.SetParent(parent, false);
-        float mastTop = basePos.y + height;
-        SilhouetteBox(root.transform, "Mast",
-            new Vector3(basePos.x, (theme.buildingBaseY + mastTop) * 0.5f, basePos.z),
-            new Vector3(0.9f, mastTop - theme.buildingBaseY, 0.9f), theme);
-        Vector3 jibCenter = basePos + Vector3.up * height + new Vector3(7f, 0f, 0f);
-        SilhouetteBox(root.transform, "Jib", jibCenter, new Vector3(18f, 0.7f, 0.7f), theme);
-        SilhouetteBox(root.transform, "CounterJib", basePos + Vector3.up * height + new Vector3(-4f, 0f, 0f), new Vector3(6f, 0.7f, 0.7f), theme);
-        Vector3 cableTop = jibCenter + new Vector3(7f, 0f, 0f);
-        SilhouetteBox(root.transform, "Cable", cableTop + Vector3.down * 3f, new Vector3(0.12f, 6f, 0.12f), theme);
-        SilhouetteBox(root.transform, "Hook", cableTop + Vector3.down * 6.3f, new Vector3(0.6f, 0.6f, 0.6f), theme);
-    }
-
-    private static void SilhouetteBox(Transform parent, string name, Vector3 center, Vector3 size, VisualThemeConfig theme)
-    {
-        GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        go.name = name;
-        // Outside the play radius (skylineInnerRadius=72+) so the ortho minimap camera
-        // (orthographicSize 25, ~35m view radius) mostly never reaches these anyway — same
-        // "Dressing" layer fix as clouds/haze is applied for consistency/robustness rather than to
-        // fix an observed bug here.
-        int dressingLayer = LayerMask.NameToLayer("Dressing");
-        if (dressingLayer >= 0) go.layer = dressingLayer;
-        Object.DestroyImmediate(go.GetComponent<BoxCollider>());
-        go.transform.SetParent(parent, false);
-        go.transform.position = center;
-        go.transform.localScale = size;
-        go.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Silhouette);
-    }
-
-    /// <summary>Silhouette box with a caller-supplied (shared, per-ring) material, so distant skyline
-    /// bands can fade toward the fog without minting a material per building. Carries the shared window
-    /// facade mesh, with <paramref name="seed"/> picking its window pattern so neighbouring blocks
-    /// aren't clones.
-    ///
-    /// Single submesh (<c>separateCaps: false</c>): these are backdrop, ~160 of them, and their tops are
-    /// never visible from a rooftop — a caps submesh would double the draw calls for nothing. Unlike
-    /// <c>CreateBuildingBox</c> (which keeps its collider because you can stand on it), this box's
-    /// BoxCollider is STRIPPED and it stays on the Dressing layer: the skyline must remain pure
-    /// backdrop, incapable of touching movement. BuildFacadeMesh only builds a mesh, so swapping it in
-    /// changes nothing about either.</summary>
-    private static void SilhouetteBoxMat(Transform parent, string name, Vector3 center, Vector3 size, Material material, int seed)
-    {
-        GameObject go = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        go.name = name;
-        int dressingLayer = LayerMask.NameToLayer("Dressing");
-        if (dressingLayer >= 0) go.layer = dressingLayer;
-        Object.DestroyImmediate(go.GetComponent<BoxCollider>());
-        go.transform.SetParent(parent, false);
-        go.transform.position = center;
-        go.transform.localScale = size;
-        // A skyline block is a standalone building — no cosmetic mass below it — so its facade column is
-        // simply its own extent (base at center.y - height/2, which CreateSilhouettes now places at
-        // buildingBaseY). Passing the box's OWN extent is what makes the window rows immune to the
-        // height change: BuildFacadeMesh derives rows = round(column / windowSpacingY) and then stretches
-        // effSpacingY = column / rows to fit, so vBottom/vTop always span a WHOLE number of cells anchored
-        // exactly at this box's base. Growing a block from 7-40 tall to 29-62 just buys it more rows at
-        // the same ~1.5m pitch (a 62m column: 41 rows at 1.512m) — no partial row, no shear, no reflow.
-        go.GetComponent<MeshFilter>().sharedMesh = TagArenaMapGeometry.BuildFacadeMesh(
-            name, center, size, center.y - size.y * 0.5f, center.y + size.y * 0.5f, seed, separateCaps: false);
-        go.GetComponent<Renderer>().sharedMaterial = material;
     }
 
     /// <summary>Global URP volume: bloom (picks up the city's window/billboard glow, interactable orange

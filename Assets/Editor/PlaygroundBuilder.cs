@@ -275,38 +275,20 @@ public static class PlaygroundBuilder
     // RooftopArena.Roofs (26 roofs). Player-only: no graph edge, like ExtraRooftopSwings.
     private static readonly (Vector3 bottom, Vector3 top, Vector3 outward)[] ExtraRooftopLadders =
     {
-        // Up Roof_W1 (idx3, h5, -13,0) east face from Roof_Spawn (idx0, h3). Face x=-9 -> climb x=-8.6
-        // (0.4 out), ~2.6m from Spawn's west edge (x-6). Reliable non-jump route off the central spawn
-        // roof up onto the taller W1 (today only the 2m jump 0->3).
-        (new Vector3(-8.6f, 3.2f, 0f), new Vector3(-8.6f, 5f, 0f), new Vector3(1f, 0f, 0f)),
-        // Up Roof_N1WW (idx16, h6, -26,13) south face from Roof_W2 (idx15, h4). Face z=9 -> climb z=8.6,
-        // ~4.6m off W2's north edge (z4). Second way up the tall NW building besides jump 15->16; a
-        // vertical escape from the low western street.
-        (new Vector3(-26f, 4.2f, 8.6f), new Vector3(-26f, 6f, 8.6f), new Vector3(0f, 0f, -1f)),
-        // Up Roof_N2EE (idx10, h7, 26,26 — tallest NE building) west face from Roof_N2E (idx9, h5). Face
-        // x=22 -> climb x=21.6, ~4.6m off N2E's east edge (x17). Reliable climb to the high NE vantage
-        // besides jump 9->10.
-        (new Vector3(21.6f, 5.2f, 26f), new Vector3(21.6f, 7f, 26f), new Vector3(-1f, 0f, 0f)),
-        // Up Con_Gate (idx17, h4, -13,-13) west face from Con_Yard (idx18, h1.5 — the construction pit
-        // low-point). Face x=-17 -> climb x=-17.4, ~3.6m off Yard's east edge (x-21). Fast vertical exit
-        // out of the enclosed construction Yard up to the Gate (the route back into the urban zone),
-        // besides the existing ramp 17->18.
-        (new Vector3(-17.4f, 1.7f, -13f), new Vector3(-17.4f, 4f, -13f), new Vector3(-1f, 0f, 0f)),
-        // Up Roof_N1EE (idx6, h6, 26,13) south face from Roof_E2 (idx2, h3). Face z=9 -> climb z=8.6,
-        // ~4.6m off E2's north edge (z4). A second NE-corner climb besides jump 5->6, straight up onto
-        // the tall N1EE vantage from the low eastern strip.
-        (new Vector3(26f, 3.2f, 8.6f), new Vector3(26f, 6f, 8.6f), new Vector3(0f, 0f, -1f)),
+        // ponytail: SIX of these pipes were removed because each sat directly under an existing Ramp
+        // (W1 east under 0->3, N1WW south under 15->16, N2EE west under 9->10, Con_Gate west under
+        // 17->18, N1EE south under 2->6, N1E south under 1->5). A short climb pipe under a walkable ramp
+        // is useless AND ugly — its RoofLadderWall grey box pokes up through the ramp lip reading as a
+        // detached slab (user report). They back no parkour-graph edge (player-only, like the swings), so
+        // removing them touches no bot pathing — the parallel ramp already provides the route. The two
+        // kept below are on faces with NO ramp, so they stay as genuine non-jump vertical routes.
+
         // Up Con_ScafHi (idx24, h4, -30,-32 — SW corner) north face from Con_Deck (idx19, h2). Face
         // z=-28 -> climb z=-27.6, off Deck's south edge. Vertical route out of the low SW construction
-        // flats up onto the scaffold high roof, the SW mirror of the NE E2->N1EE pipe.
+        // flats up onto the scaffold high roof (no ramp here — 19<->24 is a Jump).
         (new Vector3(-30f, 2.2f, -27.6f), new Vector3(-30f, 4f, -27.6f), new Vector3(0f, 0f, 1f)),
-        // Short accent pipe up Roof_N1E (idx5, h5, 13,13) south face from Roof_E1 (idx1, h4). Face z=9
-        // -> climb z=8.6, off E1's north edge. A quick 1m hop-up on the east-central seam, filling the
-        // gap between the spawn strip and the north row.
-        (new Vector3(13f, 4.2f, 8.6f), new Vector3(13f, 5f, 8.6f), new Vector3(0f, 0f, -1f)),
         // Short accent pipe up Roof_S2E (idx25, h4, 13,-26) west face from Roof_S2 (idx14, h3). Face
-        // x=9 -> climb x=8.6, off S2's east edge. A 1m climb on the south row, adding a pipe to the
-        // otherwise sparse southern rooftops.
+        // x=9 -> climb x=8.6, off S2's east edge. A 1m climb on the south row (no ramp on this face).
         (new Vector3(8.6f, 3.2f, -26f), new Vector3(8.6f, 4f, -26f), new Vector3(-1f, 0f, 0f)),
     };
 

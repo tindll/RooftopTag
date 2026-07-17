@@ -66,6 +66,11 @@ public sealed class SettingsMenu : MonoBehaviour
 
     private bool _open;
 
+    /// <summary>Whether either the F1 settings window or the Esc pause menu is currently drawn.
+    /// Read by RoundController to gate HUD banners (round-start / countdown) that would otherwise
+    /// render on top of them.</summary>
+    public bool IsOpen => _open || _paused;
+
     private bool _paused;
     // Captured on Pause() — the vignette eases in off this, on unscaled time (see UIEase remarks).
     private float _pausedAt;
@@ -75,11 +80,6 @@ public sealed class SettingsMenu : MonoBehaviour
     // and intended: it and Time.timeScale=0 (pause/end-screen) are the two owners of Time.timeScale,
     // and they must never overlap or one strands the game holding the other's value.
     private KillCamPlayback? _killCamPlayback;
-
-    // RebindingOperation is a nested type of InputActionRebindingExtensions, not a top-level type
-    // in UnityEngine.InputSystem — hence the qualified name here despite the `using` above.
-    private InputActionRebindingExtensions.RebindingOperation? _activeRebind;
-    private InputAction? _rebindingAction;
 
     private float _mouseSensitivity;
     private float _keyboardTurnSpeed;
@@ -133,7 +133,9 @@ public sealed class SettingsMenu : MonoBehaviour
             if (_killCamPlayback is not { IsPlaying: true }) _open = !_open;
         }
 
-        if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
+        // KeyRebinder.EscapeConsumedThisFrame: an Escape that just cancelled a rebind listen (here
+        // or in the main menu's CONTROLS dropdown) must not ALSO toggle the pause menu.
+        if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame && !KeyRebinder.EscapeConsumedThisFrame)
         {
             _killCamPlayback ??= FindAnyObjectByType<KillCamPlayback>();
             if (_killCamPlayback is not { IsPlaying: true }) TogglePause();
@@ -142,7 +144,7 @@ public sealed class SettingsMenu : MonoBehaviour
 
     private void OnDestroy()
     {
-        _activeRebind?.Dispose();
+        KeyRebinder.Cancel();
 
         // Safety net: never leave a scene unload/round end with gameplay frozen.
         Time.timeScale = 1f;
@@ -332,7 +334,7 @@ public sealed class SettingsMenu : MonoBehaviour
             var buttonRect = new Rect(controlRect.xMax - buttonW, controlRect.y, buttonW, controlRect.height);
 
             GUIStyle bindStyle = GameUIStyle.Label(GameUIStyle.Body, TextAnchor.MiddleLeft, FontStyle.Bold);
-            bool listening = _rebindingAction == action;
+            bool listening = KeyRebinder.Listening == action;
             if (listening)
             {
                 // Pulse toward AccentBright on unscaled time — pause/settings freeze Time.timeScale,
@@ -347,8 +349,8 @@ public sealed class SettingsMenu : MonoBehaviour
                 GUI.Label(GameUIStyle.Scaled(textRect), action.GetBindingDisplayString(0), bindStyle);
             }
 
-            GUI.enabled = _rebindingAction == null;
-            if (GameUIStyle.Button(buttonRect, "Rebind")) StartRebind(action);
+            GUI.enabled = KeyRebinder.Listening == null;
+            if (GameUIStyle.Button(buttonRect, "Rebind")) KeyRebinder.Start(action);
             GUI.enabled = true;
         });
     }
@@ -429,38 +431,4 @@ public sealed class SettingsMenu : MonoBehaviour
         return values[next];
     }
 
-    /// <summary>
-    /// Interactively rebinds the action's keyboard binding (index 0 — every rebindable action here
-    /// is built keyboard-first with a gamepad binding appended at index 1, see
-    /// <see cref="PlayerInputProvider"/>; the settings menu only remaps the keyboard side).
-    /// The action is disabled for the duration, matching the pattern used by Unity's own
-    /// RebindingUI sample (rebinding an enabled action throws).
-    /// </summary>
-    private void StartRebind(InputAction action)
-    {
-        _activeRebind?.Cancel();
-
-        _rebindingAction = action;
-        action.Disable();
-
-        _activeRebind = action.PerformInteractiveRebinding(bindingIndex: 0)
-            .WithControlsExcluding("<Mouse>/position")
-            .WithControlsExcluding("<Mouse>/delta")
-            .WithCancelingThrough("<Keyboard>/escape")
-            .OnComplete(_ =>
-            {
-                FinishRebind(action);
-                _input.SavePersistedBindingOverrides();
-            })
-            .OnCancel(_ => FinishRebind(action))
-            .Start();
-    }
-
-    private void FinishRebind(InputAction action)
-    {
-        _activeRebind?.Dispose();
-        _activeRebind = null;
-        _rebindingAction = null;
-        action.Enable();
-    }
 }

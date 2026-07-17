@@ -40,6 +40,9 @@ public static class GameUIStyle
     public static readonly Color Tagger = new Color32(0xFF, 0x3D, 0x2E, 0xFF);
     /// <summary>TagRulesConfig.runnerColor.</summary>
     public static readonly Color Runner = new Color32(0xFF, 0xE9, 0xC4, 0xFF);
+    /// <summary>Won-round green, no existing green in this palette — used by the score pip row
+    /// (HUD capsule + end screen) to mark a player-won round, paired with Tagger red for a loss.</summary>
+    public static readonly Color Success = new Color32(0x5C, 0xC9, 0x6E, 0xFF);
     /// <summary>1px separator / panel rim. Cream at low alpha, so it lifts off charcoal without glowing.</summary>
     public static readonly Color Hairline = new(1f, 0.92f, 0.77f, 0.14f);
     public static readonly Color Shadow = new(0f, 0f, 0f, 0.45f);

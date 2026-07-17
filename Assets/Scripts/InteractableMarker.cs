@@ -25,4 +25,9 @@ public sealed class InteractableMarker : MonoBehaviour
     public float length;
     public Vector3 outwardDirection = Vector3.forward;
     public int tier;
+
+    // Swing only: false when the editor placed a GLB crane model over this swing, so the bootstrap tells
+    // the live ChainSwingInteractable to keep its crane COLLIDERS but skip its renderers (the model draws
+    // the crane instead). Set by SceneStyler.CreateGlbCranes at build time; read by the bootstraps.
+    public bool craneRenderersVisible = true;
 }

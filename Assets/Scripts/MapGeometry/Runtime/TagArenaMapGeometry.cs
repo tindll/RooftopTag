@@ -54,7 +54,7 @@ public static class TagArenaMapGeometry
         {
             SurfaceRole.Floor => PlainMaterial(t.concreteFloor),
             SurfaceRole.WallBody => PlainMaterial(JitterValue(t.concreteWall, seed, t.wallValueJitter)),
-            SurfaceRole.Ramp => PlainMaterial(t.concreteRamp),
+            SurfaceRole.Ramp => RampWoodMaterial(),
             SurfaceRole.Interactable => EmissiveMaterial(t.interactableColor, t.interactableEmissiveIntensity),
             SurfaceRole.Trim => EmissiveMaterial(t.rimColor, t.rimEmissiveIntensity),
             SurfaceRole.Silhouette => PlainMaterial(t.silhouetteColor),
@@ -201,6 +201,81 @@ public static class TagArenaMapGeometry
         tex.SetPixels32(pixels);
         tex.Apply();
         return tex;
+    }
+
+    private static Texture2D? _rampPlankAtlas;
+
+    /// <summary>Ramp deck material: a generated wood-plank texture, cached exactly like the window
+    /// atlas (built once, reused by all 20 ramps). Headless (self-play harness): skip the texture
+    /// entirely and fall back to a flat dark-wood colour — same guard/reasoning as
+    /// ChainSwingInteractable's renderer gate (SystemInfo.graphicsDeviceType == Null), since the
+    /// collider that matters for bot physics is unaffected either way (BuildPlankRampMesh only ever
+    /// touches the MeshFilter, never the BoxCollider RooftopArena.BuildRamp already created).</summary>
+    private static Material RampWoodMaterial()
+    {
+        VisualThemeConfig t = Theme;
+        if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
+            return PlainMaterial(t.rampWoodColorDark);
+
+        // Base tint stays white: the atlas below bakes the FULL final wood colour per pixel (board
+        // tone + grain), unlike the window atlas's albedo (which is a white/tint mask multiplied by
+        // concreteWall) — a ramp has no per-building tint to carry, so there is nothing to multiply.
+        Material m = PlainMaterial(Color.white);
+        if (_rampPlankAtlas == null) _rampPlankAtlas = BuildRampPlankAtlas(t);
+        m.mainTexture = _rampPlankAtlas;
+        return m;
+    }
+
+    /// <summary>Generates the shared wood-plank atlas: <see cref="VisualThemeConfig.rampPlankCount"/>
+    /// vertical bands across U (one per board — BuildPlankRampMesh maps board i to band i 1:1, so this
+    /// count MUST match the mesh's own plank count, which it does since both read the same theme
+    /// field), each a lerp between rampWoodColorDark/Light with per-band bias so boards don't repeat
+    /// the same tone, plus grain streaks that vary primarily along U (across boards) and are periodic
+    /// in V (integer sine cycles) so the texture tiles seamlessly under wrapMode=Repeat regardless of
+    /// how many times a long ramp's UV repeats it. Band 0 is PINNED to rampWoodColorDark (no random
+    /// bias) rather than left to the RNG: BuildPlankRampMesh's hidden faces (underside, ends, groove
+    /// floor) all sample a fixed point in band 0 for their "dark base" look, and that only reads as
+    /// dark base if band 0 is reliably dark.</summary>
+    private static Texture2D BuildRampPlankAtlas(VisualThemeConfig t)
+    {
+        int bands = Mathf.Max(1, t.rampPlankCount);
+        int size = Mathf.Max(4, t.rampTexturePixels);
+        var rng = new System.Random(t.rampWoodSeed);
+
+        var bandColor = new Color[bands];
+        bandColor[0] = t.rampWoodColorDark;
+        for (int b = 1; b < bands; b++)
+            bandColor[b] = Color.Lerp(t.rampWoodColorDark, t.rampWoodColorLight, (float)rng.NextDouble());
+
+        // Per-band streak frequency/phase, so boards don't all show the same grain lines at the same
+        // spot — integer cycle counts only, which is what keeps sin(v * 2*pi * cycles) exactly periodic
+        // over v in [0,1) (no seam where the texture wraps).
+        var streakCycles = new int[bands];
+        var streakPhase = new float[bands];
+        for (int b = 0; b < bands; b++)
+        {
+            streakCycles[b] = 5 + rng.Next(4); // 5-8 grain lines per tile
+            streakPhase[b] = (float)rng.NextDouble() * Mathf.PI * 2f;
+        }
+
+        var pixels = new Color32[size * size];
+        for (int y = 0; y < size; y++)
+        {
+            float v = (float)y / size;
+            for (int x = 0; x < size; x++)
+            {
+                int band = Mathf.Min(bands - 1, x * bands / size);
+                float u = (float)(x % (size / bands)) / (size / bands); // 0..1 within this board
+                // Streaks run ALONG v (the grain/slope direction): darkness depends mainly on u (which
+                // streak line you're over), with a gentle v-wobble so lines aren't perfectly straight,
+                // plus a touch of cheap per-pixel wear noise.
+                float wobble = Mathf.Sin(v * Mathf.PI * 2f * streakCycles[band] + streakPhase[band] + u * 3f);
+                float wear = (Hash(x * 7349 + y * 104729 + t.rampWoodSeed) % 100u) / 100f;
+                float darken = Mathf.Clamp01((wobble * 0.5f + 0.5f) * 0.7f + wear * 0.3f) * t.rampGrainStrength;
+                pixels[y * size + x] = Color.Lerp(bandColor[band], bandColor[band] * 0.55f, darken);
+            }
+        }
+        return MakeAtlas("RampPlankAtlas", size, pixels);
     }
 
     /// <summary>Deterministic per-seed brightness variation (FNV hash — stable across runs and
@@ -363,6 +438,151 @@ public static class TagArenaMapGeometry
         mesh.subMeshCount = separateCaps ? 2 : 1;
         mesh.SetTriangles(sideTris, 0);
         if (separateCaps) mesh.SetTriangles(capTris, 1);
+        mesh.RecalculateBounds();
+        return mesh;
+    }
+
+    /// <summary>
+    /// Wood plank ramp-deck mesh for <see cref="RooftopArena"/>.BuildRamp: a UNIT cube (verts at ±0.5,
+    /// same rule as <see cref="BuildFacadeMesh"/> — <paramref name="size"/> is only used to convert the
+    /// theme's metre-valued knobs into this local space; it is never baked into a vertex position, so
+    /// the caller's existing <c>transform.localScale = size</c> keeps doing the real sizing) whose top
+    /// face is split into <see cref="VisualThemeConfig.rampPlankCount"/> raised boards running along
+    /// local Z. Local Z IS the ramp's slope axis: RooftopArena.BuildRamp rotates the box with
+    /// <c>Quaternion.LookRotation(span, Vector3.up)</c> before setting <c>localScale = (width,
+    /// thickness, span.magnitude)</c>, which is exactly Unity's convention that LookRotation's forward
+    /// argument becomes local +Z — so a board spanning full local Z runs foot-to-top, along the slope,
+    /// as required.
+    ///
+    /// FLUSH GUARANTEE: every board's top-face vertices are hard-coded at local y = +0.5 (see the
+    /// `const float topY = 0.5f` below and every plank AddQuad call that uses it) — the box's own top
+    /// face, which is what the BoxCollider RooftopArena.BuildRamp already created presents to the
+    /// player. No knob (raise height, base slab thickness) can move that value; they only change how
+    /// far below it the groove floor and board side walls sit.
+    ///
+    /// WATERTIGHT GUARANTEE (no see-through holes): the box's bottom, both long sides (x=±0.5) and both
+    /// short ends (z=±0.5) are each drawn as ONE full-size flat quad spanning the entire face, exactly
+    /// like the plain box this replaces — the plank/groove detail only touches the TOP, and every groove
+    /// gap in the top is capped by its own floor quad at the base-slab height. So regardless of how the
+    /// planks are arranged, the exterior shell is always fully closed.
+    ///
+    /// GRAIN SCALE: <see cref="VisualThemeConfig.rampGrainTileLength"/> is a metres-per-texture-repeat
+    /// constant, so a board's V range is (size.z / rampGrainTileLength) repeats — a 5m ramp and a 20m
+    /// ramp both show the same texel density, rather than a naive 0..1 UV stretching the same texture
+    /// 4x thinner on the long one.
+    ///
+    /// Same outward-winding AddQuad convention as <see cref="BuildFacadeMesh"/> (right = cross(normal,
+    /// up), verified against Unity's built-in Quad) — generalised here to take an explicit centre and
+    /// half-extents instead of always being a unit face, since boards and grooves aren't full faces.
+    /// </summary>
+    public static Mesh BuildPlankRampMesh(string name, Vector3 size)
+    {
+        VisualThemeConfig t = Theme;
+        int planks = Mathf.Max(1, t.rampPlankCount);
+        float sizeX = Mathf.Max(0.01f, size.x), sizeY = Mathf.Max(0.01f, size.y), sizeZ = Mathf.Max(0.01f, size.z);
+
+        float grooveLocal = Mathf.Max(0f, t.rampGrooveWidth) / sizeX;
+        float totalGrooveLocal = Mathf.Min(0.9f, grooveLocal * (planks - 1)); // never eat the whole deck
+        float plankWidthLocal = (1f - totalGrooveLocal) / planks;
+
+        const float topY = 0.5f; // the flush guarantee — see class remarks, unconditional on any knob
+        float baseTopY = -0.5f + Mathf.Clamp(t.rampBaseSlabThickness, 0f, sizeY) / sizeY;
+        float plankBottomY = Mathf.Max(baseTopY, topY - Mathf.Clamp(t.rampPlankRaiseHeight, 0f, sizeY) / sizeY);
+
+        float grainRepeats = sizeZ / Mathf.Max(0.1f, t.rampGrainTileLength);
+        // Small inward margin on a board's sampled U range so bilinear/mip filtering (aniso 8, seen at
+        // grazing angles constantly) never blends two boards' bands together at their shared edge.
+        float bandMarginLocal = 0.12f * (1f / planks);
+
+        var verts = new List<Vector3>(96);
+        var normals = new List<Vector3>(96);
+        var uvs = new List<Vector2>(96);
+        var tris = new List<int>(144);
+
+        void AddQuad(Vector3 n, Vector3 up, Vector3 faceCenter, float halfRight, float halfUp,
+            Vector2 uvBL, Vector2 uvTL, Vector2 uvTR, Vector2 uvBR)
+        {
+            Vector3 right = Vector3.Cross(n, up);
+            int b = verts.Count;
+            verts.Add(faceCenter - right * halfRight - up * halfUp);
+            verts.Add(faceCenter - right * halfRight + up * halfUp);
+            verts.Add(faceCenter + right * halfRight + up * halfUp);
+            verts.Add(faceCenter + right * halfRight - up * halfUp);
+            for (int i = 0; i < 4; i++) normals.Add(n);
+            uvs.Add(uvBL); uvs.Add(uvTL); uvs.Add(uvTR); uvs.Add(uvBR);
+            tris.Add(b); tris.Add(b + 1); tris.Add(b + 2);
+            tris.Add(b); tris.Add(b + 2); tris.Add(b + 3);
+        }
+
+        // Fixed single-point sample in band 0 (pinned to rampWoodColorDark — see BuildRampPlankAtlas)
+        // for faces that just need a plain dark-wood look: the box's underside and short ends, which
+        // are buried against the roofs at either end of the ramp and essentially never seen.
+        Vector2 darkPoint = new(0.5f / planks, 0f);
+
+        // Bottom (y=-0.5) — closes the box from below.
+        AddQuad(Vector3.down, Vector3.forward, new Vector3(0f, -0.5f, 0f), 0.5f, 0.5f,
+            darkPoint, darkPoint, darkPoint, darkPoint);
+        // Short ends (z=±0.5) — closes the foot and top of the ramp; both are flush against a roof
+        // surface in practice, so a flat dark sample is all that's ever visible here.
+        AddQuad(Vector3.back, Vector3.up, new Vector3(0f, 0f, -0.5f), 0.5f, 0.5f,
+            darkPoint, darkPoint, darkPoint, darkPoint);
+        AddQuad(Vector3.forward, Vector3.up, new Vector3(0f, 0f, 0.5f), 0.5f, 0.5f,
+            darkPoint, darkPoint, darkPoint, darkPoint);
+
+        // Long sides (x=±0.5) — closes the box's left/right; grained (not a flat sample) because these
+        // ARE visible, at a run, from beside the ramp.
+        Vector2 sideU0 = new(bandMarginLocal, 0f), sideU1 = new(1f / planks - bandMarginLocal, 0f);
+        AddQuad(Vector3.left, Vector3.forward, new Vector3(-0.5f, 0f, 0f), 0.5f, 0.5f,
+            new Vector2(sideU0.x, 0f), new Vector2(sideU0.x, grainRepeats),
+            new Vector2(sideU1.x, grainRepeats), new Vector2(sideU1.x, 0f));
+        AddQuad(Vector3.right, Vector3.forward, new Vector3(0.5f, 0f, 0f), 0.5f, 0.5f,
+            new Vector2(sideU0.x, 0f), new Vector2(sideU0.x, grainRepeats),
+            new Vector2(sideU1.x, grainRepeats), new Vector2(sideU1.x, 0f));
+
+        // Boards + grooves across the top.
+        float x = -0.5f;
+        for (int i = 0; i < planks; i++)
+        {
+            float plankX0 = x, plankX1 = x + plankWidthLocal;
+            float plankCenterX = (plankX0 + plankX1) * 0.5f;
+
+            // Top face — flush at topY (the flush guarantee), grain running along Z via `up`=forward.
+            float bandU0 = (float)i / planks + bandMarginLocal, bandU1 = (float)(i + 1) / planks - bandMarginLocal;
+            AddQuad(Vector3.up, Vector3.forward, new Vector3(plankCenterX, topY, 0f), plankWidthLocal * 0.5f, 0.5f,
+                new Vector2(bandU0, 0f), new Vector2(bandU0, grainRepeats),
+                new Vector2(bandU1, grainRepeats), new Vector2(bandU1, 0f));
+
+            if (i > 0)
+            {
+                // Groove to the LEFT of this board: floor at baseTopY (full gap width) + the two
+                // boards' facing side walls from their tops down to plankBottomY.
+                float gapX1 = plankX0, gapX0 = gapX1 - grooveLocal;
+                float gapCenterX = (gapX0 + gapX1) * 0.5f, gapHalfX = (gapX1 - gapX0) * 0.5f;
+                if (gapHalfX > 1e-5f)
+                {
+                    AddQuad(Vector3.up, Vector3.forward, new Vector3(gapCenterX, baseTopY, 0f), gapHalfX, 0.5f,
+                        darkPoint, darkPoint, darkPoint, darkPoint);
+                }
+                float wallHalfY = (topY - plankBottomY) * 0.5f, wallCenterY = (topY + plankBottomY) * 0.5f;
+                if (wallHalfY > 1e-5f)
+                {
+                    // Right wall of the PREVIOUS board, facing +X into the groove.
+                    AddQuad(Vector3.right, Vector3.forward, new Vector3(gapX0, wallCenterY, 0f), wallHalfY, 0.5f,
+                        darkPoint, darkPoint, darkPoint, darkPoint);
+                    // Left wall of THIS board, facing -X into the groove.
+                    AddQuad(Vector3.left, Vector3.forward, new Vector3(gapX1, wallCenterY, 0f), wallHalfY, 0.5f,
+                        darkPoint, darkPoint, darkPoint, darkPoint);
+                }
+            }
+
+            x = plankX1 + grooveLocal;
+        }
+
+        var mesh = new Mesh { name = $"{name}_Planks" };
+        mesh.SetVertices(verts);
+        mesh.SetNormals(normals);
+        mesh.SetUVs(0, uvs);
+        mesh.SetTriangles(tris, 0);
         mesh.RecalculateBounds();
         return mesh;
     }

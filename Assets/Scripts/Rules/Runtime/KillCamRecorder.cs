@@ -6,7 +6,14 @@ using UnityEngine.Rendering;
 
 namespace Game.Rules;
 
-/// <summary>Position/rotation + animator snapshot of one agent at one sample tick.</summary>
+/// <summary>Position/rotation + animator snapshot of one agent at one sample tick.
+/// <para>
+/// LANDMINE (past review flagged this pair desyncing): every field added here needs a matching
+/// nearest-snap (bools) or lerp (floats) entry in <see cref="KillCamRecorder.LerpFrame"/> below, and,
+/// if it also drives an Animator param during replay, matching hash-id fields + read/write code in
+/// BOTH <see cref="KillCamRecorder.SampleNow"/> and KillCamPlayback.DriveAgents. Keep every add in
+/// lockstep across all touched spots.
+/// </para></summary>
 public struct KillCamFrame
 {
     public Vector3 Position;
@@ -14,6 +21,13 @@ public struct KillCamFrame
     public float Speed, ForwardSpeed, StrafeSpeed, VerticalSpeed;
     public int MotorState;
     public bool Diving, Catching, Flipping, AirDiving;
+
+    /// <summary>Round-wide fact (RoundController.DodgeWindowActive), NOT per-agent state — duplicated
+    /// into every agent's frame at the same write-index slot on each SampleNow tick so a kill-cam
+    /// replay can read "was a dodge window live at this scrub time" off whichever agent it already has
+    /// a frame for. Never touches an Animator, so it's exempt from the hash-id half of the landmine
+    /// above.</summary>
+    public bool DodgeCueActive;
 }
 
 /// <summary>
@@ -57,12 +71,18 @@ public sealed class KillCamRecorder : MonoBehaviour
 
     private float _nextSampleTime;
 
+    // Same GameObject always: RoundController.RegisterAgent does gameObject.AddComponent<KillCamRecorder>()
+    // on itself. Resolved once in Awake; null is fine (tests add this component standalone with no
+    // RoundController alongside it) — SampleNow just treats a null round as "no dodge window".
+    private RoundController? _round;
+
     private void Awake()
     {
         // ponytail: disabling here is the only guard this class needs — it stops Update from ever
         // being invoked by Unity, which is the entire recurring cost (per-agent animator reads +
         // ring-buffer writes, every frame, for the whole self-play batch).
         if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) enabled = false;
+        _round = GetComponent<RoundController>();
     }
 
     public void Register(TagAgent agent)
@@ -198,6 +218,7 @@ public sealed class KillCamRecorder : MonoBehaviour
             Catching = nearest.Catching,
             Flipping = nearest.Flipping,
             AirDiving = nearest.AirDiving,
+            DodgeCueActive = nearest.DodgeCueActive,
         };
     }
 
@@ -205,14 +226,19 @@ public sealed class KillCamRecorder : MonoBehaviour
     {
         if (Time.unscaledTime < _nextSampleTime) return;
         _nextSampleTime = Time.unscaledTime + SampleInterval;
-        SampleNow(Time.unscaledTime);
+        SampleNow(Time.unscaledTime, _round != null && _round.DodgeWindowActive);
     }
 
     /// <summary>The actual per-tick capture, factored out of Update so a test can drive it with an
     /// explicit timestamp instead of waiting on real frame timing (this project's PlayMode tests run
     /// -nographics, which disables this component via Awake — calling this directly bypasses that,
-    /// same as calling any other method on a disabled MonoBehaviour).</summary>
-    internal void SampleNow(float unscaledTime)
+    /// same as calling any other method on a disabled MonoBehaviour). Reads live DodgeWindowActive off
+    /// the round.</summary>
+    internal void SampleNow(float unscaledTime) => SampleNow(unscaledTime, _round != null && _round.DodgeWindowActive);
+
+    /// <summary>Same capture, with the dodge-cue flag passed explicitly instead of read off
+    /// RoundController — lets a test toggle it per tick without wiring up a real round.</summary>
+    internal void SampleNow(float unscaledTime, bool dodgeCueActive)
     {
         for (int i = 0; i < _agents.Count; i++)
         {
@@ -230,6 +256,7 @@ public sealed class KillCamRecorder : MonoBehaviour
             {
                 Position = agent.transform.position,
                 Rotation = agent.transform.rotation,
+                DodgeCueActive = dodgeCueActive,
             };
 
             if (animator != null)

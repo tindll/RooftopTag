@@ -97,3 +97,7 @@ Assets/InitTestScene*
 
 # Unity crash-recovery scene artifacts
 Assets/_Recovery/
+
+# MCP capture output
+Assets/Screenshots/
+Assets/Screenshots.meta

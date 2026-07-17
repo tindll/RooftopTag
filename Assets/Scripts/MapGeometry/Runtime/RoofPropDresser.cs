@@ -68,7 +68,7 @@ public static class RoofPropDresser
                 float z = roof.Center.z + ((float)rng.NextDouble() - 0.5f) * (roof.SizeZ - EdgeMargin * 2f);
                 var basePos = new Vector3(x, roof.Center.y, z);
                 if (!IsClear(basePos, segments, clearRadius)) continue;
-                CreateProp(rng.Next(4), basePos, parent);
+                CreateProp(rng.Next(3), basePos, parent);
                 break; // placed; on 12 failed attempts the prop is simply skipped
             }
         }
@@ -97,18 +97,8 @@ public static class RoofPropDresser
                 TagArenaMapGeometry.CreateBox("Prop_Vent", parent, basePos + Vector3.up * 0.25f,
                     new Vector3(0.6f, 0.5f, 0.6f), TagArenaMapGeometry.SurfaceRole.WallBody, seed: 7);
                 break;
-            case 2: // antenna — visual only (thin pole would snag capsules)
-            {
-                GameObject pole = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-                pole.name = "Prop_Antenna";
-                Object.DestroyImmediate(pole.GetComponent<Collider>());
-                pole.transform.SetParent(parent, false);
-                pole.transform.position = basePos + Vector3.up * 1.25f;
-                pole.transform.localScale = new Vector3(0.08f, 1.25f, 0.08f);
-                pole.GetComponent<Renderer>().sharedMaterial =
-                    TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Silhouette);
-                break;
-            }
+            // ponytail: antenna poles removed — they read as ugly thin poles poking out of the GLB
+            // roof shells (user report). AC/vent/pipe cover the roof-clutter role without the snag look.
             default: // pipe run — ankle-height, visual only (lip-stutter hazard if collidable)
             {
                 GameObject pipe = GameObject.CreatePrimitive(PrimitiveType.Cube);

@@ -186,23 +186,74 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// <summary>Muted, near-neutral greys (a hair cool). These were a purple-tinted grey, which fought
     /// the golden-hour sun/sky for control of the scene's colour and read as stylised rather than
     /// "real city". Desaturating them hands the colouring back to the light: the same wall now goes
-    /// warm in the sun and cool in shadow on its own. Values (92/110/102) are unchanged from the
-    /// purple palette — only the hue/saturation went; the wall/floor/ramp read order is preserved.
+    /// warm in the sun and cool in shadow on its own. Values (92/110) are unchanged from the
+    /// purple palette — only the hue/saturation went; the wall/floor read order is preserved.
     ///
-    /// NIGHT: values 92/110/102 -> 110/131/122, a flat x1.19 on all three. Hue and saturation are
+    /// NIGHT: values 92/110 -> 110/131, a flat x1.19 on both. Hue and saturation are
     /// untouched and MUST stay that way — the desaturation logic above is not a sunset artefact, it is
     /// the reason the re-theme was cheap at all. These greys never knew what colour the light was, so
     /// the same walls that went warm under the sun now go cool under the moon for free; the only thing
     /// that needed fixing was that the moon brings less light, not that it brings a different colour.
-    /// The x1.19 is that compensation and nothing more. Read order (wall &lt; ramp &lt; floor) is
-    /// preserved exactly by scaling all three together.</summary>
+    /// The x1.19 is that compensation and nothing more. Read order (wall &lt; floor) is
+    /// preserved exactly by scaling both together.
+    ///
+    /// Ramps used to live here too (concreteRamp) — retired by the plank-deck pass below: ramps are
+    /// wood now, and a field named "concrete" feeding a wood surface would just lie. See the
+    /// "Ramp planks" header for its replacement (rampWoodColorLight/Dark).</summary>
     public Color concreteWall = new Color32(0x6E, 0x6E, 0x71, 0xFF);
     public Color concreteFloor = new Color32(0x83, 0x83, 0x85, 0xFF);
-    public Color concreteRamp = new Color32(0x7A, 0x7A, 0x7C, 0xFF);
     /// <summary>Per-building brightness variation (seeded, deterministic) so facades don't read as clones.
     /// Raised 0.05 -> 0.08 with the facade pass: neighbouring buildings now share a window grid as well
     /// as a tint, so they need more value separation than before to keep reading as separate buildings.</summary>
     [Range(0f, 0.15f)] public float wallValueJitter = 0.08f;
+
+    [Header("Ramp planks (RooftopArena.BuildRamp's wood deck)")]
+    /// <summary>Boards laid across the ramp's 3m width. 4 -> ~0.75m boards, a believable plank width;
+    /// this is also the generated wood atlas's band count (see TagArenaMapGeometry.BuildRampPlankAtlas)
+    /// so every physical board maps to its own distinct atlas band 1:1.</summary>
+    public int rampPlankCount = 4;
+    /// <summary>Metres of dark gap between adjacent boards. Narrow on purpose — a real deck groove is a
+    /// shadow line, not a visible span; too wide and the boards read as separate floating slats rather
+    /// than one deck.</summary>
+    public float rampGrooveWidth = 0.04f;
+    /// <summary>How far a board's visible side wall drops below its (flush, y=+0.5) top before the
+    /// groove floor is guaranteed to appear — i.e. how deep the groove reads. Independent of
+    /// <see cref="rampBaseSlabThickness"/> in the code (raising this only makes the shadowed board edge
+    /// taller; it can never push a board's TOP off the walkable surface — that top is hard-coded at the
+    /// box's own +0.5, see BuildPlankRampMesh's remarks), but the two are tuned to SUM to the ramp's
+    /// 0.5m thickness (0.06 + 0.44) so the board wall meets the base slab's top with no gap between
+    /// them; pushing the sum below 0.5 leaves a harmless hollow (BuildPlankRampMesh's remarks explain
+    /// why it can never become a visible hole), above 0.5 the base slab and board walls overlap.</summary>
+    public float rampPlankRaiseHeight = 0.06f;
+    /// <summary>Solid slab filling the ramp box from its bottom up to this height — this is what
+    /// guarantees the grooves show dark decking rather than a hole to the sky (constraint: "no
+    /// see-through holes"). See <see cref="rampPlankRaiseHeight"/> for how the two defaults were
+    /// chosen together.</summary>
+    public float rampBaseSlabThickness = 0.44f;
+    /// <summary>Lighter board tone. Deliberately warm (unlike the cool concrete palette above) — see
+    /// the "Ramp planks" gameplay note: ramps are traversal, and warm-against-cool-moonlit-concrete is
+    /// what lets a ramp read at a sprint the way the cool rim trims read a ledge.</summary>
+    public Color rampWoodColorLight = new Color32(0xA8, 0x7A, 0x4E, 0xFF);
+    /// <summary>Darker/weathered board tone — also the atlas's pinned "base" swatch (band 0, see
+    /// BuildRampPlankAtlas) that the ramp's hidden faces (underside, ends, groove floor) sample, so
+    /// "dark base" in the groove is this colour and not an arbitrary random band.</summary>
+    public Color rampWoodColorDark = new Color32(0x5C, 0x40, 0x28, 0xFF);
+    /// <summary>[0,1] blend strength of the grain-streak darkening layered over a board's base tone —
+    /// 0 is a flat painted plank, 1 crushes the streaks toward black. Kept moderate so the wood stays
+    /// legible as colour, not just noise.</summary>
+    [Range(0f, 1f)] public float rampGrainStrength = 0.35f;
+    /// <summary>Metres of ramp LENGTH one texture tile's V axis covers. The 20 ramps range from short
+    /// hops to ~20m runs, and the grain UV is generated as (world length / this value) repeats — see
+    /// BuildPlankRampMesh's remarks — so the grain's apparent size on the ground stays this many metres
+    /// per repeat on every ramp regardless of its own length, instead of one fixed 0..1 UV stretching
+    /// the same texture thinner on the long ramps and fatter on the short ones.</summary>
+    public float rampGrainTileLength = 1.2f;
+    /// <summary>Square atlas resolution (px). 256 at rampPlankCount=4 bands is 64px per board — enough
+    /// for a grain streak to read at the aniso-8 grazing angles a ramp is always seen at, without the
+    /// 1024px+ cost the window atlas needs (that one tiles far more buildings, this tiles one deck).</summary>
+    public int rampTexturePixels = 256;
+    /// <summary>Fixed, like every other seed in the visual pass, so a rebuilt scene is byte-comparable.</summary>
+    public int rampWoodSeed = 4417;
 
     [Header("Building windows")]
     /// <summary>World metres per window cell — this drives both the window COUNT and (with the fractions
@@ -263,6 +314,110 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// <summary>Seeds the lit/dark pattern. Fixed, like every other seed in the visual pass, so a
     /// rebuilt scene is byte-comparable.</summary>
     public int windowSeed = 8151;
+
+    [Header("GLB building windows (Tripo unlit-glass key, PHASE 2 of the GLB integration plan)")]
+    /// <summary>Pixel VALUE (max of R/G/B, 0-1) below which a baked baseColor texel is a GLASS
+    /// candidate. The four Tripo GLBs were deliberately prompted with a warm/earthy palette (olive,
+    /// brown, khaki, tan) and uniformly dark, cool, unlit glass — see GlbCityKit.BuildLitMaterial's
+    /// remarks — so value alone would also catch dark WALL texels (a shadowed brown is dark too),
+    /// which is why this is paired with the blue&gt;=red hue check rather than used alone. 0.35 sits
+    /// above the glass's near-black paint and below the palette's darkest warm walls, verified against
+    /// the actual baked textures by GlbWindowDebug's dumped masks — retune here first if a model's
+    /// mask misses windows or over-catches wall.</summary>
+    [Range(0f, 1f)] public float glbWindowGlassValueThreshold = 0.35f;
+    /// <summary>Minimum accepted glass connected-component size, as a FRACTION of the texture's own
+    /// pixel count rather than a fixed pixel count — the four GLBs are not guaranteed to share one
+    /// texture resolution, and a fraction is the only version of this knob that survives that.
+    /// Anything smaller is classifier noise (a stray dark texel, a shadow speck), not a window, and is
+    /// dropped before it can become a glowing crumb.</summary>
+    public float glbWindowMinComponentAreaFraction = 0.00008f;
+    /// <summary>Minimum area / (bounding-box area) a glass component must have to count as a window.
+    /// Guards the risk called out in GlbCityKit.BuildLitMaterial's remarks: the painterly texture's
+    /// dark SHADOW CREVICES pass the value/hue key exactly as well as a real window, but a crevice is
+    /// a thin, irregular scribble that fills only a sliver of its own bounding box, where a real window
+    /// is close to a filled rectangle. 0.5 rejects anything shaped more like a crack than a pane.</summary>
+    [Range(0f, 1f)] public float glbWindowMinRectangularity = 0.5f;
+    /// <summary>Max bounding-box aspect ratio (long side / short side) a glass component may have —
+    /// the second half of the crevice guard above: a one-texel-wide crack can still pass the
+    /// rectangularity test (a 1x40 sliver is 100% of its own bbox) but is never a window's own
+    /// proportions. 5 comfortably covers a tall city window (net aspect ~0.93:0.5 ≈ 1.86, see
+    /// windowWidthFraction/windowHeightFraction) with slack for the GLB texture's own painterly
+    /// irregularity.</summary>
+    public float glbWindowMaxAspectRatio = 5f;
+    /// <summary>How many DISTINCT lit-window patterns exist per GLB model — the draw-call AND texture-
+    /// memory knob, exactly analogous to <see cref="skylineHazeBandCount"/> quantising the skyline's
+    /// continuous distance into a fixed number of materials. Callers pass a free-running instance index
+    /// as the seed and GlbCityKit buckets it into this many variants, so ~130 instances can never mint
+    /// ~130 materials (or ~130 4096-square emission textures, which is the far more expensive half).
+    ///
+    /// 6 is chosen against the clone-tell this whole phase exists to prevent: with 4 models x 6 patterns
+    /// there are 24 distinct facades in the city, so the odds of two ADJACENT buildings sharing both
+    /// model and pattern are low enough that the repeat is not legible — while the memory stays bounded
+    /// and predictable. Raising it buys variety at one emission texture each; see BuildLitMaterial's
+    /// remarks for what one costs.</summary>
+    public int glbWindowSeedVariants = 6;
+
+    [Header("GLB building shells (Tripo models skinned over the playable roofs, PHASE 3)")]
+    /// <summary>Master gate for the painterly GLB shells over RooftopArena's 31 playable roofs
+    /// (SceneStyler.CreateGlbShells). It exists as an A/B switch for the one question a screenshot
+    /// cannot settle — whether the painterly walls read as fast as the flat windowed facades did at a
+    /// sprint — and it is a HONEST switch, which is why it is worth a field: the shells replace the
+    /// roof bodies' and masses' RENDERERS only, so every collider, and every rim trim outlining every
+    /// ledge, is identical either way. Flipping this off restores the flat boxes with the simulation
+    /// byte-for-byte unchanged; the two builds differ in nothing but what you see.</summary>
+    public bool glbShellEnabled = true;
+    /// <summary>How far above a model's own <c>DeckY</c> a triangle must sit before the shell drops it.
+    /// In the models' MODEL-LOCAL normalized space (height ~= 1.0), NOT metres — the culled mesh is
+    /// cached once per model and shared by every roof that picks it, so it cannot depend on any one
+    /// instance's scale. At the arena's 26.5-34m columns one unit is the whole building, so 0.02 is
+    /// ~0.6m of real clutter.
+    ///
+    /// This is what stops players walking through the water towers and stair huts Tripo baked into the
+    /// same fused mesh as the building (see GlbCityKit's class doc): the shells carry no colliders, so
+    /// anything left standing above the deck is walked straight through. It is NOT free to raise, and
+    /// the floor is building4: its deck is not a crisp plane — its top three surface clusters span
+    /// 0.3898..0.4078, i.e. 0.018 around a DeckY of 0.4006 — so an epsilon under ~0.008 starts culling
+    /// building4's own ROOF and punching holes in the surface players stand on. 0.02 clears that spread
+    /// with margin while still dropping every real clutter stack in the set (the shortest is building2's
+    /// stair hut at 0.113 above its deck; building3's is 0.176). Expect ~0% dropped on building1 — it
+    /// has no rooftop clutter geometry at all, its clutter is painted into the texture.</summary>
+    public float glbShellCullEpsilon = 0.02f;
+
+    [Header("GLB swing crane (crane_swing.glb over each RooftopArena swing link, PHASE 5)")]
+    /// <summary>Uniform scale of the crane_swing.glb model SceneStyler.CreateGlbCranes places at each
+    /// swing pivot. UNIFORM only — it's a machine, not a building, so no per-axis aspect stretch. The
+    /// model ships normalized (height ~1.0), so this is roughly the crane's height in metres. Gated on
+    /// <see cref="glbShellEnabled"/> with the shells (flat-box A/B build keeps the procedural crane).
+    ///
+    /// It also loosely couples to ChainSwingInteractable's procedural collider layout: the model is placed
+    /// hook-tip-on-pivot, its jib running out along +side, so at 6 the model's counterweight lands ~4.4m
+    /// out (0.729 span * 6), which is where that file's CounterOvershoot puts the anti-camp Counterweight
+    /// pad collider (mast at jib reach 3m, pad 1.4m beyond it). Change this and the pad no longer sits
+    /// under the model's counterweight — bump CounterOvershoot to match. The colliders are invisible and
+    /// exist for camp-prevention + physics parity; the model may visually overhang the jib collider (pure
+    /// dressing, no colliders of its own).</summary>
+    public float craneModelScale = 6f;
+    /// <summary>Final cm-level nudge applied to the GLB crane's world position AFTER the hook-meets-pivot
+    /// solve, for hand-aligning the hook tip to the chain anchor if the measured HookLocal needs a tweak
+    /// in-scene. Zero by default — the solve lands the hook on the pivot analytically.</summary>
+    public Vector3 craneHookNudge = Vector3.zero;
+
+    [Header("GLB climb pipes (modular_pipe.glb tiled over each ClimbPipeVisual wall pipe, PHASE 7)")]
+    /// <summary>Uniform fudge on modular_pipe.glb's segment diameter, multiplied over the procedural
+    /// pipe's own measured diameter (2 * BuildClimbPipeVisual's radius) before each segment is scaled —
+    /// in case the GLB's silhouette needs to read slightly fatter/thinner than the exact (collider-less)
+    /// primitive it replaces to still look grabbable. 1 = exact match, no fudge.</summary>
+    public float glbPipeDiameterScale = 1f;
+    /// <summary>Extra distance (m) each segment is pushed along the wall's outward normal, on top of the
+    /// procedural pipe's own centreline (which BuildClimbPipeVisual already offsets proud of the wall by
+    /// radius+0.04 — see its faceOffset). Zero by default; a hand-tune lever if the GLB's own mesh pivot
+    /// doesn't sit flush with its visible surface the way the primitive cylinder's did.</summary>
+    public float glbPipeOutwardNudge = 0f;
+    /// <summary>Extra yaw (degrees), applied on top of the wall-facing solve that points the model's
+    /// local +Z at the wall (assumed to be modular_pipe.glb's bracket-clamp side, matching
+    /// CreateGlbCranes' same +Z-is-front convention for crane_swing.glb). Zero by default; the lever to
+    /// turn if that axis assumption is wrong for this particular GLB.</summary>
+    public float glbPipeYawOffsetDegrees = 0f;
 
     [Header("Rim trims (moonlit roof edges — FUNCTIONAL, see remarks)")]
     /// <summary>#FFB668 (warm, "sun-lit roof edge") -> #BFD4F5, a pale cool white-blue: moonlight
@@ -628,16 +783,26 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// warm as street bounce) — cool tops, warm undersides, which is the whole city-at-night cloud read
     /// and cost nothing to arrange.</summary>
     public Color cloudColor = new Color32(0x6E, 0x75, 0x90, 0xFF);
-    public int cloudCount = 8;
-    public float cloudHeightMin = 35f;
-    public float cloudHeightMax = 55f;
-    public float cloudLengthMin = 30f;
-    public float cloudLengthMax = 110f;
-    public float cloudWidthMin = 8f;
-    public float cloudWidthMax = 26f;
-    /// <summary>Vertical scale — was a flat hardcoded 0.6, which read as paper-thin pancakes.</summary>
-    public float cloudThicknessMin = 3f;
-    public float cloudThicknessMax = 8f;
+    public int cloudCount = 10;
+    /// <summary>Cloud altitude band. Well above the tallest rooftop gameplay (roofs top ~9m, cranes
+    /// ~15m) so clouds read as sky, not ceiling. Free to sit high: clouds are on the minimap-culled
+    /// Dressing layer (see SceneStyler.CreateClouds), so raising them past the minimap camera's
+    /// player-Y+40 costs nothing.</summary>
+    public float cloudHeightMin = 68f;
+    public float cloudHeightMax = 102f;
+    /// <summary>Long (drift) axis of a cloud in metres. Quantised into 3 discrete size tiers across
+    /// the sky (see SceneStyler.CreateClouds) so the layout reads as varied, not one repeated puff.</summary>
+    public float cloudLengthMin = 44f;
+    public float cloudLengthMax = 96f;
+    /// <summary>Length:width ratio — the flat footprint is this many times longer than it is deep, so
+    /// each cloud reads as wider-than-tall rather than a round ball.</summary>
+    public float cloudAspectMin = 2.6f;
+    public float cloudAspectMax = 3.6f;
+    /// <summary>Puffiness: each lobe is a DOME (flat-bottomed at y=0, see AppendIcosphereBlob) whose
+    /// height is this multiple of its radius. >1 gives tall, rounded cumulus puffs; the flat base plus
+    /// these puffy tops is the asymmetry that reads as "cloud" instead of "cluster of spheres".</summary>
+    public float cloudPuffMin = 1.1f;
+    public float cloudPuffMax = 1.6f;
     public float cloudDriftSpeedMin = 3f;
     public float cloudDriftSpeedMax = 7f;
     /// <summary>Radius of the drift area centered on the map — a cloud that drifts past this wraps
@@ -645,8 +810,8 @@ public sealed class VisualThemeConfig : ScriptableObject
     public float cloudDriftRadius = 120f;
     /// <summary>Blob count per cloud — each cloud mesh is a cluster of overlapping icosphere blobs
     /// (see SceneStyler.CreateClouds), not a single primitive, so this is the "how lumpy" knob.</summary>
-    public int cloudBlobsMin = 4;
-    public int cloudBlobsMax = 7;
+    public int cloudBlobsMin = 5;
+    public int cloudBlobsMax = 9;
     /// <summary>Icosphere subdivision level for each blob — the main poly-count/shape-smoothness
     /// knob. 0 is the raw 20-face icosahedron (very faceted, cheap); 1 splits every face into 4
     /// (80 faces); 2 would be 320. Kept low deliberately: low-poly is the aesthetic, not a rounding
@@ -655,17 +820,17 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// <summary>Per-vertex radial jitter, as a fraction of blob radius, so blobs read as irregular
     /// lumps rather than perfect spheres.</summary>
     [Range(0f, 0.4f)] public float cloudVertexJitter = 0.12f;
-    /// <summary>Each blob's radius as a fraction of ITS cloud's half-width (that cloud's own sampled
-    /// width * 0.5, not cloudWidthMin/Max directly), so blob size scales with the cloud it belongs to.</summary>
-    public float cloudBlobRadiusMin = 0.55f;
-    public float cloudBlobRadiusMax = 1.0f;
+    /// <summary>Each blob's radius as a fraction of ITS cloud's half-width, so blob size scales with
+    /// the cloud it belongs to. Varied radii give the puffy top its staggered, uneven lobes.</summary>
+    public float cloudBlobRadiusMin = 0.7f;
+    public float cloudBlobRadiusMax = 1.1f;
 
     [Header("Planes")]
     /// <summary>Small low-poly plane silhouettes flying straight above the cloud band — count kept
     /// low (they're fast, so a handful reads as steady traffic without cluttering the sky).</summary>
     public int planeCount = 3;
-    public float planeHeightMin = 65f;
-    public float planeHeightMax = 85f;
+    public float planeHeightMin = 120f;
+    public float planeHeightMax = 150f;
     /// <summary>Noticeably faster than <see cref="cloudDriftSpeedMin"/>/Max (3-7) so planes read as
     /// distinct high-altitude traffic rather than just another cloud.</summary>
     public float planeSpeedMin = 8f;

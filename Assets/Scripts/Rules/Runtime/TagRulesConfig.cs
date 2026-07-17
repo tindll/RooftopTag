@@ -56,6 +56,21 @@ public sealed class TagRulesConfig : ScriptableObject
     public float diveSteeringScale = 0.15f; // steering authority during the dive (committed, minimal correction)
     public float catchRange = 4.5f;       // a Tagger lunging AT a victim within this (and ahead) plays the DivingCatch finishing move instead of the generic roll (animation only); matches the bots' lungeRange so a bot's committed dive at someone is exactly a catch
 
+    [Header("Dodge")]
+    // The "clutch dodge" mechanic — a LOCAL-PLAYER-ONLY (raccoon runner) assist layer sitting on top
+    // of the shared lunge. Bots never see any of it; it's a deliberate 1-vs-10 assist asymmetry, not a
+    // rule both sides play by. See TagAgent.PerformTag / RoundController's Dodge region for the wiring.
+    public float runnerDiveSpeed = 10.5f;   // A: a Runner's lunge redirects to THIS (vs the Tagger's diveSpeed=9) — a real net forward escape burst. BeginDive still preserves a faster entry speed and the global 12 m/s cap still applies.
+    public float runnerRollCooldown = 2f;   // B: Runners get a real 2s cooldown on the lunge/roll (Taggers keep the dive-lock as their only limiter). Reuses the existing _lungeCooldownRemaining plumbing + HUD spinner.
+    public float dodgeIFrames = 0.3f;        // C: for this long at the START of the Runner's own committed dive, any tag on them is auto-dodged for free (no window budget) — they're already rolling clear.
+    // D: per-use reactive dodge window duration (unscaled seconds), indexed by dodges already pulled
+    // off THIS round — first dodge is generous and consistent, second still comfortably doable, third
+    // genuinely hard. Past the array's end dodgeWindowFloor is all that's left: miracle-tier only.
+    public float[] dodgeWindowDurations = { 0.45f, 0.35f, 0.15f };
+    public float dodgeWindowFloor = 0.08f;   // D: window duration once dodgeWindowDurations runs out — never shrinks below this, so "miracle" dodges stay possible no matter how many you've already pulled off this round.
+    public float dodgeSlowMoScale = 0.3f;    // D: Time.timeScale during an open dodge window (a heavier dip than the 0.35 tag slow-mo — this is a reaction test, not just juice).
+    public float taggerWhiffLockout = 1f;    // E: on a successful dodge the Tagger who whiffed can't lunge again for this long (gated in TryLunge via the same _lungeCooldownRemaining as the runner cooldown).
+
     /// <summary>Tag reach radius is a binary still-vs-moving check, not a continuous function of speed — sprinting or jumping shouldn't extend it beyond the same "moving" value.</summary>
     [Header("Tag reach")]
     // Tightened (2.0/1.2 -> 1.6/1.0): the old center-to-center 2.0 landed tags with ~1.2m of visible

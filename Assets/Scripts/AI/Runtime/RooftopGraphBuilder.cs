@@ -196,18 +196,6 @@ public static class RooftopGraphBuilder
                     graph.AddEdge(climbFrom, climbTo, ParkourEdgeType.Climb, 0f, bidirectional: true);
                     break;
 
-                case RooftopArena.LinkKind.VaultWall:
-                {
-                    // Single bidirectional edge, wired lip-to-lip. From the Yard side (h1.5) the 1m
-                    // wall on the Alley's h2 surface presents 1.5m -> resolves as Mantle in the motor;
-                    // from the Alley side it's a clean 1m -> Vault. Bots execute both identically
-                    // (interact held + HopIfStalled), so a single Vault-typed edge with the vault
-                    // entry-speed gate covers both directions.
-                    (int vaultFrom, int vaultTo) = ClosestPair(link.From, link.To);
-                    graph.AddEdge(vaultFrom, vaultTo, ParkourEdgeType.Vault, config.mantleVault.vaultMinApproachSpeed, bidirectional: true);
-                    break;
-                }
-
                 case RooftopArena.LinkKind.Drop:
                 {
                     // One-way descent: only the From->To direction is validated/emitted (bidirectional

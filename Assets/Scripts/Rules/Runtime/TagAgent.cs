@@ -94,6 +94,11 @@ public sealed class TagAgent : MonoBehaviour
     private float _lungeTagWindowRemaining;
     private bool _lungeTagUsed;
 
+    // Time.time the current committed dive fired at — the clock for the local player's proactive
+    // dodge i-frames (see PerformTag). Meaningful only for the local player, but set on every lunge
+    // (harmless for bots, which are never checked against it).
+    private float _diveStartTime = float.NegativeInfinity;
+
     private Transform? _leftArmPivot;
     private Transform? _rightArmPivot;
     private Coroutine? _armCoroutine;
@@ -130,9 +135,9 @@ public sealed class TagAgent : MonoBehaviour
     /// than diveSpeed is preserved rather than clamped, hence the max.</summary>
     public float DiveReachAt(float currentSpeed) => Mathf.Max(currentSpeed, _config.diveSpeed) * _config.diveDuration;
 
-    // Exposed for the main menu's key legend (same "read the real binding, don't hardcode a key
-    // name" reasoning as PlayerInputProvider's JumpAction/etc.). Null until Configure builds them
-    // for the local player.
+    // Exposed for the main menu's CONTROLS rebind dropdown (same "read the real binding, don't
+    // hardcode a key name" reasoning as PlayerInputProvider's JumpAction/etc.). Null until
+    // Configure builds them for the local player.
     public InputAction? LungeAction => _lungeAction;
     public InputAction? TagAction => _tagAction;
 
@@ -199,11 +204,17 @@ public sealed class TagAgent : MonoBehaviour
             _lungeAction = new InputAction("Lunge", InputActionType.Button, "<Mouse>/leftButton");
             _lungeAction.AddBinding("<Gamepad>/rightTrigger");
             _lungeAction.performed += _ => TryLunge();
+            // Same PlayerPrefs pattern as PlayerInputProvider's actions: re-apply any persisted
+            // rebind at creation. These actions are built fresh per Configure (guarded by the
+            // _lungeAction == null check above) and disposed in OnDestroy, so this is the one
+            // choke point where an override could otherwise be lost.
+            PlayerInputProvider.LoadBindingOverride(_lungeAction);
             _lungeAction.Enable();
 
             _tagAction = new InputAction("Tag", InputActionType.Button, "<Mouse>/rightButton");
             _tagAction.AddBinding("<Gamepad>/leftTrigger");
             _tagAction.performed += _ => TryTagInRange();
+            PlayerInputProvider.LoadBindingOverride(_tagAction);
             _tagAction.Enable();
         }
 
@@ -421,11 +432,26 @@ public sealed class TagAgent : MonoBehaviour
             return;
         }
 
+        // Role-split lunge tuning (A + B): a Runner's lunge redirects to runnerDiveSpeed (a real net
+        // escape burst) and carries a real runnerRollCooldown; a Tagger keeps diveSpeed and the
+        // dive-lock-only limiter (lungeCooldown is 0). Everything else about the fire is identical.
+        FireLunge(
+            Role == Role.Runner ? _config.runnerDiveSpeed : _config.diveSpeed,
+            Role == Role.Runner ? _config.runnerRollCooldown : _config.lungeCooldown);
+    }
+
+    /// <summary>The actual lunge fire, factored out of <see cref="TryLunge"/> so the reactive dodge
+    /// escape (<see cref="TriggerDodgeEscape"/>) can reuse it verbatim. Assumes the caller has already
+    /// cleared the gates — this always fires.</summary>
+    private void FireLunge(float diveSpeed, float cooldown)
+    {
         // Committed dive: CharacterMotor redirects existing momentum forward, locks the character in
         // for diveDuration, then eases the speed cap back to the pre-dive speed over diveRecovery —
-        // never netting speed. The dive-lock replaces the old cooldown as the rate limiter.
-        _motor.BeginDive(_config.diveSpeed, _config.diveDuration, _config.diveRecovery, _config.diveSteeringScale);
-        _lungeCooldownRemaining = _config.lungeCooldown; // 0 now — harmless no-op, keeps the HUD/gate plumbing wired
+        // never netting speed (beyond A's runner burst). The dive-lock replaces the old cooldown as
+        // the rate limiter for Taggers; Runners layer the runnerRollCooldown on top.
+        _motor.BeginDive(diveSpeed, _config.diveDuration, _config.diveRecovery, _config.diveSteeringScale);
+        _lungeCooldownRemaining = cooldown;
+        _diveStartTime = Time.time; // C: start the proactive dodge i-frame clock
 
         // Finishing-move variant, decided at fire time: a Tagger's committed dive AT a catchable victim
         // (nearest opponent within catchRange AND ahead) plays the DivingCatch clip instead of the generic
@@ -448,6 +474,26 @@ public sealed class TagAgent : MonoBehaviour
             _lungeTagWindowRemaining = _config.diveDuration; // arm contact-tag for exactly the dive's locked-in window
             _lungeTagUsed = false;
         }
+    }
+
+    /// <summary>Reactive-dodge escape (E): forces the Runner's roll burst as part of resolving a
+    /// successful dodge, bypassing the cooldown/grace gates TryLunge checks (a dodge always rolls).
+    /// No-op if already mid-dive — the local player's own LMB press may have already fired TryLunge
+    /// this frame, and BeginDive won't stack anyway.</summary>
+    public void TriggerDodgeEscape()
+    {
+        if (_motor.IsDiving) return;
+        FireLunge(_config.runnerDiveSpeed, _config.runnerRollCooldown);
+    }
+
+    /// <summary>The whiff (E): a Tagger whose tag was dodged loses its contact-tag window and is locked
+    /// out of lunging again for taggerWhiffLockout via the same _lungeCooldownRemaining gate the runner
+    /// cooldown uses. Called on the tagger for both proactive (i-frame) and reactive (window) dodges.</summary>
+    public void WhiffLunge()
+    {
+        _lungeTagWindowRemaining = 0f;
+        _lungeTagUsed = true;
+        _lungeCooldownRemaining = _config.taggerWhiffLockout;
     }
 
     /// <summary>Routes a fired lunge to the CURRENT bridge's dive animation — the tagger's finishing
@@ -608,6 +654,41 @@ public sealed class TagAgent : MonoBehaviour
         // OnCollisionEnter) still run before that takes effect. Bail before any of it — role
         // conversion, the WasTagged event, and the boop SFX — so a same-frame tag can't land (and
         // spam audio) after the round is already over.
+        if (_roundController != null && _roundController.IsRoundOver) return;
+
+        // CLUTCH DODGE — LOCAL HUMAN PLAYER ONLY. Bots never get i-frames or a dodge window: this is a
+        // deliberate 1-vs-10 ASSIST ASYMMETRY, not a rule both sides share. In headless self-play there
+        // is no local player at all, so neither branch below is ever reached there (feature unreachable).
+        if (other._isLocalPlayer && _roundController != null)
+        {
+            // C. Proactive i-frames: a tag that lands within the opening dodgeIFrames of the victim's
+            // OWN committed dive is auto-dodged for FREE — no window budget consumed. They're already
+            // rolling clear, so there's nothing to trigger on them; the tagger just whiffs.
+            if (other._motor.IsDiving && Time.time - other._diveStartTime < _config.dodgeIFrames)
+            {
+                WhiffLunge();
+                return;
+            }
+
+            // D. Reactive dodge window: don't land the tag now — hand it to RoundController, which opens
+            // a slow-mo window and drives it to a dodge (LMB) or re-runs this exact tag (ExecuteTag) on
+            // expiry. Always returns true for a local victim, so the tag is always deferred here.
+            if (_roundController.TryBeginDodgeWindow(this, other))
+                return;
+        }
+
+        ExecuteTag(other);
+    }
+
+    /// <summary>The tag itself, exactly as PerformTag used to run it inline — role conversion, the
+    /// WasTagged event, the boop, the tag count, and the local-player tag slow-mo/stinger. Called
+    /// directly for bot victims, and by RoundController when a deferred dodge window expires (so a
+    /// dodged-then-landed tag is byte-for-byte identical to an undelayed one: conversion, kill cam and
+    /// audio all sit downstream of this exact call).</summary>
+    internal void ExecuteTag(TagAgent other)
+    {
+        // Re-check the end-of-round race: a dodge window can span a frame or two, and the round could
+        // have ended (timer expiry at slow-mo, another tag) between deferral and this landing.
         if (_roundController != null && _roundController.IsRoundOver) return;
 
         // The local human player is never converted to Tagger on tag — RoundController subscribes to

@@ -43,6 +43,11 @@ public sealed class KillCamPlayback : MonoBehaviour
     private static readonly Color BandColor = new(0.55f, 0.04f, 0.04f, 0.62f);
     private const float KeycapSize = 40f; // design-space px; sized to sit around RESPAWN's cap height
 
+    // Dodge-cue overlay: shown while the scrub cursor sits on a frame recorded during an active dodge
+    // window, so a caught player sees the save they missed. Pulses on unscaled time (timeScale is 0).
+    private const float DodgeCuePulseSpeed = 4f;
+    private const float DodgeCueEdgeThickness = 22f; // design-space px
+
     private static readonly int SpeedId = Animator.StringToHash("Speed");
     private static readonly int ForwardSpeedId = Animator.StringToHash("ForwardSpeed");
     private static readonly int StrafeSpeedId = Animator.StringToHash("StrafeSpeed");
@@ -103,6 +108,8 @@ public sealed class KillCamPlayback : MonoBehaviour
     private GUIStyle? _respawnStyle;
     private GUIStyle? _keycapStyle;
     private GUIStyle? _timerStyle;
+    private GUIStyle? _dodgeCueBangStyle;
+    private GUIStyle? _dodgeCueCaptionStyle;
 
     public bool IsPlaying { get; private set; }
 
@@ -232,7 +239,10 @@ public sealed class KillCamPlayback : MonoBehaviour
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
             // Can't start a debug replay while paused or on the end screen (Time.timeScale == 0) —
             // that's the other owner of timeScale, and racing it strands the game (see SettingsMenu).
-            if (Time.timeScale != 0f && Keyboard.current != null && Keyboard.current.f9Key.wasPressedThisFrame)
+            // Nor during an open dodge window (timeScale 0.3, a third owner): the replay's unscaled
+            // duration would expire the window mid-replay and land the deferred tag on Restore.
+            if (Time.timeScale != 0f && ResolveRound() is not { DodgeWindowActive: true }
+                && Keyboard.current != null && Keyboard.current.f9Key.wasPressedThisFrame)
                 DebugReplayNearestTagger();
 #endif
             return;
@@ -496,8 +506,41 @@ public sealed class KillCamPlayback : MonoBehaviour
         float caughtHeight = GameUIStyle.Scaled(56f);
         float timerY = Screen.height - bandHeight - timerHeight - GameUIStyle.Scaled(8f);
         float caughtY = timerY - caughtHeight;
+        DrawDodgeCue(bandHeight, caughtY); // offset above CAUGHT BY — must not fight it
         GUI.Label(new Rect(0f, caughtY, Screen.width, caughtHeight), _caughtLabel, _caughtStyle);
         GUI.Label(new Rect(0f, timerY, Screen.width, timerHeight), FormatTimer(), _timerStyle);
+    }
+
+    /// <summary>The missed-dodge cue: pulsing red edge vignette + big centred "!" + a dim caption,
+    /// drawn between the letterbox bands whenever the scrub cursor is parked on a frame recorded while
+    /// RoundController.DodgeWindowActive was true (see KillCamFrame.DodgeCueActive). The flag is a
+    /// round-wide fact duplicated into every agent's frame, so reading it off the victim is just a
+    /// matter of convenience — the tagger's copy at the same scrub time would agree.</summary>
+    private void DrawDodgeCue(float bandHeight, float captionBottomY)
+    {
+        if (_recorder == null || _victim == null) return;
+        if (!_recorder.TrySample(_victim, _scrubTime, out KillCamFrame frame) || !frame.DodgeCueActive) return;
+
+        float pulse = 0.4f + 0.4f * Mathf.PingPong(Time.unscaledTime * DodgeCuePulseSpeed, 1f);
+        float edge = GameUIStyle.Scaled(DodgeCueEdgeThickness);
+        float safeTop = bandHeight;
+        float safeBottom = Screen.height - bandHeight;
+
+        Color prior = GUI.color;
+        GUI.color = new Color(GameUIStyle.Tagger.r, GameUIStyle.Tagger.g, GameUIStyle.Tagger.b, pulse);
+        GUI.DrawTexture(new Rect(0f, safeTop, Screen.width, edge), Texture2D.whiteTexture);
+        GUI.DrawTexture(new Rect(0f, safeBottom - edge, Screen.width, edge), Texture2D.whiteTexture);
+        GUI.DrawTexture(new Rect(0f, safeTop, edge, safeBottom - safeTop), Texture2D.whiteTexture);
+        GUI.DrawTexture(new Rect(Screen.width - edge, safeTop, edge, safeBottom - safeTop), Texture2D.whiteTexture);
+        GUI.color = prior;
+
+        float bangSize = GameUIStyle.Scaled(140f);
+        GUI.Label(new Rect((Screen.width - bangSize) * 0.5f, (Screen.height - bangSize) * 0.5f, bangSize, bangSize),
+            "!", _dodgeCueBangStyle);
+
+        float captionHeight = GameUIStyle.Scaled(30f);
+        GUI.Label(new Rect(0f, captionBottomY - captionHeight, Screen.width, captionHeight),
+            "YOU HAD A DODGE WINDOW", _dodgeCueCaptionStyle);
     }
 
     /// <summary>Keycap glyph + "RESPAWN", centred as one row beneath the KILLCAM title. The respawn
@@ -576,6 +619,20 @@ public sealed class KillCamPlayback : MonoBehaviour
             fontStyle = FontStyle.Bold,
             alignment = TextAnchor.MiddleCenter,
             normal = { textColor = GameUIStyle.Text },
+        };
+        _dodgeCueBangStyle ??= new GUIStyle(GUI.skin.label)
+        {
+            fontSize = Mathf.RoundToInt(GameUIStyle.Scaled(120f)),
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter,
+            normal = { textColor = GameUIStyle.Tagger },
+        };
+        _dodgeCueCaptionStyle ??= new GUIStyle(GUI.skin.label)
+        {
+            fontSize = Mathf.RoundToInt(GameUIStyle.Scaled(22f)),
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter,
+            normal = { textColor = GameUIStyle.TextDim },
         };
     }
 }

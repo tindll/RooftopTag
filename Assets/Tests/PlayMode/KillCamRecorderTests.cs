@@ -190,6 +190,31 @@ public sealed class KillCamRecorderTests
     }
 
     [Test]
+    public void TrySample_DodgeCueFlagToggling_ReadsBackPerFrameIndex()
+    {
+        _sceneRoot = new GameObject("TestScene");
+        TagAgent agent = CreateAgent(Vector3.zero);
+
+        var recorder = _sceneRoot.AddComponent<KillCamRecorder>();
+        recorder.Register(agent);
+
+        // Explicit dodgeCueActive overload — same one Update() feeds from RoundController.DodgeWindowActive,
+        // exposed here so a test can toggle it per tick without wiring up a real round.
+        recorder.SampleNow(0.00f, dodgeCueActive: false);
+        recorder.SampleNow(0.04f, dodgeCueActive: true);
+        recorder.SampleNow(0.08f, dodgeCueActive: false);
+
+        Assert.IsTrue(recorder.TrySample(agent, 0.00f, out KillCamFrame f0));
+        Assert.IsFalse(f0.DodgeCueActive, "Frame 0 was recorded with no dodge window active.");
+
+        Assert.IsTrue(recorder.TrySample(agent, 0.04f, out KillCamFrame f1));
+        Assert.IsTrue(f1.DodgeCueActive, "Frame 1 was recorded while the dodge window was active.");
+
+        Assert.IsTrue(recorder.TrySample(agent, 0.08f, out KillCamFrame f2));
+        Assert.IsFalse(f2.DodgeCueActive, "Frame 2 was recorded after the dodge window closed.");
+    }
+
+    [Test]
     public void NoSamplesYet_HasDataIsFalseAndTrySampleFails()
     {
         _sceneRoot = new GameObject("TestScene");

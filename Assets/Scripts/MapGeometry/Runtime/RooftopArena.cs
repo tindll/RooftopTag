@@ -32,7 +32,7 @@ public static class RooftopArena
         public Vector3 Walk => new(Center.x, Center.y + 0.1f, Center.z);
     }
 
-    public enum LinkKind { Jump, Ramp, Ladder, Swing, ClimbWall, VaultWall, Drop }
+    public enum LinkKind { Jump, Ramp, Ladder, Swing, ClimbWall, Drop }
 
     public readonly struct Link
     {
@@ -131,7 +131,7 @@ public static class RooftopArena
         new(9, 10, LinkKind.Jump),
         new(7, 11, LinkKind.Ladder),
 
-        // Map-expansion Jump/Ramp links (new roofs 13-25). Swing/ClimbWall/VaultWall links
+        // Map-expansion Jump/Ramp links (new roofs 13-25). Swing/ClimbWall links
         // land in later tasks alongside their geometry.
         new(1, 13, LinkKind.Jump),
         new(12, 13, LinkKind.Jump),
@@ -174,11 +174,11 @@ public static class RooftopArena
         // to Crane top h4.8 = 2.8m, inside the 2.2-3.0 climb band. See the ClimbWall build case.
         new(19, 21, LinkKind.ClimbWall),
 
-        // VaultWall: shared x-seam (x=-33) between Con_Yard (x[-33,-21]) and Con_Alley (x[-41,-33]),
-        // z-overlap [-18,-14]. From the Yard side (h1.5) the 1m wall on the Alley's h2 surface
-        // presents 1.5m -> resolves as Mantle in the motor; from the Alley side it's a clean 1m ->
-        // Vault. See the VaultWall build case for the wall box and RooftopGraphBuilder for the edge.
-        new(18, 23, LinkKind.VaultWall),
+        // Con_Yard (18, h1.5) and Con_Alley (23, h2) share a walkable seam (x=-33, z-overlap [-18,-14]).
+        // The vault wall that used to sit on it was removed (user report) — the seam is a clean 0.5m step
+        // between touching roofs, so it's a plain walkable crossing now. A Jump models it (the graph wires
+        // the lip-to-lip pair; JumpMakeable trivially passes the ~0-gap 0.5m step, so bots just walk across).
+        new(18, 23, LinkKind.Jump),
 
         // WP3 map-route fix: Tower (11) had exactly one route in/out — the 7<->11 Ladder on its
         // south face — a dead end for a cornered runner. Every OTHER neighbour is too tall to
@@ -354,9 +354,6 @@ public static class RooftopArena
                     // wall (already a WallBody box on the wall/ground mask from the roof-box loop
                     // above), so the climb surface exists the moment Con_Crane's roof box is built.
                     break;
-                case LinkKind.VaultWall:
-                    BuildVaultWall(root.transform, Roofs[link.From], Roofs[link.To]);
-                    break;
                 // Jump/Drop links need no geometry — the gap between roofs IS the jump/drop.
             }
         }
@@ -411,8 +408,7 @@ public static class RooftopArena
     }
 
     /// <summary>
-    /// Overhead beam + hanging chain a runner grabs to swing across an un-jumpable N-S chasm, mirroring
-    /// PlaygroundBuilder.BuildSwingChasm's look (CreateBox WallBody beam + a thin chain visual). Returns
+    /// Hanging chain a runner grabs to swing across an un-jumpable N-S chasm. Returns
     /// the (pivot, chainLength, exitDir) tuple the interactable builders spawn the live trigger from.
     /// Pivot is derived generically by <see cref="SwingPivot"/> (no hardcoded coordinates); exitDir is
     /// the horizontal unit vector from the From roof toward the To roof.
@@ -422,26 +418,15 @@ public static class RooftopArena
         Vector3 pivot = SwingPivot(from, to, length);
         Vector3 exitDir = new Vector3(to.Center.x - from.Center.x, 0f, to.Center.z - from.Center.z).normalized;
 
-        // Solid beam-hub the chain hangs from, at the pivot. It is a COMPACT 1.5x1.5 stub, NOT the old
-        // 12m span: at maxTangentialSpeed=12 the energy cap lets the bob apex ~7.34m above the arc's
-        // lowest point (feet to pivot.y+1.84, ~110deg polar; the 1.8m capsule head to pivot.y+3.64), so
-        // a full-length beam at pivot height sat squarely in the swept arc and the taut-rope constraint
-        // would fight its collider. Whenever any part of the capsule is at beam height the bob is ~L
-        // (>=5m here) away along the swing axis, so a stub this size never intersects the swing while
-        // still reading as the hub (the ChainSwingInteractable crane's solid jib is the visible arm).
-        // Anti-exploit: rolled 60° about z so the top face tilts past ground.maxSlopeAngleDegrees (50°)
-        // → GroundDetector rejects it as standable → a pump-and-jump-release onto this hub slides off
-        // instead of granting a camp spot over the chasm. The pivot above is a coordinate, not a child
-        // of this mesh, so rotating the stub does not move the swing; the stub is compact enough (~0.77m
-        // half-diagonal) that the roll keeps it well clear of the swept arc (bob is >=5m out).
-        GameObject swingBeam = TagArenaMapGeometry.CreateBox("SwingBeam", parent,
-            new Vector3(pivot.x, pivot.y, pivot.z),
-            new Vector3(1.5f, 0.3f, 1.5f),
-            TagArenaMapGeometry.SurfaceRole.WallBody);
-        swingBeam.transform.rotation = Quaternion.Euler(0f, 0f, 60f);
+        // The ChainSwingInteractable builds a full crane (mast, jib, brace, counterweight) at the
+        // pivot, including solid structural colliders. The overhead beam stub is redundant — its collider
+        // overlaps exactly where the crane's jib sits, creating a phantom-ledge risk with no benefit:
+        // anti-camping is owned by the crane's tilted pads (see SwingCraneCampTests), not a second
+        // collider. Deleted to match the live interactable's physics model headlessly.
 
-        // The chain itself is drawn at runtime by ChainSwingInteractable's LineRenderer (which also
-        // follows the swinger), so no static chain visual is emitted here — only the overhead beam.
+        // The chain itself is drawn at runtime by ChainSwingInteractable (UpdateChainLinks repositions
+        // a pool of small box link GameObjects every frame, with alternating links rolled 90° so they
+        // interlock like real chain), so no static chain visual is emitted here.
 
         return (pivot, length, exitDir);
     }
@@ -485,44 +470,6 @@ public static class RooftopArena
         float lo = Mathf.Max(c1 - s1 * 0.5f, c2 - s2 * 0.5f);
         float hi = Mathf.Min(c1 + s1 * 0.5f, c2 + s2 * 0.5f);
         return lo <= hi ? (lo + hi) * 0.5f : (c1 + c2) * 0.5f;
-    }
-
-    /// <summary>
-    /// Wall panel a runner vaults/mantles over where two roofs share a walkable seam (these roofs'
-    /// facing edges touch). Computed from the two roofs'
-    /// facing x-edges and their z-overlap band rather than hardcoded. AXIS-ALIGNMENT ASSUMPTION:
-    /// this pass only supports an E-W seam (18<->23's Con_Yard/Con_Alley pair).
-    /// </summary>
-    private static void BuildVaultWall(Transform parent, Roof from, Roof to)
-    {
-        Roof west = from.Center.x <= to.Center.x ? from : to;
-        Roof east = from.Center.x <= to.Center.x ? to : from;
-        // The seam is where the roofs' facing edges meet: east roof's -x edge and west roof's +x
-        // edge. For 18<->23 that's both at x=-33 (Con_Yard west edge == Con_Alley east edge).
-        float eastFacing = east.Center.x - east.SizeX * 0.5f;
-        float westFacing = west.Center.x + west.SizeX * 0.5f;
-        float centerX = (eastFacing + westFacing) * 0.5f;
-
-        // Z placement: midpoint of the roofs' z-overlap band (where the seam is actually walkable on
-        // both sides), not the roof centres. For 18<->23: Yard z[-18,-8] ∩ Alley z[-34,-14] = [-18,-14]
-        // -> centre z=-16.
-        float westZMin = west.Center.z - west.SizeZ * 0.5f, westZMax = west.Center.z + west.SizeZ * 0.5f;
-        float eastZMin = east.Center.z - east.SizeZ * 0.5f, eastZMax = east.Center.z + east.SizeZ * 0.5f;
-        float overlapMin = Mathf.Max(westZMin, eastZMin);
-        float overlapMax = Mathf.Min(westZMax, eastZMax);
-        float centerZ = (overlapMin + overlapMax) * 0.5f;
-
-        // Sits ON the higher of the two roof surfaces (Con_Alley h2) so it presents a clean 1m
-        // obstacle from that side; from the lower side (Con_Yard h1.5) the same panel reads as 1.5m,
-        // which resolves as Mantle rather than Vault in CharacterMotor (both handled by bots the same
-        // way — see RooftopGraphBuilder's VaultWall case).
-        const float wallSizeY = 1.0f;
-        float centerY = Mathf.Max(from.Center.y, to.Center.y) + wallSizeY * 0.5f;
-
-        TagArenaMapGeometry.CreateBox("VaultWall_Panel", parent,
-            new Vector3(centerX, centerY, centerZ),
-            new Vector3(0.3f, wallSizeY, 4f),
-            TagArenaMapGeometry.SurfaceRole.Interactable);
     }
 
     /// <summary>Builds the ramp geometry and returns its (foot, top) centre-line endpoints (XZ +
@@ -588,7 +535,12 @@ public static class RooftopArena
         box.transform.SetParent(rampGo.transform, false);
         box.transform.position = (foot + top) * 0.5f - localUp * (thickness * 0.5f);
         box.transform.rotation = rot;
-        box.transform.localScale = new Vector3(3f, thickness, span.magnitude);
+        Vector3 rampSize = new Vector3(3f, thickness, span.magnitude);
+        box.transform.localScale = rampSize;
+        // Wood plank deck instead of a flat concrete slab: swap the primitive's MESH only (same
+        // technique as TagArenaMapGeometry.CreateBuildingBox) — the BoxCollider the primitive already
+        // added above is untouched, so bot/player physics on this ramp is bit-identical to before.
+        box.GetComponent<MeshFilter>().sharedMesh = TagArenaMapGeometry.BuildPlankRampMesh("RampSurface", rampSize);
         box.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Ramp);
 
         return (foot, top);

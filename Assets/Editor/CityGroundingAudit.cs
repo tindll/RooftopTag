@@ -79,6 +79,7 @@ public static class CityGroundingAudit
     {
         BuildFreshArena();
         List<ShotResult> results = RunSweep();
+        CaptureHorizonShots();
         LogSummary(results);
     }
 
@@ -90,6 +91,7 @@ public static class CityGroundingAudit
         {
             BuildFreshArena();
             List<ShotResult> results = RunSweep();
+            CaptureHorizonShots();
             LogSummary(results);
             bool anyHoles = results.Any(r => r.HolePercent > 0f);
             EditorApplication.Exit(anyHoles ? 1 : 0);
@@ -98,6 +100,51 @@ public static class CityGroundingAudit
         {
             Debug.LogError($"CITYAUDIT_FATAL: {e}");
             EditorApplication.Exit(1);
+        }
+    }
+
+    /// <summary>PHASE 4 addendum: 4 cardinal, normal-perspective (not top-down) shots from roughly roof
+    /// height at the play area's centre, out toward the GLB skyline — for a HUMAN to judge whether the
+    /// far city reads as a fogged skyline or as stretched mush, which the top-down sweep above can never
+    /// show (its cone never reaches past ~39m and never sees a horizon by design). Deliberately NOT fed
+    /// into <see cref="ShotResult"/>/the hole count: a normal sky is the CORRECT and expected background
+    /// here, unlike the top-down sweep's magenta-means-hole convention, so these sit outside the PASS/
+    /// FAIL gate entirely — same OutDir, just a different filename prefix, purely for eyeballing.</summary>
+    static void CaptureHorizonShots()
+    {
+        Vector3 vantage = new(6f, 6f, 13f); // roughly the play area's centre, roof height
+        (string name, Vector3 dir)[] dirs =
+        {
+            ("N", Vector3.forward), ("S", Vector3.back), ("E", Vector3.right), ("W", Vector3.left),
+        };
+
+        foreach ((string name, Vector3 dir) in dirs)
+        {
+            var camGo = new GameObject($"AuditHorizonCam_{name}");
+            Camera cam = camGo.AddComponent<Camera>();
+            cam.transform.SetPositionAndRotation(vantage, Quaternion.LookRotation(dir, Vector3.up));
+            cam.fieldOfView = FieldOfViewDeg;
+            cam.nearClipPlane = 0.05f;
+            cam.farClipPlane = 500f;
+            // Default Skybox clear (NOT the top-down sweep's magenta void colour) — sky/fog is the
+            // expected, correct background in a horizon shot.
+
+            var rt = new RenderTexture(1024, 576, 24, RenderTextureFormat.ARGB32);
+            cam.targetTexture = rt;
+            cam.Render();
+            RenderTexture.active = rt;
+            var tex = new Texture2D(1024, 576, TextureFormat.RGB24, false);
+            tex.ReadPixels(new Rect(0, 0, 1024, 576), 0, 0);
+            tex.Apply();
+            RenderTexture.active = null;
+            cam.targetTexture = null;
+
+            File.WriteAllBytes($"{OutDir}/Horizon_{name}.png", tex.EncodeToPNG());
+
+            UnityEngine.Object.DestroyImmediate(tex);
+            rt.Release();
+            UnityEngine.Object.DestroyImmediate(rt);
+            UnityEngine.Object.DestroyImmediate(camGo);
         }
     }
 

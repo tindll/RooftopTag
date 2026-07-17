@@ -111,7 +111,11 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         // Lets the end screen's "MAIN MENU" button reopen this overlay — see RoundController's
         // remarks on _requestMainMenu for why this is a delegate rather than a direct field.
         roundController.SetMainMenuCallback(mainMenu.ShowMenu);
-        playerRoot.AddComponent<SettingsMenu>().Configure(inputProvider, rig, roundController, this, mainMenu);
+        var settingsMenu = playerRoot.AddComponent<SettingsMenu>();
+        settingsMenu.Configure(inputProvider, rig, roundController, this, mainMenu);
+        // Gates the round-start banner/countdown off both menus — see RoundController's remarks on
+        // _isMenuOpen for why this is a query delegate rather than typed fields.
+        roundController.SetMenuOpenQuery(() => mainMenu.IsOpen || settingsMenu.IsOpen);
 
         var bots = new System.Collections.Generic.List<ParkourBotInput>(botRoots.Length);
         for (int botIndex = 0; botIndex < botRoots.Length; botIndex++)
@@ -162,7 +166,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
                 // Old playground swing markers leave outwardDirection unset/zero → default to forward
                 // so the corridor swing behaves identically; rooftop swing markers carry a real exit dir.
                 Vector3 exitDir = marker.outwardDirection.sqrMagnitude > 0.001f ? marker.outwardDirection : Vector3.forward;
-                swing.Initialize(marker.pointA!, marker.length, exitDir);
+                swing.Initialize(marker.pointA!, marker.length, exitDir, marker.craneRenderersVisible);
             }
 
             Destroy(marker);

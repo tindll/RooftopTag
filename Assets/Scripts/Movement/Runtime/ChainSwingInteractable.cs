@@ -11,6 +11,14 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     [SerializeField] private Transform? pivot;
     [SerializeField] private float length = 3f;
 
+    // When false, the procedural crane's structural boxes keep their COLLIDERS (physics parity — always
+    // built, even headless) but skip their MeshRenderers, so a GLB crane model placed by the editor
+    // (SceneStyler.CreateGlbCranes) is the only visible crane. Editor scene-build sets this false — via
+    // the InteractableMarker, threaded through Initialize — for the two RooftopArena swing links that get
+    // a GLB model. Every other swing (and SwingCraneCampTests, which reads the procedural pads) keeps the
+    // default true and renders its procedural crane exactly as before.
+    [SerializeField] private bool craneRenderersVisible = true;
+
     // --- Chain visual ------------------------------------------------------------------------
     // Instead of a single flat LineRenderer (which read as a rope), the chain is a fixed pool of
     // small box "links", repositioned/reoriented every frame along the pivot->bob line. Alternating
@@ -88,11 +96,16 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     /// <summary>As <see cref="Initialize(Transform, float)"/>, but sets a per-swing exit direction
     /// (the From→To crossing direction) so bots swinging a non-+Z chasm auto-release correctly.
     /// Both overloads funnel through here, which is also where the chain/crane visual is created lazily.</summary>
-    public void Initialize(Transform pivotTransform, float chainLength, Vector3 exitDirection)
+    public void Initialize(Transform pivotTransform, float chainLength, Vector3 exitDirection,
+        bool showCraneRenderers = true)
     {
         pivot = pivotTransform;
         length = chainLength;
         ExitDirection = exitDirection;
+        // Must be set BEFORE EnsureVisual -> BuildCrane reads it. false = the procedural crane's boxes
+        // stay solid but invisible (a GLB model renders in their place). Defaults true so every existing
+        // caller (2-arg overload, tests, self-play) renders the procedural crane unchanged.
+        craneRenderersVisible = showCraneRenderers;
         EnsureGrabTrigger();
         EnsureVisual();
     }
@@ -276,6 +289,13 @@ public sealed class ChainSwingInteractable : MonoBehaviour
 
         const float jib = 3f;       // horizontal reach from mast to the pivot (jib tip)
         const float mastCap = 0.6f; // mast rises this far above the jib
+        // How far the counterweight sits BEYOND the mast on the +side axis (opposite the jib load). Tuned
+        // so the pad lands ~under the GLB model's own counterweight: at craneModelScale 6 the model's
+        // counterweight is (0.729 hook->counterweight span) * 6 ~= 4.4m out from the pivot, and the mast
+        // collider is at jib reach (3m), so 1.4 puts the pad at ~4.4m. It also lands the pad in OPEN AIR
+        // past the mast (a clear gap, no crevice against the mast/cap), so a release onto its tilted top
+        // sheds straight to the ground — which is what SwingCraneCampTests asserts.
+        const float CounterOvershoot = 1.4f;
         float mastTopY = p.y + mastCap;
         // Descend toward street/ground so the crane reads as grounded rather than floating, but keep
         // the mast a sane length.
@@ -283,6 +303,11 @@ public sealed class ChainSwingInteractable : MonoBehaviour
 
         Vector3 mastTop = new Vector3(p.x, mastTopY, p.z) + side * jib;
         Vector3 jibTip = p; // the chain hangs from here
+
+        // Colliders are ALWAYS built (physics parity, even headless); renderers only when displayed AND
+        // not suppressed in favour of a GLB crane model (craneRenderersVisible). Both facts flow through
+        // this one flag into every CraneBox below.
+        bool renderers = !Headless && craneRenderersVisible;
 
         var crane = new GameObject("SwingCrane");
         crane.transform.SetParent(transform, false);
@@ -295,7 +320,7 @@ public sealed class ChainSwingInteractable : MonoBehaviour
         float mastH = mastTopY - mastBottomY;
         CraneBox(crane.transform, "Mast",
             new Vector3(mastTop.x, (mastTopY + mastBottomY) * 0.5f, mastTop.z),
-            new Vector3(0.5f, mastH, 0.5f), Quaternion.identity);
+            new Vector3(0.5f, mastH, 0.5f), Quaternion.identity, renderers);
 
         // Caps the mast's flat top with a bare VertexUpTilt cube centred exactly ON that top point, so
         // a downward approach meets the tilted cap before it can ever reach the shaft's flat top below
@@ -303,7 +328,7 @@ public sealed class ChainSwingInteractable : MonoBehaviour
         // narrowest radius (its inradius) is s*sqrt(2/3)*cos(30deg) ~= 0.71s; at s=0.8 that is ~0.57m in
         // every direction, well past the shaft's own top's corner-to-centre distance (0.5x0.5 square ->
         // 0.35m), so the cap fully shadows the shaft's top with margin.
-        CraneBox(crane.transform, "MastCap", mastTop, new Vector3(0.8f, 0.8f, 0.8f), VertexUpTilt);
+        CraneBox(crane.transform, "MastCap", mastTop, new Vector3(0.8f, 0.8f, 0.8f), VertexUpTilt, renderers);
 
         // Jib (horizontal arm at pivot height, from the mast out to the pivot). Aim stays the TRUE
         // mast->pivot line: it has to actually connect the two, and no rotation could make it
@@ -311,40 +336,48 @@ public sealed class ChainSwingInteractable : MonoBehaviour
         Vector3 jibA = new Vector3(mastTop.x, p.y, mastTop.z);
         CraneBox(crane.transform, "Jib", (jibA + jibTip) * 0.5f,
             new Vector3(0.35f, 0.35f, Vector3.Distance(jibA, jibTip) + 0.3f),
-            Quaternion.LookRotation((jibTip - jibA).normalized));
+            Quaternion.LookRotation((jibTip - jibA).normalized), renderers);
 
         // Diagonal brace from the mast top down to the jib tip (classic crane triangle).
         CraneBox(crane.transform, "Brace", (mastTop + jibTip) * 0.5f,
             new Vector3(0.18f, 0.18f, Vector3.Distance(mastTop, jibTip)),
-            Quaternion.LookRotation((jibTip - mastTop).normalized));
+            Quaternion.LookRotation((jibTip - mastTop).normalized), renderers);
 
-        // Counter-jib + counterweight on the far side of the mast top. The counterweight is the other
-        // real perch (a 0.8x0.8 flat pad) and has no span to preserve, so it takes VertexUpTilt bare —
-        // same case as the mast cap. The counter-jib arm keeps its aim, like the jib.
-        Vector3 counterEnd = mastTop - side * (jib * 0.5f);
+        // Counter-jib + counterweight BEYOND the mast on the +side (jib) axis — the opposite end of the
+        // jib from the hook/pivot. Re-proportioned (was between pivot and mast) to match crane_swing.glb's
+        // real layout: the model's 14x-heavier counterweight slab sits at the +X jib end, the hook at -X,
+        // and SceneStyler.CreateGlbCranes scales/yaws the model so its counterweight lands out here over
+        // this collider (see VisualThemeConfig.craneModelScale). Two safe side effects of moving it OUT:
+        // the collider now sits under the visible model's counterweight, and a release onto the pad sheds
+        // into open air past the jib end rather than onto the jib rod below it (SwingCraneCampTests still
+        // drops onto this pad by name and asserts the slide-off). The counterweight keeps VertexUpTilt
+        // bare (a flat 0.8x0.8 perch with no span to preserve — same case as the mast cap); the counter-
+        // jib arm keeps its aim.
+        Vector3 counterEnd = mastTop + side * CounterOvershoot;
         Vector3 counterMid = (mastTop + counterEnd) * 0.5f;
         CraneBox(crane.transform, "CounterJib",
             new Vector3(counterMid.x, mastTopY, counterMid.z),
             new Vector3(0.3f, 0.3f, Vector3.Distance(mastTop, counterEnd) + 0.2f),
-            Quaternion.LookRotation((-side).normalized));
+            Quaternion.LookRotation(side), renderers);
         CraneBox(crane.transform, "Counterweight",
             new Vector3(counterEnd.x, mastTopY - 0.3f, counterEnd.z),
-            new Vector3(0.8f, 0.9f, 0.8f), VertexUpTilt);
+            new Vector3(0.8f, 0.9f, 0.8f), VertexUpTilt, renderers);
     }
 
     // One structural crane member. The BoxCollider is ALWAYS added (physical — must exist headless for
     // self-play parity); the unit-cube size/centre make it match the visual mesh exactly regardless of
-    // whether the mesh is present. The MeshFilter/MeshRenderer (and their static mesh/material caches)
-    // are allocated only when not headless.
+    // whether the mesh is present. The MeshFilter/MeshRenderer (and their static mesh/material caches) are
+    // allocated only when <paramref name="addRenderer"/> — i.e. not headless AND renderers not suppressed
+    // in favour of a GLB crane model (see BuildCrane's `renderers`).
     private static void CraneBox(Transform parent, string name,
-        Vector3 worldPos, Vector3 scale, Quaternion rot)
+        Vector3 worldPos, Vector3 scale, Quaternion rot, bool addRenderer)
     {
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
         var box = go.AddComponent<BoxCollider>();
         box.size = Vector3.one;
         box.center = Vector3.zero;
-        if (!Headless)
+        if (addRenderer)
         {
             go.AddComponent<MeshFilter>().sharedMesh = CubeMesh();
             go.AddComponent<MeshRenderer>().sharedMaterial = CraneMaterial();

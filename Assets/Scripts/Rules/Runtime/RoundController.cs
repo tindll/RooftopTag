@@ -84,6 +84,17 @@ public sealed class RoundController : MonoBehaviour
     // bare test-built RoundController) — the button simply doesn't draw without it.
     private System.Action? _requestMainMenu;
 
+    // Same asmdef-direction constraint as _requestMainMenu just above (Game.Rules can't hold a typed
+    // MainMenuOverlay/SettingsMenu field): a plain query delegate TagArenaBootstrap wires up once both
+    // menus exist, so DrawRoundStartBanner/DrawCountdown can skip while either is open (user screenshot —
+    // both used to render on top of the pause menu AND the pre-launch main menu). Null in scenes with
+    // no menus (e.g. a bare test-built RoundController) — the banners just draw unconditionally there.
+    private System.Func<bool>? _isMenuOpen;
+
+    /// <summary>Wires the HUD banners to skip drawing while the main menu or pause/settings menu is
+    /// open. See <see cref="_isMenuOpen"/>'s remarks for why this is a delegate rather than typed fields.</summary>
+    public void SetMenuOpenQuery(System.Func<bool> isMenuOpen) => _isMenuOpen = isMenuOpen;
+
     // Tag-moment slow-mo: on a local-player-involved tag, dip to 0.35x for ~0.25s. The restore is
     // driven off Time.unscaledTime (never a timeScale-scaled timer) so it self-restores even at 0.35x,
     // and it fully defers to the pause menu's timeScale ownership (SettingsMenu sets timeScale=0 while
@@ -100,6 +111,39 @@ public sealed class RoundController : MonoBehaviour
     private const float TagFlashDuration = 0.4f;
     private const float TagFlashMaxAlpha = 0.6f;
     private float _tagFlashEndUnscaled = -1f;
+
+    // ---------------------------------------------------------------- Clutch dodge (local player only)
+    //
+    // The reactive half of the clutch-dodge mechanic (see TagAgent.PerformTag for the proactive
+    // i-frames). When a tag would land on the LOCAL player, TagAgent defers it here instead: we open a
+    // short UNSCALED-time slow-mo window in which the player can dodge by pressing lunge (LMB). Dodge
+    // → the tag is cancelled, the player rolls clear (TriggerDodgeEscape) and the tagger whiffs; expiry
+    // → we run the original tag (ExecuteTag), identical to an undelayed one. All bot-only headless
+    // self-play is untouched: no local player means TagAgent never calls TryBeginDodgeWindow.
+    //
+    // timeScale coordination: this is one of the four owners of Time.timeScale (with the pause menu,
+    // kill-cam playback and the tag slow-mo). It can never overlap the kill cam (a pending tag means
+    // the round isn't over, and the cam only plays once it is), it suppresses the normal tag slow-mo
+    // (a deferred tag skips TriggerTagSlowMo entirely — that only fires from ExecuteTag on expiry), and
+    // it defers to the pause menu exactly as the tag slow-mo does (never stomps a frozen timeScale).
+    private TagAgent? _pendingDodgeTagger;
+    private TagAgent? _pendingDodgeVictim;
+    private float _dodgeWindowEndUnscaled = -1f;
+    private float _dodgeWindowDuration; // total duration of the currently-open window — DrawDodgeRing's remaining-fraction fill divides by this
+    private int _dodgeUsesThisRound; // successful reactive dodges so far this round — shrinks each new window (reset in StartRound)
+
+    // Desaturation cue. Spec wanted a real URP ColorAdjustments saturation override, but no RUNTIME
+    // assembly in this project references URP (Game.Rules → Movement/Camera/MapGeometry/UI/InputSystem;
+    // none pull in Unity.RenderPipelines.Universal.Runtime, and SceneStyler's URP use is Editor-only) —
+    // so per the spec's explicit fallback this is a flat gray full-screen IMGUI wash instead, eased in
+    // over DodgeDesatFade and back out on resolve. Weight lives here; drawn in DrawDodgeCue.
+    private const float DodgeDesatFade = 0.05f;
+    private float _dodgeDesatWeight;   // current eased weight, 0..1
+    private float _dodgeDesatTarget;   // 1 while a window is open, 0 otherwise
+
+    /// <summary>True while a reactive dodge window is running. Exposed for the kill-cam marker (a later
+    /// task) — nothing here reads it; it's a pure hook.</summary>
+    public bool DodgeWindowActive => _dodgeWindowEndUnscaled >= 0f;
 
     // Per-player tag counts for the summary screen. Incremented for every tag including
     // bot-on-bot in headless self-play — a plain dictionary increment is metric-neutral, so it
@@ -243,6 +287,8 @@ public sealed class RoundController : MonoBehaviour
             agent.WasTagged += OnLocalPlayerTagged; // local-only: arms the conversion flash + "YOU'RE IT"
             SetupMinimap();
             SetupLungeSpinner();
+            SetupDodgeRing();
+            SetupDodgeMouseIcon();
         }
     }
 
@@ -269,6 +315,102 @@ public sealed class RoundController : MonoBehaviour
     }
 
     private void OnLocalPlayerTagged(TagAgent _, TagAgent __) => _tagFlashEndUnscaled = Time.unscaledTime + TagFlashDuration;
+
+    /// <summary>Opens a reactive dodge window for a tag the local player would otherwise take (called
+    /// from TagAgent.PerformTag, local victim only). Returns true when the tag was absorbed here — for
+    /// a local victim that's always, so the tag is always deferred rather than landing immediately. A
+    /// second tag arriving while a window is already open is simply absorbed (the player is mid-dodge).
+    /// Window length shrinks per dodge already pulled off this round, floored so miracle dodges remain.</summary>
+    public bool TryBeginDodgeWindow(TagAgent tagger, TagAgent victim)
+    {
+        if (DodgeWindowActive) return true; // already dodging — absorb a second simultaneous tag
+
+        float[] durations = _config.dodgeWindowDurations;
+        float duration = durations != null && _dodgeUsesThisRound < durations.Length
+            ? durations[_dodgeUsesThisRound]
+            : _config.dodgeWindowFloor;
+        _pendingDodgeTagger = tagger;
+        _pendingDodgeVictim = victim;
+        _dodgeWindowDuration = duration; // remembered so DrawDodgeRing can compute a remaining-fraction fill
+        _dodgeWindowEndUnscaled = Time.unscaledTime + duration;
+
+        if (Time.timeScale != 0f) Time.timeScale = _config.dodgeSlowMoScale; // never stomp a paused clock
+        _dodgeDesatTarget = 1f;
+        return true;
+    }
+
+    /// <summary>Drives an open dodge window each frame (unscaled): resolves on the local player's lunge
+    /// press (dodge) or on expiry (the tag lands). Deferred to the pause menu exactly as the tag slow-mo
+    /// is — a frozen timeScale holds the window open, unresolved, rather than being stomped back.</summary>
+    private void TickDodgeWindow()
+    {
+        if (!DodgeWindowActive) return;
+
+        if (Time.timeScale == 0f)
+        {
+            // Pause menu owns timeScale — hold, don't resolve, don't stomp. The deadline is UNSCALED
+            // (it keeps advancing while paused), so "holding" must also push it forward by the paused
+            // time or any pause longer than the window silently expires it — Resume would then land
+            // the deferred tag instantly, with zero reaction time (review finding).
+            _dodgeWindowEndUnscaled += Time.unscaledDeltaTime;
+            return;
+        }
+
+        // Reactive resolution: the local player's lunge press (LMB) inside the window is a dodge. Read
+        // the same InputAction that already fires TryLunge, so a normal lunge press both rolls and dodges.
+        if (_localPlayerAgent?.LungeAction?.WasPerformedThisFrame() == true)
+        {
+            ResolveDodgeWindow(dodged: true);
+            return;
+        }
+
+        if (Time.unscaledTime >= _dodgeWindowEndUnscaled)
+        {
+            ResolveDodgeWindow(dodged: false);
+            return;
+        }
+
+        Time.timeScale = _config.dodgeSlowMoScale; // re-assert the slow-mo dip while the window runs
+    }
+
+    private void ResolveDodgeWindow(bool dodged)
+    {
+        TagAgent? tagger = _pendingDodgeTagger;
+        TagAgent? victim = _pendingDodgeVictim;
+        _pendingDodgeTagger = null;
+        _pendingDodgeVictim = null;
+        _dodgeWindowEndUnscaled = -1f;
+        _dodgeDesatTarget = 0f; // fade the desaturation back out
+
+        // Restore time BEFORE the tag executes so ExecuteTag → TriggerTagSlowMo runs on a live clock
+        // (it no-ops at timeScale 0). Never touch a paused clock — the pause menu restores it on resume.
+        if (Time.timeScale != 0f) Time.timeScale = 1f;
+
+        if (tagger == null || victim == null) return;
+
+        if (dodged)
+        {
+            _dodgeUsesThisRound++;       // this reactive dodge consumes one budget use → next window is shorter
+            victim.TriggerDodgeEscape(); // roll clear at runner speed
+            tagger.WhiffLunge();         // the tagger whiffs + eats the lockout
+        }
+        else
+        {
+            tagger.ExecuteTag(victim);   // window elapsed — land the original tag, identical to an undelayed one
+        }
+    }
+
+    /// <summary>Clears any pending dodge window and its desaturation without touching timeScale — the
+    /// caller owns time (RestartRound hands back 1, EndRound freezes to 0). Hooked into the same
+    /// StartRound/EndRound cleanup that resets kill-cam/slow-mo state so a window can't leak across a
+    /// round boundary (R mid-window, round ends mid-window).</summary>
+    private void CancelDodgeWindow()
+    {
+        _pendingDodgeTagger = null;
+        _pendingDodgeVictim = null;
+        _dodgeWindowEndUnscaled = -1f;
+        _dodgeDesatTarget = 0f;
+    }
 
     /// <summary>Loose tagger coordination: taggers record who they're currently pursuing so others prefer an unclaimed runner over piling onto the same one.</summary>
     public void ClaimTarget(TagAgent tagger, TagAgent target) => _taggerClaims[tagger] = target;
@@ -442,6 +584,10 @@ public sealed class RoundController : MonoBehaviour
         _caughtByName = "";
         _tagCounts.Clear();
         _taggerClaims.Clear();
+        // Dodge budget resets per round; cancel any window a mid-round R abandoned (RestartRound hands
+        // timeScale back to 1 right after this, so CancelDodgeWindow deliberately leaves time alone).
+        _dodgeUsesThisRound = 0;
+        CancelDodgeWindow();
         // A faller mid-sequence when the round ended must not leak into this one and get consequenced
         // (respawned + converted) seconds after AssignRoles below has already placed them. Un-ragdoll
         // them on the way out: dropping them from the set is the last chance anything has to, and
@@ -690,6 +836,16 @@ public sealed class RoundController : MonoBehaviour
 
     private void Update()
     {
+        // Dodge desaturation weight eases toward its target every frame on UNSCALED time (the window
+        // runs at 0.3x, and this must still ease at 0 when the round is over) — kept above every early
+        // return so the wash always fades cleanly. Trivial and metric-neutral, so it runs headless too.
+        _dodgeDesatWeight = Mathf.MoveTowards(_dodgeDesatWeight, _dodgeDesatTarget, Time.unscaledDeltaTime / DodgeDesatFade);
+
+        // Reactive dodge window (local player only; DodgeWindowActive is never true headless). Above the
+        // kill-cam / round-over returns below because a pending tag means the round is NOT over yet, and
+        // a window must keep resolving; it can never coexist with a kill-cam replay (see the Dodge region).
+        TickDodgeWindow();
+
         // Tag slow-mo self-restore, on UNSCALED time so it fires even while timeScale is 0.35. If the
         // pause menu froze timeScale to 0 mid-slow-mo, pausing wins: drop our claim and leave timeScale
         // alone (SettingsMenu restores it to 1 on resume) rather than stomping it back to 1 while paused.
@@ -915,6 +1071,11 @@ public sealed class RoundController : MonoBehaviour
         _roundOver = true;
         _resultMessage = message;
 
+        // A dodge window still open at round end (e.g. the timer expiring at 0.3x mid-window) must not
+        // leak its pending tag or its desaturation into the end screen. Clear it here; EndRound's own
+        // timeScale=0 freeze (below, local player only) then owns time, so this leaves timeScale alone.
+        CancelDodgeWindow();
+
         // The end screen needs the camera back. Idempotent, and deliberately not conditional on HOW we
         // got here: the street sequence's own path already ended the shot (this no-ops for it), but the
         // round can also end UNDER a live death cam — the timer expiring while the player is still in
@@ -1017,6 +1178,20 @@ public sealed class RoundController : MonoBehaviour
     /// best-of-5 instead.</summary>
     private void RestartRound()
     {
+        // FORFEIT: R on a LIVE mid-match round counts as a round LOSS (user). Before this, a mid-round
+        // R silently evaporated the round — no history entry, no score change — so the round counter
+        // never advanced and the "MATCH POINT" callout could repeat back-to-back while the score
+        // quietly desynced from rounds actually played. Routing through EndRound (the single tally
+        // path) keeps the accounting in one place: _playerLost forces the loss, EndRound records
+        // history/score/match-over, and the restart below then lands on StartRound — or StartMatch,
+        // if this forfeit just decided the match. Free restarts remain during the pre-GO countdown
+        // (nothing has been played yet) and in free-roam/headless (MatchActive false).
+        if (MatchActive && !_roundOver && !_matchOver && !IsCountdownActive)
+        {
+            _playerLost = true;
+            EndRound("Round forfeited");
+        }
+
         // Before StartRound: Cancel puts back the camera rig, animator update modes and every agent
         // transform the replay took over, so respawn writes onto restored state rather than being
         // undone by a later Restore. It also hands timeScale back, which this method's own
@@ -1057,6 +1232,7 @@ public sealed class RoundController : MonoBehaviour
         // spinner, trash HUD and the "YOU'RE IT" flash would all still draw.
         if (_killCamPlayback is { IsPlaying: true }) return;
 
+        DrawDodgeCue(); // desaturation wash first (bottom layer) so the HUD draws on top of it
         DrawTagConversionFlash();
 
         DrawTimer();
@@ -1070,15 +1246,24 @@ public sealed class RoundController : MonoBehaviour
         DrawLungeSpinner();
     }
 
-    // Top-center HUD capsule: timer + (Runner-side) trash bin row merged into one GameUIStyle.Panel
-    // strip instead of two backdrops sitting next to each other. Centered on GameUIStyle.DesignWidth,
-    // never Screen.width (see the kit's remarks on aspect).
+    // Top-center HUD capsule: [SCORE PIPS][TIMER][BINS] merged into one GameUIStyle.Panel strip
+    // instead of separate backdrops. Centered on GameUIStyle.DesignWidth, never Screen.width (see the
+    // kit's remarks on aspect). The pip block (left) and bin block (right) both reserve the WIDER of
+    // the two side widths (see DrawTimer) so the timer text never shifts off-center regardless of
+    // which side actually has content — a bare unplayed pip block or an empty bin block just leaves
+    // its reserved space blank rather than letting the other side crowd the timer.
     private const float HudCapsuleHeight = 46f;
     private const float HudCapsulePad = 18f;
     private const float TimerColumnWidth = 90f;
     private const float BinIconWidth = 20f, BinIconHeight = 24f, BinIconGap = 8f;
     private const float BinBarHeight = 5f;
     private const float BinPunchDuration = 0.35f;
+
+    // Shared with DrawScorePipRow (end screen + this HUD block both draw the same 5-pip strip) so the
+    // HUD's reserved side width and the pips' own layout can never drift apart.
+    private const int PipSlots = RoundsToWinMatch * 2 - 1; // best-of-5 = 5 playable rounds
+    private const float PipSize = 16f, PipGap = 6f;
+    private const float PipsRowWidth = PipSlots * PipSize + (PipSlots - 1) * PipGap;
 
     private int _lastTrashPointsSeen = -1;
     private float _binPunchStartUnscaled = float.NegativeInfinity;
@@ -1102,13 +1287,19 @@ public sealed class RoundController : MonoBehaviour
         }
         if (urgent) color = _config.taggerColor;
 
+        // Pips only mid-match (free-roam/headless self-play have no match, see MatchActive); bins only
+        // on a cans round and only for the local Runner (ShouldShowRunnerBinRow). Both sides reserve
+        // the WIDER of the two so the timer stays centered whichever side (or neither) actually draws.
+        bool showPips = MatchActive;
         bool showBins = ShouldShowRunnerBinRow();
-        float capsuleWidth = TimerColumnWidth + HudCapsulePad * 2f
-            + (showBins ? RunnerBinRowWidth() + HudCapsulePad : 0f);
+        float sideWidth = Mathf.Max(showPips ? PipsRowWidth : 0f, showBins ? RunnerBinRowWidth() : 0f);
+
+        float capsuleWidth = TimerColumnWidth + HudCapsulePad * 2f + (sideWidth > 0f ? (sideWidth + HudCapsulePad) * 2f : 0f);
         var capsule = new Rect((GameUIStyle.DesignWidth - capsuleWidth) * 0.5f, 8f, capsuleWidth, HudCapsuleHeight);
         GameUIStyle.Panel(capsule);
 
-        var timerRect = new Rect(capsule.x, capsule.y, TimerColumnWidth + HudCapsulePad, capsule.height);
+        float timerX = capsule.x + HudCapsulePad + (sideWidth > 0f ? sideWidth + HudCapsulePad : 0f);
+        var timerRect = new Rect(timerX, capsule.y, TimerColumnWidth, capsule.height);
         Rect scaledTimerRect = GameUIStyle.Scaled(timerRect);
 
         // Per-second pulse: 1 right on the tick, decaying to rest across the second — the timer is a
@@ -1127,7 +1318,8 @@ public sealed class RoundController : MonoBehaviour
         GUI.Label(scaledTimerRect, text, style);
         GUI.matrix = savedMatrix;
 
-        if (showBins) DrawRunnerBinRow(new Rect(timerRect.xMax, capsule.y, capsuleWidth - timerRect.width, capsule.height));
+        if (showPips) DrawScorePipRow(new Rect(capsule.x + HudCapsulePad, capsule.y, sideWidth, capsule.height));
+        if (showBins) DrawRunnerBinRow(new Rect(timerRect.xMax + HudCapsulePad, capsule.y, sideWidth, capsule.height));
     }
 
     private bool ShouldShowRunnerBinRow()
@@ -1157,7 +1349,9 @@ public sealed class RoundController : MonoBehaviour
 
         int target = _config.trashPointsToWin;
         float rowWidth = RunnerBinRowWidth();
-        float startX = area.x;
+        // Centered rather than flush-left: area.width is the shared side width (see DrawTimer), which
+        // can be wider than this row when the pip block is the wider of the two sides.
+        float startX = area.x + (area.width - rowWidth) * 0.5f;
         float rowY = area.y + (area.height - BinIconHeight) * 0.5f;
         float punchT = Mathf.Clamp01(1f - (Time.unscaledTime - _binPunchStartUnscaled) / BinPunchDuration);
 
@@ -1268,9 +1462,8 @@ public sealed class RoundController : MonoBehaviour
     //
     // MatchActive adds a round/score line above the verdict and a pip row below it (score pips
     // mid-match, the full round-history strip once the match is decided) — see
-    // DrawScorePipRow/DrawRoundHistoryStrip. SEAM: those pips currently render inside the end-screen
-    // body; a later pass can lift DrawScorePipRow into the in-round HUD header instead (top-center,
-    // beside the timer capsule) without touching the match-state fields it reads.
+    // DrawScorePipRow/DrawRoundHistoryStrip. DrawTimer's HUD capsule now draws the same pip row
+    // top-center during the round itself (same _roundHistory data, same helper).
     private void DrawEndScreen()
     {
         bool matchActive = MatchActive;
@@ -1427,58 +1620,27 @@ public sealed class RoundController : MonoBehaviour
         GUI.Label(GameUIStyle.Scaled(new Rect(designRect.x, designRect.y + 20f, designRect.width, designRect.height - 20f)), value, valueStyle);
     }
 
-    // Score-pip row for a match still in progress: RoundsToWinMatch pips per side, filled from each
-    // group's OUTER edge inward toward the score as that side nears the win — the gap between the
-    // two groups visibly closes as the match tightens, same plain-rect DrawPanel composition
-    // DrawBinIcon uses for the trash icons, just a bare filled/hairline pip instead of a lid+body glyph.
+    // ONE row of exactly 5 pips (user sketch) — one per round of the best-of-5, in play order:
+    // player-won = green, bot-won = tagger red, not-yet-played = hollow hairline. Replaces the old
+    // two-groups-plus-score layout (3 player pips | "1-1" | 3 bot pips = 6 squares), which read as
+    // six slots and hid the round order. Serves both mid-match, match-end, and the in-round HUD
+    // capsule (DrawTimer) — same data (_roundHistory), same layout, three call sites.
     private void DrawScorePipRow(Rect area)
     {
-        const float pipSize = 14f, pipGap = 5f, groupGap = 14f;
-        float groupWidth = RoundsToWinMatch * pipSize + (RoundsToWinMatch - 1) * pipGap;
+        float startX = area.x + (area.width - PipsRowWidth) * 0.5f;
+        float pipY = area.y + (area.height - PipSize) * 0.5f;
 
-        string scoreText = $"{_matchPlayerWins}-{_matchBotWins}";
-        GUIStyle scoreStyle = GameUIStyle.Label(GameUIStyle.Caption, TextAnchor.MiddleCenter);
-        scoreStyle.normal.textColor = GameUIStyle.Text;
-        // CalcSize measures the already-scaled style in real screen pixels; convert back to design
-        // units so it can mix with the rest of this method's design-space layout math without drifting
-        // at any resolution other than the 1080p dev default (where the two units coincide).
-        Vector2 scoreSize = scoreStyle.CalcSize(new GUIContent(scoreText)) / Mathf.Max(GameUIStyle.Scale, 0.0001f);
-
-        float totalWidth = groupWidth * 2f + scoreSize.x + groupGap * 2f;
-        float startX = area.x + (area.width - totalWidth) * 0.5f;
-        float pipY = area.y + (area.height - pipSize) * 0.5f;
-
-        for (int i = 0; i < RoundsToWinMatch; i++)
-            DrawPanel(GameUIStyle.Scaled(new Rect(startX + i * (pipSize + pipGap), pipY, pipSize, pipSize)),
-                i < _matchPlayerWins ? GameUIStyle.AccentBright : GameUIStyle.Hairline);
-
-        GUI.Label(GameUIStyle.Scaled(new Rect(startX + groupWidth + groupGap, area.y, scoreSize.x, area.height)), scoreText, scoreStyle);
-
-        float botStartX = startX + groupWidth + groupGap * 2f + scoreSize.x;
-        for (int i = 0; i < RoundsToWinMatch; i++)
+        for (int i = 0; i < PipSlots; i++)
         {
-            bool filled = i >= RoundsToWinMatch - _matchBotWins; // outer-edge-first, mirrored from the player group
-            DrawPanel(GameUIStyle.Scaled(new Rect(botStartX + i * (pipSize + pipGap), pipY, pipSize, pipSize)),
-                filled ? _config.taggerColor : GameUIStyle.Hairline);
+            Color color = i < _roundHistory.Count
+                ? (_roundHistory[i] ? GameUIStyle.Success : _config.taggerColor)
+                : GameUIStyle.Hairline;
+            DrawPanel(GameUIStyle.Scaled(new Rect(startX + i * (PipSize + PipGap), pipY, PipSize, PipSize)), color);
         }
     }
 
-    // Full round-by-round history strip for a decided match: one pip per round played (3-5), in
-    // order, colored by who won it — no empty pips here, every slot is a played round.
-    private void DrawRoundHistoryStrip(Rect area)
-    {
-        int count = _roundHistory.Count;
-        if (count == 0) return;
-
-        const float pipSize = 16f, pipGap = 6f;
-        float rowWidth = count * pipSize + (count - 1) * pipGap;
-        float startX = area.x + (area.width - rowWidth) * 0.5f;
-        float pipY = area.y + (area.height - pipSize) * 0.5f;
-
-        for (int i = 0; i < count; i++)
-            DrawPanel(GameUIStyle.Scaled(new Rect(startX + i * (pipSize + pipGap), pipY, pipSize, pipSize)),
-                _roundHistory[i] ? GameUIStyle.AccentBright : _config.taggerColor);
-    }
+    // Decided-match strip = the same 5-slot row; kept as a name so the call site reads as intent.
+    private void DrawRoundHistoryStrip(Rect area) => DrawScorePipRow(area);
 
     /// <summary>Round/match-point callout while the countdown grace holds, so the player knows which
     /// round of the best-of-5 they're on before movement unlocks. Sits well above DrawCountdown's
@@ -1488,6 +1650,7 @@ public sealed class RoundController : MonoBehaviour
     private void DrawRoundStartBanner()
     {
         if (!MatchActive || _roundOver || IsPastStartGrace) return;
+        if (_isMenuOpen != null && _isMenuOpen()) return; // don't draw over the main/pause menu (user screenshot)
 
         float elapsed = Time.time - _roundStartTime;
         float t = 1f - Mathf.Clamp01(elapsed / _config.roundStartGraceDuration); // 1 -> 0 over the grace window
@@ -1503,6 +1666,35 @@ public sealed class RoundController : MonoBehaviour
         GUI.color = color;
         GUI.DrawTexture(rect, Texture2D.whiteTexture);
         GUI.color = prev;
+    }
+
+    /// <summary>The clutch-dodge screen cue: a desaturation stand-in (flat gray wash, eased by
+    /// _dodgeDesatWeight — see the field's remarks on why it's IMGUI, not a URP volume) under a thin
+    /// red edge vignette and a screen-center draining red ring + mouse-LMB glyph (see DrawDodgeRing),
+    /// drawn only while the window is actually open. No text — the ring + icon carry the whole
+    /// message on their own. Local-player-only by construction (the weight/window are never armed
+    /// headless).</summary>
+    private void DrawDodgeCue()
+    {
+        if (_dodgeDesatWeight <= 0.001f) return;
+
+        // Desaturation wash — lightened from 0.55 to ~0.47 peak gray alpha (fades in/out with the window).
+        DrawPanel(new Rect(0f, 0f, Screen.width, Screen.height), new Color(0.5f, 0.5f, 0.5f, 0.4675f * _dodgeDesatWeight));
+
+        if (!DodgeWindowActive) return; // edge vignette + ring only while the window is live, not during the fade-out
+
+        // Pulsing red edge vignette — four thin bands hugging the screen edges, in the tagger's red.
+        // Halved from 0.06 to 0.03 of screen height: the ring is now the focal cue, this is background texture.
+        float pulse = 0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 18f);
+        Color edge = _config.taggerColor;
+        edge.a = 0.35f + 0.35f * pulse;
+        float band = Screen.height * 0.03f;
+        DrawPanel(new Rect(0f, 0f, Screen.width, band), edge);
+        DrawPanel(new Rect(0f, Screen.height - band, Screen.width, band), edge);
+        DrawPanel(new Rect(0f, 0f, band, Screen.height), edge);
+        DrawPanel(new Rect(Screen.width - band, 0f, band, Screen.height), edge);
+
+        DrawDodgeRing();
     }
 
     /// <summary>Full-screen grace-orange flash fading over unscaled time, plus a "YOU'RE IT" pop, when
@@ -1542,6 +1734,7 @@ public sealed class RoundController : MonoBehaviour
     private void DrawCountdown()
     {
         if (_roundOver) return;
+        if (_isMenuOpen != null && _isMenuOpen()) return; // don't draw over the main/pause menu (user screenshot)
 
         float sinceEnd = Time.time - _countdownEndTime;
         // Also covers the never-armed case: _countdownEndTime starts at float.NegativeInfinity, so
@@ -1942,7 +2135,11 @@ public sealed class RoundController : MonoBehaviour
         float elapsed = Time.time - _localPlayerAgent.LastDeniedLungeTime;
         if (elapsed < 0f || elapsed >= SpinnerDeniedWindow) return;
 
-        float fill = Mathf.Clamp01(1f - _localPlayerAgent.LungeCooldownRemaining / Mathf.Max(_config.lungeCooldown, 0.0001f));
+        // Denominator is the cooldown the local player's role actually carries: Runners run on
+        // runnerRollCooldown (2s), Taggers on lungeCooldown (0). Without this the spinner fill divided
+        // by the Tagger's 0 and read as instantly-full for the raccoon's real 2s roll cooldown.
+        float roleCooldown = _localPlayerAgent.Role == Role.Runner ? _config.runnerRollCooldown : _config.lungeCooldown;
+        float fill = Mathf.Clamp01(1f - _localPlayerAgent.LungeCooldownRemaining / Mathf.Max(roleCooldown, 0.0001f));
         bool ready = _localPlayerAgent.LungeCooldownRemaining <= 0f;
 
         Rect rect = GameUIStyle.Scaled(new Rect(
@@ -2012,6 +2209,124 @@ public sealed class RoundController : MonoBehaviour
                 pixels[y * size + x] = new Color(1f, 1f, 1f, radialAlpha * angularAlpha);
             }
         }
+        tex.SetPixels(pixels);
+        tex.Apply();
+        return tex;
+    }
+
+    // ---------------------------------------------------------------- Dodge window ring + mouse icon
+    //
+    // The dodge cue's focal element (see DrawDodgeCue): a red radial ring, same visual family as the
+    // lunge cooldown spinner above — it reuses BuildSpinnerArcTexture and picks a cached frame by fill
+    // fraction exactly as DrawLungeSpinner does — just tinted red instead of accent, and bigger, since
+    // this is THE cue rather than a corner status readout. Fill is the window's REMAINING fraction
+    // (unscaled), so the ring starts full and drains as the reaction window runs out, instead of
+    // filling up like the spinner's cooldown wipe. A small generated mouse-LMB glyph sits centered
+    // inside it. Both are pre-generated once (same rationale as the spinner frames/minimap icons: OnGUI
+    // runs at least twice a frame) and built lazily from RegisterAgent's isLocalPlayer branch.
+
+    private const int DodgeRingTextureSize = 96;  // higher-res than the lunge spinner (64) — drawn ~2x larger on screen
+    private const float DodgeRingOuterRadius = 46f;
+    private const float DodgeRingInnerRadius = 40f; // thin ring, same proportion as the lunge spinner's
+    private const float DodgeRingOnScreenSize = 72f; // bigger than the lunge spinner (34) — this is THE focal cue
+
+    private const int DodgeMouseIconTexWidth = 22;
+    private const int DodgeMouseIconTexHeight = 30;
+    private const float DodgeMouseIconOnScreenWidth = 26f;
+    private const float DodgeMouseIconOnScreenHeight = 36f;
+
+    private Texture2D[]? _dodgeRingFrames;
+    private Texture2D? _dodgeMouseIconTex;
+
+    private void SetupDodgeRing()
+    {
+        if (_dodgeRingFrames != null) return;
+        if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return; // same headless/-nographics guard as SetupLungeSpinner
+
+        _dodgeRingFrames = new Texture2D[SpinnerFrameCount];
+        for (int i = 0; i < SpinnerFrameCount; i++)
+        {
+            float sweepDegrees = i / (float)(SpinnerFrameCount - 1) * 360f;
+            _dodgeRingFrames[i] = BuildSpinnerArcTexture(DodgeRingTextureSize, DodgeRingOuterRadius, DodgeRingInnerRadius, sweepDegrees);
+        }
+    }
+
+    private void SetupDodgeMouseIcon()
+    {
+        if (_dodgeMouseIconTex != null) return;
+        if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return;
+
+        _dodgeMouseIconTex = BuildMouseIconTexture(DodgeMouseIconTexWidth, DodgeMouseIconTexHeight);
+    }
+
+    /// <summary>Screen-center draining red ring + centered mouse-LMB glyph. Called only while
+    /// DodgeWindowActive (see DrawDodgeCue) so _dodgeWindowDuration is always the CURRENT window's
+    /// total, never a stale one from a previous window.</summary>
+    private void DrawDodgeRing()
+    {
+        if (_dodgeRingFrames == null) return;
+
+        float remaining = _dodgeWindowEndUnscaled - Time.unscaledTime;
+        float fill = _dodgeWindowDuration > 0f ? Mathf.Clamp01(remaining / _dodgeWindowDuration) : 0f;
+        int frameIndex = Mathf.Clamp(Mathf.RoundToInt(fill * (SpinnerFrameCount - 1)), 0, SpinnerFrameCount - 1);
+
+        Rect rect = GameUIStyle.Scaled(new Rect(
+            GameUIStyle.DesignWidth * 0.5f - DodgeRingOnScreenSize * 0.5f,
+            GameUIStyle.DesignHeight * 0.5f - DodgeRingOnScreenSize * 0.5f,
+            DodgeRingOnScreenSize, DodgeRingOnScreenSize));
+
+        GUI.color = _config.taggerColor;
+        GUI.DrawTexture(rect, _dodgeRingFrames[frameIndex]);
+        GUI.color = Color.white;
+
+        if (_dodgeMouseIconTex == null) return;
+        Rect iconRect = GameUIStyle.Scaled(new Rect(
+            GameUIStyle.DesignWidth * 0.5f - DodgeMouseIconOnScreenWidth * 0.5f,
+            GameUIStyle.DesignHeight * 0.5f - DodgeMouseIconOnScreenHeight * 0.5f,
+            DodgeMouseIconOnScreenWidth, DodgeMouseIconOnScreenHeight));
+        GUI.DrawTexture(iconRect, _dodgeMouseIconTex);
+    }
+
+    /// <summary>Small mouse-glyph icon for the dodge ring: a tall rounded-rect body (same SDF
+    /// rounded-rect math as GameUIStyle.RoundedRect, just non-square) split by a horizontal line 40%
+    /// down from the top into a "buttons" section and a "body" section below it. The buttons section's
+    /// LEFT half — the mouse's left button, since dodging is bound to LMB — is lit in
+    /// GameUIStyle.AccentBright; everything else (right button + body) stays a dim neutral, so the lit
+    /// half reads as "click this". Built once via SetPixels, same idiom as BuildDotTexture/
+    /// BuildTriangleTexture above.</summary>
+    private static Texture2D BuildMouseIconTexture(int width, int height)
+    {
+        var tex = new Texture2D(width, height, TextureFormat.RGBA32, false) { filterMode = FilterMode.Bilinear };
+        var pixels = new Color[width * height];
+        Color dim = new(0.55f, 0.53f, 0.5f, 1f);
+
+        float halfW = width * 0.5f;
+        float halfH = height * 0.5f;
+        float radius = halfW * 0.9f; // most of the half-width — reads as a rounded/pill silhouette, not a boxy rect
+        float innerX = halfW - radius;
+        float innerY = halfH - radius;
+        // Texture row 0 is the BOTTOM (Unity's texture-space convention — see GameUIStyle.ShadowTex), so
+        // "40% down from the top" is 60% up from the bottom.
+        float splitRowFromBottom = height * 0.6f;
+
+        for (int y = 0; y < height; y++)
+        {
+            bool inTopSection = y + 0.5f >= splitRowFromBottom;
+            for (int x = 0; x < width; x++)
+            {
+                float px = x + 0.5f - halfW;
+                float py = y + 0.5f - halfH;
+                float qx = Mathf.Abs(px) - innerX;
+                float qy = Mathf.Abs(py) - innerY;
+                float outside = new Vector2(Mathf.Max(qx, 0f), Mathf.Max(qy, 0f)).magnitude;
+                float d = outside + Mathf.Min(Mathf.Max(qx, qy), 0f) - radius; // <0 inside
+                float coverage = Mathf.Clamp01(0.5f - d); // 1px antialiased edge, same formula as GameUIStyle.RoundedRect
+
+                Color fill = inTopSection && x < width / 2 ? GameUIStyle.AccentBright : dim;
+                pixels[y * width + x] = new Color(fill.r, fill.g, fill.b, coverage);
+            }
+        }
+
         tex.SetPixels(pixels);
         tex.Apply();
         return tex;

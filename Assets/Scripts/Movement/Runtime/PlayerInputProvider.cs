@@ -1,6 +1,5 @@
 #nullable enable
 
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -40,37 +39,34 @@ public sealed class PlayerInputProvider : MonoBehaviour, ICharacterInput
     public InputAction SprintAction => _sprint!;
     public InputAction InteractAction => _interact!;
 
-    // PlayerPrefs persistence for rebound keyboard bindings. Keyed by action name so each action's
-    // overrides round-trip independently; missing/empty entries just mean "use the built-in default".
+    // PlayerPrefs persistence for rebound keyboard/mouse bindings. Keyed by action name so each
+    // action's overrides round-trip independently; missing/empty entries just mean "use the
+    // built-in default". Static so actions owned elsewhere (TagAgent's Lunge/Tag) share the exact
+    // same pattern: load right after creation, save from KeyRebinder on rebind completion.
     private const string BindingPrefsPrefix = "RooftopTag.Bind.";
 
-    /// <summary>Saves every rebindable action's current binding overrides to PlayerPrefs. Call after a rebind completes.</summary>
-    public void SavePersistedBindingOverrides()
+    /// <summary>Persists one action's current binding overrides. Called by KeyRebinder after a rebind completes.</summary>
+    public static void SaveBindingOverride(InputAction action)
     {
-        foreach (InputAction action in RebindableActions)
-            PlayerPrefs.SetString(BindingPrefsPrefix + action.name, action.SaveBindingOverridesAsJson());
+        PlayerPrefs.SetString(BindingPrefsPrefix + action.name, action.SaveBindingOverridesAsJson());
         PlayerPrefs.Save();
     }
 
-    private IEnumerable<InputAction> RebindableActions
+    /// <summary>Re-applies a persisted binding override, if any. Call wherever a rebindable action
+    /// is (re)created — Awake here, TagAgent.Configure for Lunge/Tag.</summary>
+    public static void LoadBindingOverride(InputAction action)
     {
-        get
-        {
-            yield return _jump!;
-            yield return _slide!;
-            yield return _sprint!;
-            yield return _interact!;
-        }
+        string json = PlayerPrefs.GetString(BindingPrefsPrefix + action.name, "");
+        if (!string.IsNullOrEmpty(json))
+            action.LoadBindingOverridesFromJson(json);
     }
 
     private void LoadPersistedBindingOverrides()
     {
-        foreach (InputAction action in RebindableActions)
-        {
-            string json = PlayerPrefs.GetString(BindingPrefsPrefix + action.name, "");
-            if (!string.IsNullOrEmpty(json))
-                action.LoadBindingOverridesFromJson(json);
-        }
+        LoadBindingOverride(_jump!);
+        LoadBindingOverride(_slide!);
+        LoadBindingOverride(_sprint!);
+        LoadBindingOverride(_interact!);
     }
 
     private void Awake()
