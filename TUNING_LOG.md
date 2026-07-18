@@ -2281,3 +2281,271 @@ Implemented `docs/superpowers/plans/2026-07-15-rooftop-arena-expansion.md` (Task
 - Headless build: `ROOFTOP_BUILD: 31 roofs, 63 links`; ZERO of SKIPPED/STEEP/CLIP/REDUNDANT; `TRASHCAN_ANCHORS: 10`; BUILD_OK.
 - PlayMode: RooftopGraphTests 13/13 (incl. 4 new); Movement/Rules/Prop 41/42 — sole fail `Swing_EnergyCapBoundsSwingHeight` (~4.99 vs >5.5), a self-contained pre-existing marginal test with NO code path to this change (out-of-scope per plan).
 - Self-play (10 matches): stuck=4 (<< ~17 baseline), fallen=0, cans_eaten=12, trash_wins=2, runner_win_rate=0.20, avg_survival=0.10, max_distance_from_spawn=55.2 (east zone reached). Edge usage exercises Run/Jump/Ladder/Drop/Vault/Swing/Climb. Ramp shows 0 by design — `RooftopGraphBuilder` emits Ramp links as `ParkourEdgeType.Run` (bots walk ramps as Run), so the plan's "Ramp>0" expectation was never achievable; the added ramps feed the Run count (1005).
+
+## Building visual pass — blur fix + PBR wiring + post + tint variety (2026-07-18)
+
+Driven live via the Unity MCP (edit C# / import settings → rebuild `RooftopTag/Build Rooftop Arena`
+→ `ScreenshotTool.CaptureAll` → read console). User complaint: building textures look blurry/cheap.
+Root causes found by probing the actual imported assets (not guessing): the visible buildings are
+glTFast GLB shells on `Shader Graphs/glTF-pbrMetallicRoughness`; `GlbCityKit.BuildLitMaterial` rebuilt
+a bare URP/Lit material with only baseColor+emission, MSAA was off, no camera AA, no Tonemapping in
+the post volume, and every playable shell was tinted pure white.
+
+**Tier 1 — blur/AA/response (inline).**
+- GLB import `anisotropicFilterLevel: 1 → 8` on building1-4.glb.meta (grazing-angle facades were the
+  #1 blur cause). Verified baseAniso=8 on all four post-reimport.
+- `BuildLitMaterial`: bind building4's own tangent-space normal map (glTF "NormalGL" = URP `_BumpMap`
+  convention, binds straight across) + `_NORMALMAP`; set `_Smoothness 0.12`, `_Metallic 0` (URP/Lit's
+  default 0.5 read as wet plastic). ORM/metallicRoughness deliberately NOT bound — glTF channel
+  packing ≠ URP `_MetallicGlossMap`, a direct bind is wrong; scalar matte is correct here.
+- MSAA 1 → 4 on PC_RPAsset; SMAA (High) on the player camera (BuildCamera) and the screenshot camera.
+
+**Tier 2 — post (Opus agent).** Added `Tonemapping` (Neutral, not ACES — ACES desaturates/hue-shifts
+the warm window palette) to `SceneStyler.CreatePostVolume`, knob `VisualThemeConfig.tonemapMode`.
+Pipeline colorGradingMode LDR → HDR (tonemapping is a no-op in LDR). Bloom left at 0.45 by design
+(higher merges windows into a glowing block). Lighting/fog untouched.
+
+**Tier 3 — variety (Sonnet agent).** Playable shells were `Color.white`; added seeded, BUCKETED
+per-building tint (`ShellTint`, knobs `glbTintJitter=0.10`, `glbTintVariants=6`). Bucketed, not
+per-instance, because of the 96-GLB-material ceiling (skyline already ~44). building4 decimation was
+already done/wired (`building4_10k.asset`), so not re-run. SSAO left at 0.4/0.3 (MCP feature API
+didn't expose its property keys; current values are reasonable).
+
+**Verify.** Compile clean each tier (only the one nullable warning I introduced, then fixed); zero
+console errors; `ROOFTOP_ARENA_BUILD_OK` after every rebuild. Before/after 6-vantage shots in
+`Tools/screenshots/`: edges markedly cleaner (poles/roof lips no longer shimmer), concrete matte not
+plastic, facades sharper at distance, building4 gains real normal-mapped relief, sky/windows slightly
+richer under Neutral tonemap, adjacent same-model buildings now vary subtly in tone. Net: blur fixed
+(the actual complaint); Tier 2/3 are deliberately subtle polish given the intentionally moody night
+theme. No movement/gameplay code touched.
+
+## Backdrop city — living metropolis loop (2026-07-18)
+
+Goal: make the RooftopArena backdrop city read as a busy, vibrant metropolis from the rooftop
+vantage — moving traffic on a real road network with traffic lights, denser/varied skyline, cleaner
+roads, heavier near-fog as a perf lever. Pure decor (never touched by gameplay). Run as an autonomous
+build → screenshot → assess → improve loop via Unity MCP. New capture helper `ScreenshotTool.PlayModeShot()`
+shoots the CURRENT scene from 3 rooftop city vantages (overview / north_ave / east_ave) to
+`Tools/screenshots/shot_city_*.png` — works in edit AND play mode, no scene reopen, no editor-exit
+(unlike the existing batch `PlayModeShot.Run`).
+
+**Baseline** (`ROOFTOP_BACKDROP_STREETS: 956 backdrop roads in 959 BSP blocks`, 2 draw calls; cars
+~36 static ping-pong boxes): nighttime skyline + lit windows + fog read OK, but traffic is the weak
+link — few cars, dumb A↔B ping-pong, no stop/go rhythm; mid-ground streets flat/empty.
+
+### Iteration 1 — Traffic core: lane graph + signals + turning (KEEP)
+
+**Change.** Replaced the dumb `CarDrifter` A↔B ping-pong with a real lane network:
+- New `TrafficNetwork` runtime component (attached ONLY by the editor styler, like CarDrifter/CarImpact
+  — never headless): serialized directed-lane graph + signal timing. `IsGreen(node,axis,t)` is a pure
+  function of `Time.time` (X-travel lanes green first half of each junction's cycle, Z-travel second
+  half, per-node phase offset so the city doesn't blink in unison) — no per-light state, free to query
+  from any number of cars. `NextLane()` picks a non-U-turn exit at each junction (allocation-free
+  reservoir pick).
+- `SceneStyler.BuildTrafficGraph()` bakes the graph from the SAME `StreetSegments` the roads are drawn
+  from (cars can't leave the asphalt): every segment crossed against every perpendicular one → 8
+  signalized intersection nodes; each segment cut at crossings+endpoints into sub-edges; each sub-edge →
+  TWO directed lanes, each offset to the driver's right so oncoming traffic separates onto opposite
+  halves. Deterministic (no RNG) — rebuild is byte-identical.
+- `CarDrifter` rewritten as a lane-follower: cruise → ease to a stop at the stop line on a red for its
+  axis (MoveTowards accel/decel), hold, pull away, turn onto a new lane at the junction. Keeps the
+  parent LookRotated down its lane every frame, so `CarImpact.transform.forward` (street-death launch
+  dir) still works through turns/stops — street-death path preserved, trigger child unchanged.
+- Density is layout-derived: ~1 car per `carSpacing` (15m) of lane, both directions; lanes shorter than
+  `carMinLaneSpawnLength` (7m) route through-traffic but spawn no parked car. New `VisualThemeConfig`
+  "Traffic" knobs: carSpacing, carMinLaneSpawnLength, trafficLightCycle(9s), trafficLightClearance(0.8s),
+  carStopMargin(3m), carLaneOffsetMax(1.7m), carAccel(6), carDecel(16).
+
+**Hypothesis.** Two-way lane traffic at ~1/15m + stop/go at signals reads as a living city; cars stay
+on the asphalt and behave; no compile/perf regression; street-death untouched.
+
+**Result.** Compiles clean (zero errors). Build: `ROOFTOP_TRAFFIC: 28 nodes (8 signalized), 52 lanes,
+86 cars on the road` (vs ~36). Edit-mode `shot_city_*`: clear density win — perimeter avenues now carry
+long two-way strings of cars (overview right avenue, north_ave two-way row) where baseline had short
+clumps of 2-3; lanes visibly separated onto opposite sides. Play mode confirmed running/advancing
+(time 0.00→0.35, frame 7, cars driving) but the Unity MCP bridge DISCONNECTED before I captured the
+play-mode behavior shot — so stop/go-at-red and turning are code-verified + sim-confirmed-moving but
+NOT yet screenshot-verified. Editor left in play mode at the drop.
+
+**Decision.** KEEP the density/lane result (clearly better). Next on reconnect: exit play mode, capture
+play-mode `shot_city_*` to visually confirm cars bunch at reds while cross-traffic flows + turn at
+corners; tune light cycle / queue spacing if cars pile at stop lines (v1 has no leader-following — a
+known risk to check). Draw-call delta from +50 cars to be offset by the fog perf-lever iteration.
+
+### Iteration 1 verdict + ring fix (KEEP)
+
+**Play-mode verification (after MCP reconnect).** RooftopArena play mode opens in a paused main-menu
+(timeScale=0) and the editor throttles frames when unfocused, so to see moving decor I set
+`Application.runInBackground=true` + `Time.timeScale` (the menu zeroes scale once ~3.2s in; re-setting
+after that sticks), ran the sim to ~40-140s, then captured. Cars drive on their lanes, redistribute
+from spawn, sim runs clean (zero errors over 300s+). Confirmed the traffic core works.
+
+**Critical finding.** All 8 signalized intersections were in the INTERIOR 2.5m alley grid (x,z ∈
+~[-7.5,19.5]) — 22m below the roofs and largely occluded. The visible PERIMETER avenues (segments 6-9)
+don't cross anything, so those cars just cruised and U-turned at dead ends: the stop/go-at-lights rhythm
+was happening where you can't see it.
+
+**Ring fix.** Extended the 4 perimeter avenues to share 4 corner coordinates — (-60,45),(45,45),
+(45,-46),(-60,-46) — turning them into a CLOSED signalized ring out in the open. Cars now flow around
+the ring, queue at corner reds and turn, instead of U-turning. All 4 corners are in open ground clear of
+every roof (WarnIfStripClipsRoof silent; tightest is the pre-existing 0.25m East pinch on the 3.5m E
+side). Build: `ROOFTOP_TRAFFIC: 24 nodes (12 signalized), 52 lanes, 92 cars` (8 interior + 4 visible ring
+corners; perimeter's 8 dead-end nodes merged to 4 shared corners). Zero errors, zero road-clip warnings.
+
+**Screenshot verdict.** Overview now shows a dense string of cars down the east ring avenue with a
+visible QUEUE bunched at the SE corner while traffic flows above — the proportional-braking decel
+naturally spaces cars into a line rather than a hard stack, so the no-leader-following pile-up risk reads
+fine from the vantage. "Multiple vehicles moving and stopping at lights" is now VISIBLE. KEEP.
+
+**Draw-call note.** Cars 36→92 (~+112 draw calls at 2/car). To be offset by the fog perf-lever
+iteration (cull distant skyline). Deferred: literal traffic-light POSTS (next), road markings at
+intersections, building density.
+
+### Iteration 2 — Animated traffic-light posts (KEEP)
+
+**Change.** New `TrafficLightPost` runtime component (editor-only attachment, like the rest of the
+traffic decor) drives one emissive bulb per junction off the SAME `TrafficNetwork.IsGreen` the cars
+obey — green while its axis is green, red otherwise — so the glowing dot and the cars stopping under it
+can't disagree. `SceneStyler.CreateTrafficLightPosts` builds a shared dark pole mesh + a per-post bulb
+(own material instance, since neighbouring junctions run different phases), HDR emission so the post
+volume's bloom turns each into a coloured dot from the rooftops. Placed at all 12 signalized nodes
+(`ROOFTOP_TRAFFIC_LIGHTS: 12 signal posts`); the 4 ring corners are the visible ones. No colliders,
+shadows off, Dressing layer (out of the minimap), 20m below the play area. New theme knobs:
+trafficPostHeight, trafficBulbSize, trafficPostColor, trafficLightGreen/Red, trafficLightEmission.
+
+**Tuning.** First pass at emission 4.5 blew the bulb core to white (bloom clipped it) — the red/green
+reading was lost. Dropped to 2.6: the bulb now reads as a clear red/orange (or green) signal dot that
+survives the glow.
+
+**Screenshot verdict.** Play mode (sim ~56s): E-avenue corner post glows red with a car queue directly
+below it in the overview; east vantage shows the red signal on its pole reading clearly as a streetlight.
+Zero errors. KEEP. Note: subtle from the far overview (small bulbs), clear at mid-range; interior posts
+hidden as expected.
+
+### Iteration 3 — Skyline density + height variety (KEEP)
+
+**Change (knobs only, via subagent-mapped levers).** An Explore subagent mapped the backdrop building
+system: buildings fill BSP blocks inside a radius annulus [skylineInnerRadius 72 .. skylineOuterRadius
+340], each block gated by a Lerp(skylineBlockFillNear, skylineBlockFillFar) coin flip; the real
+play-area safety is the radius-independent keepOut.Overlaps check, NOT the inner radius. Crucially,
+buildings only avoid the roof keep-out, NOT the real StreetSegments — so LOWERING skylineInnerRadius
+would risk buildings spawning on my new ring road. Safe lever = denser fill in the existing annulus.
+Raised skylineBlockFillNear 0.21→0.36, skylineBlockFillFar 0.53→0.68 (kept well under the ~0.9
+"solid slab" ceiling), skylineHeightMax 40→52 (taller landmark towers for vertical variety).
+
+**Result.** `ROOFTOP_SKYLINE: 190 backdrop buildings` (was ~134, +42%), 50/96 GLB materials (headroom),
+zero errors. Draw calls scale 1/building, so +56 building draw calls (+56 car draw calls from Iter 1) —
+to be offset next by shrinking skylineOuterRadius under heavier fog.
+
+**Screenshot verdict.** Overview skyline transformed from scattered towers-with-gaps into a dense,
+layered wall of lit-window towers with taller landmarks, dissolving into fog — reads as a real
+metropolis. Mid-ground fills better too. KEEP.
+
+### Iteration 5 — Fog as a perf lever (KEEP)
+
+**Change.** Raised fogDensity 0.006 → 0.007 (the field's own documented ceiling before the play area
+tints — respected exactly, movement-first) and pulled skylineOuterRadius 340 → 240. At 0.007 the 240-340
+ring sat at 95-99% fog (near-invisible), so dropping it costs almost nothing visually; and because the
+fill fraction interpolates over [inner..outer], compressing the outer radius concentrates the
+near→far density gradient into the band you can actually SEE. groundEdgeMargin (140) left as-is: ground
+still reaches 380m, fully fogged, so no hard world edge.
+
+**Perf delta (honest).**
+- Backdrop buildings: 190 → **84** (`ROOFTOP_SKYLINE`), i.e. −106 vs the density peak and −50 vs the
+  original 134 baseline — a real reduction in building renderers/draw calls.
+- Skyline scene verts: 1,467,090 → **650,708** (−56%) — the dominant GPU (vertex/fill) cost, roughly
+  halved even versus baseline.
+- Against that, the traffic pass ADDED renderers: cars 36 → 92 and 12 signal posts (pole+bulb). Net
+  object count is modestly up (~+30 renderers) BUT all decor shares few materials and is SRP-batched, and
+  cars/posts are tiny-vert meshes — so total vertex/fill cost is well BELOW baseline while the scene reads
+  far busier. Not a literal "fewer draw calls" on every counter, but equal-or-better real rendering cost,
+  which was the goal.
+
+**Screenshot verdict.** Near/mid skyline still dense; far towers fade gradually into an intentional fog
+wall (no cull cliff); play-area roofs crisp and unwashed (0.007 kept the play area clear). Zero errors.
+KEEP.
+
+### Summary — backdrop city is now a living metropolis
+
+Final build (clean, zero errors): `ROOFTOP_SKYLINE: 84 buildings / 650,708 verts`,
+`ROOFTOP_TRAFFIC: 24 nodes (12 signalized), 52 lanes, 92 cars`, `ROOFTOP_TRAFFIC_LIGHTS: 12 posts`,
+backdrop streets still 2 draw calls.
+
+Exit criteria vs result:
+- Multiple vehicles moving + stopping at lights: YES — 92 cars, two-way lanes on their own side, ease to
+  a stop at red and queue at the 4 visible signalized ring corners, pull away and turn on green.
+- Turn at intersections (not ping-pong): YES — cars route the lane graph; the perimeter is now a closed
+  signalized ring so visible traffic flows and turns instead of U-turning.
+- Traffic lights: YES — animated red/green emissive posts at every junction, driven off the same signal
+  state the cars obey; bloom turns them into glowing signal dots.
+- Dense/varied skyline: YES — fill density up, taller landmark towers, gradient compressed into the
+  visible band.
+- Clean roads: lane markings present (dashed centre lines on avenues); crosswalks/curbs deliberately NOT
+  added — invisible from 22m above per unit-of-effort, not worth the build-cycle risk.
+- Heavier near-fog, intentional (no cull cliff): YES — fogDensity 0.006→0.007 (author's documented
+  ceiling, play area stays crisp), skylineOuterRadius 340→240, far ring dissolves in a soft fog wall.
+- Equal-or-better rendering cost: YES on the dominant axis — skyline verts −56% (1.47M→651k), backdrop
+  buildings 134→84 vs baseline. Traffic adds ~+30 SRP-batched, tiny-mesh renderers; net vertex/fill cost
+  is well below baseline while the scene reads far busier.
+
+New files: `TrafficNetwork.cs` (lane graph + signal timing), `TrafficLightPost.cs` (bulb animator).
+Rewritten: `CarDrifter.cs` (ping-pong → lane follower). Extended: `SceneStyler.cs` (BuildTrafficGraph,
+CreateTrafficLightPosts, ring StreetSegments, CreateCars), `VisualThemeConfig.cs` (traffic + signal
+knobs, density/fog retune), `ScreenshotTool.cs` (PlayModeShot city vantages). Street-death path
+(CarImpact) preserved; headless self-play harness untouched (all decor is editor-time attachment only).
+
+## City rebuild with Kenney CC0 asset kits (2026-07-18) — phased
+
+User asked to rebuild the placeholder city (flat road planes, box cars, block buildings) with real
+external assets in the Crossy-Road/Kenney style. Capability check: Unity Asset Store packs can't be
+fetched programmatically (auth GUI); AI model/texture gen tools present but providers unconfigured
+(no keys); Kenney CC0 kits ARE fetchable (network egress works) + importable as GLB via glTFast — and
+Kenney IS the referenced style. Also removed the other scenes so RooftopArena is the only scene.
+
+Imported (curl from kenney.nl, CC0): City Kit Roads (72 pieces), City Kit Commercial (41 buildings),
+Car Kit (50 vehicles) as GLB + shared colormap.png (glTFast needs Textures/colormap.png beside the GLBs;
+first flat extract failed import until the texture was placed at the referenced relative path).
+
+### PHASE 1 — Modular road network (DONE)
+`Assets/Editor/KenneyCityBuilder.cs`: lattice road-grid generator from the Kenney tiles — `road-crossroad-path`
+(crosswalk 4-ways) at nodes, `road-straight` runs between (1-unit flat tiles scaled ×8 → 8m), `light-square`
+lamp posts (one per run, after cutting an initial 4-per-corner overcrowding that rendered as a zigzag mess),
+curbed sidewalks baked into the tiles. Returns `CityGrid{Blocks,Intersections,RoadSegments}` for later
+phases. Integrated into `BuildRooftopArena` (`BuildKenneyStreets`) centred on the play cluster at street
+level (buildingBaseY+0.2, hiding the old flat strips; ground-slab collider untouched). 6×6 grid:
+`KENNEY_ROADGRID: 49 intersections, 252 straight tiles, 84 lights, 36 blocks`. Zero errors. Rooftop-vantage
+screenshots show real modular streets (crosswalks/sidewalks/markings/lamps) replacing the flat planes —
+clear visual upgrade. Deferred within Phase 1: dedicated cycling traffic-light posts (→ Phase 3 traffic),
+hydrant/bench props (need a furniture kit). Playfield geometry untouched.
+
+## Net-throw catch (2026-07-18) — AC-style bug net replaces the ranged hand-tag
+
+**Change**: Taggers now throw an Animal-Crossing-style bug net (wood pole / blue grip / orange
+stitched hoop / cream bag — procedural meshes, `NetVisual.cs`) as the ranged catch. Windup 0.3s →
+ballistic flight 0.45s → hit drops a trap dome over the victim (1.2s struggle, then the normal tag
+flow) / miss slams the net flat with the existing whiff lockout. A net released at the local player
+reuses the clutch-dodge slow-mo window (window = netFlightTime). Committed-dive contact tag
+unchanged. All tuning in `TagRulesConfig` "Net throw" header. Bots call `Net.TryThrow()` where they
+used to hand-tag; procedural additive right-arm throw anim in `CharacterAnimatorBridge` (no clip
+needed).
+
+**Verified** (MCP loop): compile clean; editor smoke-shots of net + trap dome; live round:
+10/10 taggers carry nets, missed nets land flat on roofs, trap dome tents over the caught raccoon
+(tail sticking out — chef's kiss), dodge slow-mo (0.3x) observed opening on a real bot throw,
+kill-cam/round-end flow intact; zero exceptions in console across many rounds.
+
+**Test triage** (all pre-existing, none caused by the net):
+- `Runner_CanLunge…`/`Tag_OnContact…`/`TaggedAgent…` were silently no-opping their `TryLunge()` —
+  the 0.25s `SpawnLungeSwallowSeconds` gate (menu-click leak fix, committed earlier) eats
+  spawn-frame lunges. Tests now wait 0.3s first → `Runner_CanLunge` green again.
+- `Tag_OnContact`/`TaggedAgent` still red for a deeper reason: the bare-capsule `CreateTagAgent`
+  rig ends up in degenerate physics states (runner sinks ~0.8m into the ground; the diving tagger
+  rides up/over it at y≈1.95 with no solid OnCollisionEnter — diag METRIC lines left in the test).
+  The mechanic itself verified live: identical setup in the running arena converts Runner→Tagger
+  with grace on dive contact. Test-harness fix deferred.
+- `RooftopArenaScene_SpawnsWithCorrectRoleDistribution` expects taggerCount=1 but the config default
+  is 10 — pre-session WIP mismatch (menu sets 1 at runtime; raw scene load uses the default).
+  Its cleanup now runs BEFORE the asserts (+ timeScale restore) so a failure can no longer leak the
+  live arena and hang every later test at WaitForFixedUpdate (that was the "stuck at 64/73" hang).
+- Swing energy-cap / vault-from-standstill / crane-camp / bot-cliff failures: pre-existing movement
+  and map items, untouched code paths.

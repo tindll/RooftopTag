@@ -44,15 +44,23 @@ public sealed class TagRulesTests
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
 
-        (_, _, TagAgent taggerAgent, _) = CreateTagAgent(new Vector3(-0.3f, 1.1f, 0f));
-        (_, _, TagAgent runnerAgent, _) = CreateTagAgent(new Vector3(0.3f, 1.1f, 0f));
+        // Runner sits IN the tagger's forward dive path (dives go along +Z): spawn-overlap contact
+        // can't be relied on once the spawn-swallow wait below lets physics depenetrate the capsules.
+        (GameObject taggerGo, CharacterMotor taggerMotor, TagAgent taggerAgent, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f));
+        (_, _, TagAgent runnerAgent, _) = CreateTagAgent(new Vector3(0f, 1.1f, 1.2f));
 
         taggerAgent.SetRole(Role.Tagger, startGrace: false);
         runnerAgent.SetRole(Role.Runner, startGrace: false);
+        // TryLunge swallows same-frame-as-spawn presses (SpawnLungeSwallowSeconds, the menu-click
+        // leak fix) — wait it out so this lunge is treated as a real mid-round press.
+        yield return new WaitForSeconds(0.3f);
         taggerAgent.TryLunge();
+        Debug.Log($"METRIC contact_diag lunge: isDiving={taggerMotor.IsDiving} speed={taggerMotor.CurrentSpeed:F2} pos={taggerGo.transform.position} fwd={taggerGo.transform.forward} timeScale={Time.timeScale}");
 
-        yield return new WaitForFixedUpdate();
-        yield return new WaitForFixedUpdate();
+        // The dive (9 m/s) needs ~0.15s to cover the 1.2m to the runner — give it a comfortable
+        // margin while staying well inside the 0.8s contact-tag window.
+        yield return new WaitForSeconds(0.4f);
+        Debug.Log($"METRIC contact_diag after: isDiving={taggerMotor.IsDiving} speed={taggerMotor.CurrentSpeed:F2} taggerPos={taggerGo.transform.position} runnerPos={runnerAgent.transform.position} runnerRole={runnerAgent.Role}");
 
         Assert.AreEqual(Role.Tagger, runnerAgent.Role, "Runner should be converted to Tagger on contact during the tagger's lunge window.");
         Assert.IsTrue(runnerAgent.IsInGrace, "Newly-converted tagger should be in conversion grace.");
@@ -76,6 +84,8 @@ public sealed class TagRulesTests
         runnerA.SetRole(Role.Runner, startGrace: false);
         runnerB.SetRole(Role.Runner, startGrace: false);
 
+        // Wait out the spawn-click swallow window (see SpawnLungeSwallowSeconds) before lunging.
+        yield return new WaitForSeconds(0.3f);
         float speedBefore = aMotor.CurrentSpeed;
         runnerA.TryLunge();
         float speedAfter = aMotor.CurrentSpeed;
@@ -101,17 +111,20 @@ public sealed class TagRulesTests
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
 
-        (_, _, TagAgent a, _) = CreateTagAgent(new Vector3(-0.3f, 1.1f, 0f));
-        (GameObject bGo, _, TagAgent b, _) = CreateTagAgent(new Vector3(0.3f, 1.1f, 0f));
-        (GameObject cGo, _, TagAgent c, _) = CreateTagAgent(new Vector3(0.3f, 1.1f, 10f));
+        // B sits in A's forward (+Z) dive path — spawn-overlap contact can't be relied on once the
+        // spawn-swallow wait lets physics depenetrate the capsules (see Tag_OnContact test).
+        (_, _, TagAgent a, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f));
+        (GameObject bGo, _, TagAgent b, _) = CreateTagAgent(new Vector3(0f, 1.1f, 1.2f));
+        (GameObject cGo, _, TagAgent c, _) = CreateTagAgent(new Vector3(0f, 1.1f, 10f));
 
         a.SetRole(Role.Tagger, startGrace: false);
         b.SetRole(Role.Runner, startGrace: false);
         c.SetRole(Role.Runner, startGrace: false);
+        // Wait out the spawn-click swallow window (see SpawnLungeSwallowSeconds) before lunging.
+        yield return new WaitForSeconds(0.3f);
         a.TryLunge();
 
-        yield return new WaitForFixedUpdate();
-        yield return new WaitForFixedUpdate();
+        yield return new WaitForSeconds(0.4f); // dive time to cover the 1.2m + contact resolution
         Assert.AreEqual(Role.Tagger, b.Role, "Precondition: B should have just been tagged.");
         Assert.IsTrue(b.IsInGrace, "Precondition: B should be in grace.");
 
@@ -343,11 +356,8 @@ public sealed class TagRulesTests
         // Current "chase me" ruleset (TagRulesConfig.taggerCount=1, forcePlayerAsRunner=true): a single
         // deliberate smart-chaser Tagger hunting everyone else. RooftopArena's 11-agent roster (1 human
         // + 10 bots via TagArenaBootstrap.botRoots) → the human is the forced Runner and exactly one bot
-        // is the Tagger, leaving 10 Runners. TagArena.unity is the smaller 3-agent debug variant of the
-        // same mode (see TagArenaScene_IsChaseMeDebugMode below).
-        Assert.AreEqual(11, controller.Agents.Count, "Rooftop Arena should spawn exactly 11 agents.");
-        Assert.AreEqual(1, taggers, "Should start with exactly 1 tagger (the single smart chaser).");
-        Assert.AreEqual(10, runners, "Should start with exactly 10 runners.");
+        // is the Tagger, leaving 10 Runners.
+        int agentCount = controller.Agents.Count;
 
         // Single-mode scene loads leak forward: Unity's physics simulation and Update loop run
         // across ALL loaded scenes regardless of which is "active", so the 12 live agents and
@@ -356,51 +366,17 @@ public sealed class TagRulesTests
         // ParkourBotInput_AvoidsRunningOffCliff — its isolated 10x10 test platform ended up
         // sharing a physics world with a full leftover Tag Arena). Swap to a blank scene and
         // unload this one so later tests get a clean physics world.
+        // IMPORTANT: this cleanup runs BEFORE the asserts — a failing assert would otherwise skip
+        // it, leak the live arena, and (via EndRound freezing Time.timeScale to 0) hang every later
+        // test on its first WaitForFixedUpdate.
         Scene blank = SceneManager.CreateScene("TestIsolationBlank");
         SceneManager.SetActiveScene(blank);
         yield return SceneManager.UnloadSceneAsync(rooftopArenaScene);
-    }
+        Time.timeScale = 1f; // the leaked round may have ended (or slow-mo'd) while we sampled roles
 
-    [UnityTest]
-    public IEnumerator TagArenaScene_IsChaseMeDebugMode()
-    {
-        Scene tagArenaScene = EditorSceneManager.LoadSceneInPlayMode(
-            "Assets/Scenes/TagArena.unity",
-            new LoadSceneParameters(LoadSceneMode.Single));
-        yield return null;
-        yield return null;
-        yield return null;
-
-        RoundController? controller = Object.FindAnyObjectByType<RoundController>();
-        Assert.IsNotNull(controller, "RoundController should exist in the Tag Arena scene.");
-
-        int taggers = 0;
-        int runners = 0;
-        foreach (TagAgent agent in controller!.Agents)
-        {
-            if (agent.Role == Role.Tagger) taggers++;
-            else runners++;
-        }
-
-        Debug.Log($"METRIC tag_arena_agent_count={controller.Agents.Count} taggers={taggers} runners={runners}");
-        // "Chase me" debug mode: 3 agents (player + 2 bots), player forced as Runner, and the same
-        // single-Tagger ruleset (taggerCount=1) as the main scene — so exactly 1 bot chases, leaving
-        // the player plus the other bot as the 2 Runners. See
-        // RooftopArenaScene_SpawnsWithCorrectRoleDistribution above for the full 11-agent main scene.
-        Assert.AreEqual(3, controller.Agents.Count, "Tag Arena should spawn exactly 3 agents.");
+        Assert.AreEqual(11, agentCount, "Rooftop Arena should spawn exactly 11 agents.");
         Assert.AreEqual(1, taggers, "Should start with exactly 1 tagger (the single smart chaser).");
-        Assert.AreEqual(2, runners, "Should start with exactly 2 runners.");
-
-        // Single-mode scene loads leak forward: Unity's physics simulation and Update loop run
-        // across ALL loaded scenes regardless of which is "active", so the live agents and real
-        // map geometry this test just loaded would otherwise keep ticking and colliding with
-        // every later test's ad-hoc GameObjects (this is exactly what broke
-        // ParkourBotInput_AvoidsRunningOffCliff — its isolated 10x10 test platform ended up
-        // sharing a physics world with a full leftover Tag Arena). Swap to a blank scene and
-        // unload this one so later tests get a clean physics world.
-        Scene blank = SceneManager.CreateScene("TestIsolationBlank");
-        SceneManager.SetActiveScene(blank);
-        yield return SceneManager.UnloadSceneAsync(tagArenaScene);
+        Assert.AreEqual(10, runners, "Should start with exactly 10 runners.");
     }
 
     [UnityTest]

@@ -128,9 +128,14 @@ public sealed class RoundController : MonoBehaviour
     // it defers to the pause menu exactly as the tag slow-mo does (never stomps a frozen timeScale).
     private TagAgent? _pendingDodgeTagger;
     private TagAgent? _pendingDodgeVictim;
+    // Non-null while the open dodge window is a NET THROW'S flight (the local player was the target).
+    // Resolution then routes back to the net — flat-land + already-applied whiff on a dodge, trap dome +
+    // delayed ExecuteTag on a no-dodge — instead of the instant ExecuteTag a hand-tag window does.
+    private NetThrower? _pendingNet;
     private float _dodgeWindowEndUnscaled = -1f;
     private float _dodgeWindowDuration; // total duration of the currently-open window — DrawDodgeRing's remaining-fraction fill divides by this
     private int _dodgeUsesThisRound; // successful reactive dodges so far this round — shrinks each new window (reset in StartRound)
+    private float _lastDodgeSuccessUnscaled = float.NegativeInfinity; // stamp of the last successful dodge — drives DodgeOnCooldown (reset in StartRound)
 
     // Desaturation cue. Spec wanted a real URP ColorAdjustments saturation override, but no RUNTIME
     // assembly in this project references URP (Game.Rules → Movement/Camera/MapGeometry/UI/InputSystem;
@@ -316,19 +321,37 @@ public sealed class RoundController : MonoBehaviour
 
     private void OnLocalPlayerTagged(TagAgent _, TagAgent __) => _tagFlashEndUnscaled = Time.unscaledTime + TagFlashDuration;
 
+    /// <summary>True while the post-dodge cooldown (config.dodgeCooldownSeconds, unscaled) is running:
+    /// a successful dodge disarms EVERY escape assist — reactive windows here, net-flight windows, and
+    /// the proactive i-frames in TagAgent.PerformTag — so a follow-up catch simply lands. One clutch
+    /// per engagement; a pincer's second tagger gets their catch.</summary>
+    public bool DodgeOnCooldown => Time.unscaledTime - _lastDodgeSuccessUnscaled < _config.dodgeCooldownSeconds;
+
     /// <summary>Opens a reactive dodge window for a tag the local player would otherwise take (called
-    /// from TagAgent.PerformTag, local victim only). Returns true when the tag was absorbed here — for
-    /// a local victim that's always, so the tag is always deferred rather than landing immediately. A
-    /// second tag arriving while a window is already open is simply absorbed (the player is mid-dodge).
+    /// from TagAgent.PerformTag, local victim only). Returns true when the tag was absorbed here, which
+    /// is always EXCEPT during the post-dodge cooldown (false → the caller lands the tag immediately).
+    /// A second tag arriving while a window is already open is simply absorbed (the player is mid-dodge).
     /// Window length shrinks per dodge already pulled off this round, floored so miracle dodges remain.</summary>
     public bool TryBeginDodgeWindow(TagAgent tagger, TagAgent victim)
     {
         if (DodgeWindowActive) return true; // already dodging — absorb a second simultaneous tag
+        if (DodgeOnCooldown) return false;  // clutch already spent — this tag just lands
 
         float[] durations = _config.dodgeWindowDurations;
         float duration = durations != null && _dodgeUsesThisRound < durations.Length
             ? durations[_dodgeUsesThisRound]
             : _config.dodgeWindowFloor;
+        return BeginDodgeWindowInternal(tagger, victim, duration, net: null);
+    }
+
+    /// <summary>Shared open path for both the hand-tag dodge window (shrinking per-use duration) and the
+    /// net-throw flight window (fixed <see cref="TagRulesConfig.netFlightTime"/>, carrying the NetThrower
+    /// so resolution can route back to it). Absorbs a second simultaneous request like TryBeginDodgeWindow.</summary>
+    private bool BeginDodgeWindowInternal(TagAgent tagger, TagAgent victim, float duration, NetThrower? net)
+    {
+        if (DodgeWindowActive) return true;
+
+        _pendingNet = net;
         _pendingDodgeTagger = tagger;
         _pendingDodgeVictim = victim;
         _dodgeWindowDuration = duration; // remembered so DrawDodgeRing can compute a remaining-fraction fill
@@ -377,8 +400,10 @@ public sealed class RoundController : MonoBehaviour
     {
         TagAgent? tagger = _pendingDodgeTagger;
         TagAgent? victim = _pendingDodgeVictim;
+        NetThrower? net = _pendingNet;
         _pendingDodgeTagger = null;
         _pendingDodgeVictim = null;
+        _pendingNet = null;
         _dodgeWindowEndUnscaled = -1f;
         _dodgeDesatTarget = 0f; // fade the desaturation back out
 
@@ -391,8 +416,14 @@ public sealed class RoundController : MonoBehaviour
         if (dodged)
         {
             _dodgeUsesThisRound++;       // this reactive dodge consumes one budget use → next window is shorter
+            _lastDodgeSuccessUnscaled = Time.unscaledTime; // starts the post-dodge cooldown (DodgeOnCooldown)
             victim.TriggerDodgeEscape(); // roll clear at runner speed
             tagger.WhiffLunge();         // the tagger whiffs + eats the lockout
+            net?.OnDodged();             // net slams the empty ground where it was thrown (whiff already applied above)
+        }
+        else if (net != null)
+        {
+            net.OnHitConfirmed();        // no dodge — drop the trap dome, then the net lands the tag (owns the flow from here)
         }
         else
         {
@@ -406,6 +437,8 @@ public sealed class RoundController : MonoBehaviour
     /// round boundary (R mid-window, round ends mid-window).</summary>
     private void CancelDodgeWindow()
     {
+        _pendingNet?.OnDodged(); // release any in-flight net back to Idle so it can't stick across a round boundary
+        _pendingNet = null;
         _pendingDodgeTagger = null;
         _pendingDodgeVictim = null;
         _dodgeWindowEndUnscaled = -1f;
@@ -572,6 +605,26 @@ public sealed class RoundController : MonoBehaviour
         }
     }
 
+    // Static event → subscribe/unsubscribe symmetrically with enable state so a destroyed controller
+    // (test teardown, scene unload) can't stay hooked. The handler null-guards, so a stray fire between
+    // Configure calls is harmless.
+    private void OnEnable() => NetThrower.NetThrownAtPlayer += OnNetThrownAtPlayer;
+    private void OnDisable() => NetThrower.NetThrownAtPlayer -= OnNetThrownAtPlayer;
+
+    /// <summary>A tagger released a net AT the local player: reuse the clutch-dodge window as the net's
+    /// flight-time reaction test (window = netFlightTime). Taking ownership routes resolution back through
+    /// the NetThrower (see ResolveDodgeWindow's net branch). No-op for a bot/headless target (the net
+    /// self-resolves) or if a window is already open (the net falls back to its own hit/miss resolution).</summary>
+    private void OnNetThrownAtPlayer(NetThrower net, TagAgent victim)
+    {
+        if (_config == null || _localPlayerAgent == null || victim != _localPlayerAgent) return;
+        // DodgeOnCooldown: the clutch is spent — no flight window either; the net keeps its own
+        // hit/miss resolution (same fallback as when a window is already open) and simply connects.
+        if (IsRoundOver || DodgeWindowActive || DodgeOnCooldown) return;
+        net.MarkExternalResolution();
+        BeginDodgeWindowInternal(net.Owner, victim, _config.netFlightTime, net);
+    }
+
     private void Start() => StartRound();
 
     public void StartRound()
@@ -587,6 +640,7 @@ public sealed class RoundController : MonoBehaviour
         // Dodge budget resets per round; cancel any window a mid-round R abandoned (RestartRound hands
         // timeScale back to 1 right after this, so CancelDodgeWindow deliberately leaves time alone).
         _dodgeUsesThisRound = 0;
+        _lastDodgeSuccessUnscaled = float.NegativeInfinity; // fresh round, fresh clutch
         CancelDodgeWindow();
         // A faller mid-sequence when the round ended must not leak into this one and get consequenced
         // (respawned + converted) seconds after AssignRoles below has already placed them. Un-ragdoll

@@ -108,6 +108,85 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     /// trash can. Drives the crouch/rummage eat animation.</summary>
     public void SetEating(bool eating) => _eatingTarget = eating;
 
+    // ---------------------------------------------------------------- Net throw (procedural upper-body)
+
+    // No throw clip exists, so the net throw is a procedural additive pose layered on the Animator's
+    // output in LateUpdate (after Update writes the pose): a windup that raises the right arm up-and-back
+    // over the wind-up, then a fast forward sweep on release, blended back to the animator pose. Kept
+    // Rules-agnostic — TagAgent drives it via BeginThrow/ReleaseThrow so this stays in Game.Movement.
+    private enum ThrowPhase { None, Windup, Release }
+    private ThrowPhase _throwPhase = ThrowPhase.None;
+    private float _throwWindup = 0.3f;
+    private float _throwTimer;
+    private const float ThrowReleaseSweep = 0.15f; // fast forward whip on release
+    private const float ThrowReleaseBlend = 0.25f; // ease back to the animator pose afterward
+    private const float ThrowRaiseDeg = 95f;       // up-and-back at full windup (upper arm)
+    private const float ThrowForwardDeg = 70f;     // forward thrust at the release peak (upper arm)
+
+    /// <summary>Begin the wind-up: the right arm raises up-and-back over <paramref name="windupSeconds"/>.
+    /// Additive over the current pose, so it composes with whatever locomotion clip is playing.</summary>
+    public void BeginThrow(float windupSeconds)
+    {
+        _throwPhase = ThrowPhase.Windup;
+        _throwWindup = Mathf.Max(0.01f, windupSeconds);
+        _throwTimer = 0f;
+    }
+
+    /// <summary>Release: whip the arm forward fast (~0.15s), then blend the additive pose back out
+    /// (~0.25s). The carried net (parented to the hand bone by NetThrower) follows the hand for free.</summary>
+    public void ReleaseThrow()
+    {
+        _throwPhase = ThrowPhase.Release;
+        _throwTimer = 0f;
+    }
+
+    private void LateUpdate()
+    {
+        if (_throwPhase == ThrowPhase.None || _animator == null || !_animator.isHuman) return;
+
+        Transform upper = _animator.GetBoneTransform(HumanBodyBones.RightUpperArm);
+        Transform lower = _animator.GetBoneTransform(HumanBodyBones.RightLowerArm);
+        if (upper == null) { _throwPhase = ThrowPhase.None; return; } // rig without a mapped upper arm — bail cleanly
+
+        float raise;   // 0..1 up-and-back
+        float forward; // 0..1 forward thrust
+        if (_throwPhase == ThrowPhase.Windup)
+        {
+            _throwTimer += Time.deltaTime;
+            raise = Mathf.Clamp01(_throwTimer / _throwWindup);
+            forward = 0f;
+        }
+        else if (_throwTimer <= ThrowReleaseSweep)
+        {
+            _throwTimer += Time.deltaTime;
+            float u = Mathf.Clamp01(_throwTimer / ThrowReleaseSweep);
+            raise = 1f - u;
+            forward = u;
+        }
+        else if (_throwTimer <= ThrowReleaseSweep + ThrowReleaseBlend)
+        {
+            _throwTimer += Time.deltaTime;
+            float u = (_throwTimer - ThrowReleaseSweep) / ThrowReleaseBlend;
+            raise = 0f;
+            forward = 1f - u;
+        }
+        else
+        {
+            _throwPhase = ThrowPhase.None;
+            return;
+        }
+
+        // Additive rotation about the bone's local X (approximate shoulder pitch for a Mixamo humanoid):
+        // negative raises the arm up-and-back, positive swings it down-and-forward.
+        float upperDeg = -ThrowRaiseDeg * raise + ThrowForwardDeg * forward;
+        upper.localRotation *= Quaternion.Euler(upperDeg, 0f, 0f);
+        if (lower != null)
+        {
+            float lowerDeg = -0.4f * ThrowRaiseDeg * raise + 0.3f * ThrowForwardDeg * forward;
+            lower.localRotation *= Quaternion.Euler(lowerDeg, 0f, 0f);
+        }
+    }
+
     private void Update()
     {
         if (_motor == null || _animator == null) return;

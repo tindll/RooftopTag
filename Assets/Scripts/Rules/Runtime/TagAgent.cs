@@ -128,6 +128,29 @@ public sealed class TagAgent : MonoBehaviour
     public float LungeCooldownRemaining => Mathf.Max(0f, _lungeCooldownRemaining);
     public CharacterMotor Motor => _motor;
 
+    /// <summary>The net-throw component (the ranged catch, replacing the old hand-tag) — created on this
+    /// same GameObject in <see cref="Configure"/>. Exposed so bot AI can drive it (rate-limited) exactly
+    /// as the player's right-click does. Null only before Configure runs.</summary>
+    public NetThrower? Net { get; private set; }
+
+    // Net trap: a caught victim is frozen (input-locked) and its model struggles for this long before the
+    // tag lands (see NetThrower.ResolveHit / BeginNetTrap). The wiggle is applied to the model CHILD, never
+    // the physics root — writing the root fights CharacterMotor's Rigidbody pose (the LateUpdate pitch note
+    // documents the same conflict). Headless capsules have no model child, so the wiggle no-ops there.
+    private float _netTrapRemaining;
+    private Transform? _netTrapModel;
+    private Vector3 _netTrapBaseLocalPos;
+    private Quaternion _netTrapBaseLocalRot;
+    private const float NetTrapWigglePos = 0.04f;
+    private const float NetTrapWiggleDeg = 6f;
+
+    internal bool IsLocalPlayer => _isLocalPlayer;
+    internal RoundController? Round => _roundController;
+
+    /// <summary>The proactive dodge-i-frame check (a committed dive's opening window), extracted so the
+    /// net throw can honor the same auto-whiff the ranged tag's <see cref="PerformTag"/> gate does.</summary>
+    internal bool IsDodgingViaIFrames() => _motor.IsDiving && Time.time - _diveStartTime < _config.dodgeIFrames;
+
     /// <summary>How far a lunge from <paramref name="currentSpeed"/> actually carries this agent. The
     /// dive is a COMMITTED window (see TryLunge / CharacterMotor.BeginDive), so a bot has to know its
     /// reach to check what it would land on BEFORE committing — and reach exceeds lungeRange, so
@@ -213,9 +236,21 @@ public sealed class TagAgent : MonoBehaviour
 
             _tagAction = new InputAction("Tag", InputActionType.Button, "<Mouse>/rightButton");
             _tagAction.AddBinding("<Gamepad>/leftTrigger");
-            _tagAction.performed += _ => TryTagInRange();
+            // Right-click is now a net THROW (replaces the instant ranged hand-tag). Reads the live Net
+            // field at invoke time, so it works regardless of Configure/Net creation ordering below.
+            _tagAction.performed += _ => Net?.TryThrow();
             PlayerInputProvider.LoadBindingOverride(_tagAction);
             _tagAction.Enable();
+        }
+
+        // The net throw lives on this same GameObject — created here so the bootstrap needs no extra
+        // wiring, mirroring how the arms / InputActions are built in Configure. Guarded against a repeat
+        // Configure (arms/ring aren't, but AddComponent-ing a second NetThrower would double it up).
+        if (Net == null)
+        {
+            NetThrower net = gameObject.AddComponent<NetThrower>();
+            net.Initialize(this, _config);
+            Net = net;
         }
 
         if (_proceduralBody)
@@ -294,6 +329,8 @@ public sealed class TagAgent : MonoBehaviour
 
         if (_lungeTagWindowRemaining > 0f)
             _lungeTagWindowRemaining -= Time.deltaTime;
+
+        TickNetTrap();
 
         if (_reachRing != null)
         {
@@ -507,6 +544,64 @@ public sealed class TagAgent : MonoBehaviour
         else _bridge.TriggerDiveRoll();
     }
 
+    /// <summary>Relays a net-throw windup to the CURRENT bridge (reads the live _bridge field, so a model
+    /// swap can't leave this pointing at a destroyed one — same reasoning as DriveLungeAnimation). Falls
+    /// back to a held arm-raise on the procedural capsule; both null-safe for headless.</summary>
+    internal void DriveThrowWindup(float windupSeconds)
+    {
+        if (_bridge != null) _bridge.BeginThrow(windupSeconds);
+        else if (_proceduralBody) PlayArmHold(ArmMantleRaisedDeg, easeDuration: windupSeconds);
+    }
+
+    /// <summary>Relays a net-throw release to the CURRENT bridge; procedural fallback whips the arm forward.</summary>
+    internal void DriveThrowRelease()
+    {
+        if (_bridge != null) _bridge.ReleaseThrow();
+        else if (_proceduralBody) PlayArmAnimation(ArmMantleRaisedDeg, ArmTagReachDeg, outDuration: 0.1f, backDuration: 0.25f);
+    }
+
+    /// <summary>Caught under a thrown net: freeze this agent's control for <paramref name="duration"/> and
+    /// struggle (model-child wiggle, ticked in <see cref="Update"/>), after which the tag lands
+    /// (NetThrower's delayed ExecuteTag). Presentation-only apart from the input freeze.</summary>
+    internal void BeginNetTrap(float duration)
+    {
+        _netTrapRemaining = duration;
+        _motor.InputLocked = true;
+
+        _netTrapModel = _proceduralBody ? null : transform.Find("CharacterModel");
+        if (_netTrapModel != null)
+        {
+            _netTrapBaseLocalPos = _netTrapModel.localPosition;
+            _netTrapBaseLocalRot = _netTrapModel.localRotation;
+        }
+    }
+
+    private void TickNetTrap()
+    {
+        if (_netTrapRemaining <= 0f) return;
+
+        _netTrapRemaining -= Time.deltaTime;
+        bool done = _netTrapRemaining <= 0f;
+
+        if (_netTrapModel != null)
+        {
+            if (done)
+            {
+                _netTrapModel.localPosition = _netTrapBaseLocalPos;
+                _netTrapModel.localRotation = _netTrapBaseLocalRot;
+                _netTrapModel = null;
+            }
+            else
+            {
+                _netTrapModel.localPosition = _netTrapBaseLocalPos + new Vector3(
+                    Mathf.Sin(Time.time * 47f) * NetTrapWigglePos, 0f, Mathf.Cos(Time.time * 53f) * NetTrapWigglePos);
+                _netTrapModel.localRotation = _netTrapBaseLocalRot * Quaternion.Euler(0f, Mathf.Sin(Time.time * 41f) * NetTrapWiggleDeg, 0f);
+            }
+        }
+
+        if (done) _motor.InputLocked = false; // release control the moment the trap ends (tag lands next)
+    }
+
     /// <summary>True when this Tagger's lunge is a finishing catch: the nearest opposing agent (same
     /// lookup bots/TryTagInRange use) is within <see cref="TagRulesConfig.catchRange"/> and roughly
     /// ahead (dot(forward, toTarget) &gt; 0.5). Animation-selection only — never gates the tag itself.</summary>
@@ -627,18 +722,30 @@ public sealed class TagAgent : MonoBehaviour
         // 3) LINE OF SIGHT — no tagging through a thin wall or roof lip; chest-to-chest linecast
         //    must reach the target (or hit nothing but the participants).
         Vector3 delta = nearest.transform.position - transform.position;
-        if (Mathf.Abs(delta.y) > _config.tagReachVerticalTolerance) return;
         if (Vector3.ProjectOnPlane(delta, Vector3.up).magnitude > CurrentReachRadius()) return;
+        if (!HasTagLineOfSight(nearest)) return; // vertical band + chest-to-chest LOS (see helper)
+
+        PerformTag(nearest);
+    }
+
+    /// <summary>The vertical-band + line-of-sight gate shared by the ranged hand-tag (<see cref="TryTagInRange"/>)
+    /// and the net throw (<see cref="NetThrower"/>): the target must be within
+    /// <see cref="TagRulesConfig.tagReachVerticalTolerance"/> of our height (so a tag/net can't land on
+    /// someone a roof-level above or below) AND reachable by a chest-to-chest linecast that hits nothing
+    /// solid but the two of us. Extracted so the net doesn't duplicate it.</summary>
+    internal bool HasTagLineOfSight(TagAgent target)
+    {
+        Vector3 delta = target.transform.position - transform.position;
+        if (Mathf.Abs(delta.y) > _config.tagReachVerticalTolerance) return false;
 
         Vector3 myChest = transform.position + Vector3.up * 1.2f;
-        Vector3 theirChest = nearest.transform.position + Vector3.up * 1.2f;
+        Vector3 theirChest = target.transform.position + Vector3.up * 1.2f;
         if (Physics.Linecast(myChest, theirChest, out RaycastHit block, ~0, QueryTriggerInteraction.Ignore))
         {
             TagAgent? hitAgent = block.collider.GetComponentInParent<TagAgent>();
-            if (hitAgent != nearest && hitAgent != this) return; // something solid between us — no tag
+            if (hitAgent != target && hitAgent != this) return false; // something solid between us
         }
-
-        PerformTag(nearest);
+        return true;
     }
 
     // Tagging is an explicit ranged attempt only (player: right click, via TryTagInRange; bots call
@@ -663,8 +770,12 @@ public sealed class TagAgent : MonoBehaviour
         {
             // C. Proactive i-frames: a tag that lands within the opening dodgeIFrames of the victim's
             // OWN committed dive is auto-dodged for FREE — no window budget consumed. They're already
-            // rolling clear, so there's nothing to trigger on them; the tagger just whiffs.
-            if (other._motor.IsDiving && Time.time - other._diveStartTime < _config.dodgeIFrames)
+            // rolling clear, so there's nothing to trigger on them; the tagger just whiffs. SUPPRESSED
+            // during the post-dodge cooldown: the reactive-dodge escape roll is itself a dive, so
+            // without this gate a pincer partner's catch inside the next dodgeIFrames would whiff for
+            // free — exactly the back-to-back double-dodge the cooldown exists to kill.
+            if (other._motor.IsDiving && Time.time - other._diveStartTime < _config.dodgeIFrames
+                && !_roundController.DodgeOnCooldown)
             {
                 WhiffLunge();
                 return;
