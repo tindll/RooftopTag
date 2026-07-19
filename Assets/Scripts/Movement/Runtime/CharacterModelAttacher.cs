@@ -21,9 +21,9 @@ public static class CharacterModelAttacher
     // biped 1.8m height rule would balloon a long low animal. Length chosen so the raccoon still
     // fits under the netHitRadius trap dome (1.8m across) and reads chunky next to 1.8m taggers.
     private const float QuadrupedBodyLength = 1.6f;
-    // Yaw applied to the mesh so its nose points down the rig's +Z (travel direction) — the Tripo
-    // glb faces -Z natively (verified in-scene: tail toward the agent's forward at yaw 0).
-    private const float QuadrupedFacingYawDeg = 180f;
+    // Yaw applied to the mesh so its nose points down the rig's +Z (travel direction) — the rigged
+    // Tripo glb faces -X natively (head at x~-0.3, tail at x~+0.2 in its own space).
+    private const float QuadrupedFacingYawDeg = 90f;
 
     public static (Renderer? renderer, bool procedural, CharacterAnimatorBridge? bridge) Attach(
         GameObject root, string resourceName, CharacterMotor motor, RuntimeAnimatorController? controller)
@@ -99,6 +99,7 @@ public static class CharacterModelAttacher
         // Steal the instantiated prefab's wrapper name for the wrapper; the mesh becomes QuadBody.
         model.name = "QuadBody";
         model.transform.SetParent(wrapper.transform, false);
+        FixTripoQuadrupedSkeleton(model);
         model.transform.localRotation = Quaternion.Euler(0f, QuadrupedFacingYawDeg, 0f);
 
         var rends = model.GetComponentsInChildren<Renderer>();
@@ -138,9 +139,49 @@ public static class CharacterModelAttacher
         Transform capsule = root.transform.Find("Body");
         if (capsule != null) capsule.gameObject.SetActive(false);
 
+        // A previous biped model may have left a built ragdoll behind; its bones die with that
+        // model, and no Build runs on this path to refresh them — reset it or the next street-fall
+        // Activate throws on destroyed bone colliders.
+        CharacterRagdoll staleRagdoll = root.GetComponent<CharacterRagdoll>();
+        if (staleRagdoll != null) staleRagdoll.Dismantle();
+
         var presenter = wrapper.AddComponent<QuadrupedPresenter>();
         presenter.Configure(motor, model.transform);
 
         return (model.GetComponentInChildren<Renderer>(), false, null);
+    }
+
+    /// <summary>
+    /// Repairs Tripo's quadruped auto-rig hierarchy: it parents the hind-leg chains and the tail
+    /// directly to the ground-level Root bone instead of the pelvis, so any spine/body motion would
+    /// leave them behind. Reparenting onto Spine_0 with worldPositionStays is safe for skinning —
+    /// Unity's skin matrices use each bone's WORLD transform against its fixed bindpose, so as long
+    /// as world poses are unchanged the mesh doesn't move — and this glb ships no animation clips
+    /// whose local-space keyframes could be invalidated. No-ops on rigs without these bone names.
+    /// </summary>
+    private static void FixTripoQuadrupedSkeleton(GameObject model)
+    {
+        SkinnedMeshRenderer skinned = model.GetComponentInChildren<SkinnedMeshRenderer>();
+        if (skinned == null || skinned.rootBone == null) return;
+        Transform? spine = FindDeep(model.transform, "tripo::Spine_0");
+        if (spine == null) return;
+
+        var strays = new System.Collections.Generic.List<Transform>();
+        foreach (Transform child in skinned.rootBone)
+        {
+            if (child.name.Contains("Limb_0") || child.name.Contains("Tail_0")) strays.Add(child);
+        }
+        foreach (Transform stray in strays) stray.SetParent(spine, true);
+    }
+
+    private static Transform? FindDeep(Transform root, string name)
+    {
+        if (root.name == name) return root;
+        foreach (Transform child in root)
+        {
+            Transform? found = FindDeep(child, name);
+            if (found != null) return found;
+        }
+        return null;
     }
 }

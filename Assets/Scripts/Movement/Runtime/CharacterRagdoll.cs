@@ -169,9 +169,51 @@ public sealed class CharacterRagdoll : MonoBehaviour
     /// the joints is what makes the tumble read as a body rather than a shove on a statue.
     /// A second call no-ops; <see cref="Deactivate"/> is the way back.
     /// </summary>
+    /// <summary>
+    /// Resets to the never-built state without needing an Animator — the counterpart of
+    /// <see cref="Build"/> for model swaps onto a rig-less model (the static quadruped), where the
+    /// old model's bones are destroyed with it but this component survives on the agent root. Left
+    /// stale, <c>_built</c> stays true over a list of dead references and the next street-fall
+    /// Activate throws MissingReferenceException on the first destroyed collider. If the ragdoll is
+    /// live mid-swap, control is handed back to the agent's own capsule/root first (null-guarded —
+    /// the bones themselves may already be gone).
+    /// </summary>
+    public void Dismantle()
+    {
+        if (IsActive)
+        {
+            IsActive = false;
+            if (_rootCapsule != null) _rootCapsule.enabled = true;
+            if (_rootBody != null) _rootBody.isKinematic = false;
+            if (_motor != null) _motor.enabled = true;
+        }
+        _boneBodies.Clear();
+        _boneColliders.Clear();
+        _builtByTransform.Clear();
+        _built = false;
+        Pelvis = null;
+        _pelvisBody = null;
+        _animator = null;
+        _bridge = null;
+    }
+
     public void Activate(Vector3 impulse)
     {
         if (!_built || IsActive) return;
+
+        // Fail safe against an empty bone list (shouldn't happen now that Build is idempotent, but a mid-play
+        // domain reload can restore the _built bool while dropping the List<Rigidbody> of scene references).
+        // Activating with no bones is the worst outcome: the caller (RoundController's street sequence) treats
+        // the agent as ragdolled and disables its motor/capsule, yet nothing physical happens, so the body
+        // just freezes and sinks — the "goes through the floor, can't see the raccoon" fall-death report.
+        // Bail with _built/IsActive untouched so the normal death handling still runs, and warn to surface it.
+        // (Deliberately NOT a rebuild here: Build uses DestroyImmediate, which is illegal inside the physics
+        // trigger callback that CarImpact.Activate arrives through — re-attach time is the only safe place to build.)
+        if (_boneBodies.Count == 0)
+        {
+            Debug.LogWarning($"CharacterRagdoll on '{name}': Activate called with no built bones — ragdoll skipped.");
+            return;
+        }
 
         // BEFORE anything is disabled — _motor.Velocity reads the root Rigidbody, and going kinematic
         // below zeroes it.
@@ -198,6 +240,9 @@ public sealed class CharacterRagdoll : MonoBehaviour
 
         for (int i = 0; i < _boneBodies.Count; i++)
         {
+            // Unity-null skip: a model swap or mid-play domain reload can leave destroyed bones in
+            // the list (see Dismantle) — touching one throws MissingReferenceException.
+            if (_boneBodies[i] == null || _boneColliders[i] == null) continue;
             _boneColliders[i].enabled = true;
             _boneBodies[i].isKinematic = false;
             // Continuous collision, not the default Discrete: a street-fall ragdoll activates
@@ -210,7 +255,7 @@ public sealed class CharacterRagdoll : MonoBehaviour
             _boneBodies[i].linearVelocity = inherited;
         }
 
-        _pelvisBody!.linearVelocity += impulse;
+        if (_pelvisBody != null) _pelvisBody.linearVelocity += impulse;
     }
 
     /// <summary>
@@ -233,6 +278,9 @@ public sealed class CharacterRagdoll : MonoBehaviour
 
         for (int i = 0; i < _boneBodies.Count; i++)
         {
+            // Same Unity-null skip as Activate: the model (and its bones) may have been destroyed
+            // out from under a live ragdoll by a role-conversion model swap.
+            if (_boneBodies[i] == null || _boneColliders[i] == null) continue;
             _boneBodies[i].isKinematic = true;
             _boneColliders[i].enabled = false;
         }
@@ -287,14 +335,26 @@ public sealed class CharacterRagdoll : MonoBehaviour
         // no renderer, so nothing visible changes layer with it.
         if (Layer >= 0) bone.gameObject.layer = Layer;
 
-        var col = bone.gameObject.AddComponent<CapsuleCollider>();
+        // REUSE any component a previous build already put on this bone rather than blindly AddComponent-ing.
+        // This is the ONE thing that silently bricked every ragdoll: Build must survive running a second time
+        // over the same bones (a re-attach onto an un-swapped model, a mid-play domain reload). AddComponent
+        // <Rigidbody> on a bone that already has a Rigidbody does NOT return the existing one — it returns null
+        // and warns, so the next line (rb.mass = …) threw, aborting Build AFTER _boneBodies.Clear() had run and
+        // leaving an agent that reports _built but has an EMPTY bone list. Activate() then iterates nothing, so
+        // the "ragdoll" never leaves kinematic and the body freezes/sinks instead of tumbling onto the street
+        // (the fall-death "goes through the floor, can't see the raccoon" report). GetComponent-or-add can't
+        // return null and re-initialises every field below, so a repeat build is now a clean no-op. Uses
+        // GetComponent (not GetComponents) — reuse never manufactures a duplicate, so at most one ever exists.
+        var col = bone.GetComponent<CapsuleCollider>();
+        if (col == null) col = bone.gameObject.AddComponent<CapsuleCollider>();
         col.direction = axis;
         col.radius = worldRadius / scale;
         col.height = Mathf.Max(worldLength / scale, col.radius * 2f); // Unity clamps height below 2r anyway
         col.center = localDir * (worldLength * 0.5f / scale);
         col.enabled = false; // INERT until Activate
 
-        var rb = bone.gameObject.AddComponent<Rigidbody>();
+        var rb = bone.GetComponent<Rigidbody>();
+        if (rb == null) rb = bone.gameObject.AddComponent<Rigidbody>();
         rb.mass = mass;
         rb.interpolation = RigidbodyInterpolation.Interpolate; // the death cam stares straight at these
         rb.isKinematic = true; // INERT until Activate
@@ -309,7 +369,10 @@ public sealed class CharacterRagdoll : MonoBehaviour
         Transform bone, Rigidbody connectedTo, JointKind kind, Vector3 worldBoneDir,
         in MovementConfig.RagdollSettings s)
     {
-        var joint = bone.gameObject.AddComponent<CharacterJoint>();
+        // Reuse an existing joint on a repeat build, same reason as the Rigidbody/collider in BuildBone — a
+        // bone's JointKind is fixed by the Skeleton table, so the one it had last build is the one it wants now.
+        var joint = bone.GetComponent<CharacterJoint>();
+        if (joint == null) joint = bone.gameObject.AddComponent<CharacterJoint>();
         joint.connectedBody = connectedTo;
         joint.enableProjection = true; // snap back rather than stretch into spaghetti under a hard hit
         // enableCollision stays false (default): adjacent bones overlap by construction and would

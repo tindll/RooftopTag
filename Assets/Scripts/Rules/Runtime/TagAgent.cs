@@ -386,9 +386,9 @@ public sealed class TagAgent : MonoBehaviour
         UpdateColor();
     }
 
-    // Runner = the static quadruped raccoon (all-fours, procedural gait via QuadrupedPresenter);
-    // "raccoon" (the retired biped FBX) still ships in Resources as an easy revert.
-    private static string ResourceForRole(Role role) => role == Role.Tagger ? "pest_control" : "raccoon_quad";
+    // Runner = the rigged quadruped raccoon (all-fours; skeleton repaired + procedurally driven by
+    // QuadrupedPresenter). "raccoon_quad" (static) and "raccoon" (biped FBX) remain as reverts.
+    private static string ResourceForRole(Role role) => role == Role.Tagger ? "pest_control" : "rigged_raccoon";
 
     /// <summary>
     /// Re-attaches the rigged model to match <paramref name="role"/> (Runner looks like a raccoon,
