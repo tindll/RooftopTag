@@ -172,7 +172,11 @@ public sealed class QuadrupedPresenter : MonoBehaviour
         _roll = Mathf.Lerp(_roll, targetRoll, dt / (PitchSmoothing + dt));
 
         _body.localPosition = _basePos + Vector3.up * _lift;
-        _body.localRotation = _baseRot * Quaternion.Euler(_pitch, 0f, _roll);
+        // PREmultiply: the pitch/roll offset must live in the wrapper's frame (X = the agent's
+        // lateral axis). Postmultiplying (_baseRot * offset) puts it in the model's own frame,
+        // where the facing yaw baked into _baseRot re-aims Euler X — with the rigged glb's 90° yaw
+        // that turned every gallop nose-dip into a sideways ROLL (the "sways while running" bug).
+        _body.localRotation = Quaternion.Euler(_pitch, 0f, _roll) * _baseRot;
 
         _gaitWeight = Mathf.Lerp(_gaitWeight, targetGait, dt / (PoseSmoothing + dt));
         _stretch = Mathf.Lerp(_stretch, targetStretch, dt / (PoseSmoothing + dt));
