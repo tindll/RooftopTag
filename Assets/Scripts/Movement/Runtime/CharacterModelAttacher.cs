@@ -17,6 +17,14 @@ namespace Game.Movement;
 /// </summary>
 public static class CharacterModelAttacher
 {
+    // Static-quadruped fit (raccoon_quad.glb, no rig): sized by body LENGTH, not height — the
+    // biped 1.8m height rule would balloon a long low animal. Length chosen so the raccoon still
+    // fits under the netHitRadius trap dome (1.8m across) and reads chunky next to 1.8m taggers.
+    private const float QuadrupedBodyLength = 1.6f;
+    // Yaw applied to the mesh so its nose points down the rig's +Z (travel direction) — the Tripo
+    // glb faces -Z natively (verified in-scene: tail toward the agent's forward at yaw 0).
+    private const float QuadrupedFacingYawDeg = 180f;
+
     public static (Renderer? renderer, bool procedural, CharacterAnimatorBridge? bridge) Attach(
         GameObject root, string resourceName, CharacterMotor motor, RuntimeAnimatorController? controller)
     {
@@ -32,6 +40,9 @@ public static class CharacterModelAttacher
         model.transform.localPosition = Vector3.zero;
         model.transform.localRotation = Quaternion.identity;
 
+        Animator rigAnimator = model.GetComponentInChildren<Animator>();
+        if (rigAnimator == null) return AttachStaticQuadruped(root, model, motor);
+
         // Tripo exports ~1 m tall; scale up to a ~1.8 m character (matches the old capsule height).
         var rends = model.GetComponentsInChildren<Renderer>();
         if (rends.Length > 0)
@@ -46,7 +57,7 @@ public static class CharacterModelAttacher
         Transform capsule = root.transform.Find("Body");
         if (capsule != null) capsule.gameObject.SetActive(false);
 
-        Animator animator = model.GetComponentInChildren<Animator>();
+        Animator animator = rigAnimator;
         animator.runtimeAnimatorController = controller;
         animator.applyRootMotion = false;
         var bridge = root.AddComponent<CharacterAnimatorBridge>();
@@ -70,5 +81,66 @@ public static class CharacterModelAttacher
         }
 
         return (model.GetComponentInChildren<SkinnedMeshRenderer>(), false, bridge);
+    }
+
+    /// <summary>
+    /// Unrigged quadruped path (no Animator in the prefab, e.g. raccoon_quad.glb): wraps the mesh
+    /// in a "CharacterModel" wrapper (the transform TagAgent's net-trap wiggle and SwapModel own)
+    /// with a "QuadBody" child (the transform <see cref="QuadrupedPresenter"/> animates), fits it
+    /// by body length, grounds its feet, and swaps the glTFast material for URP/Lit so TagAgent's
+    /// role tint/emission path works unchanged. No Animator bridge and no ragdoll — both are
+    /// humanoid-rig constructs; returns a null bridge, which every caller already tolerates.
+    /// </summary>
+    private static (Renderer? renderer, bool procedural, CharacterAnimatorBridge? bridge) AttachStaticQuadruped(
+        GameObject root, GameObject model, CharacterMotor motor)
+    {
+        var wrapper = new GameObject("CharacterModel");
+        wrapper.transform.SetParent(root.transform, false);
+        // Steal the instantiated prefab's wrapper name for the wrapper; the mesh becomes QuadBody.
+        model.name = "QuadBody";
+        model.transform.SetParent(wrapper.transform, false);
+        model.transform.localRotation = Quaternion.Euler(0f, QuadrupedFacingYawDeg, 0f);
+
+        var rends = model.GetComponentsInChildren<Renderer>();
+        if (rends.Length > 0)
+        {
+            Bounds mb = rends[0].bounds;
+            foreach (Renderer r in rends) mb.Encapsulate(r.bounds);
+            float length = Mathf.Max(mb.size.x, mb.size.z);
+            if (length > 0.01f) model.transform.localScale *= QuadrupedBodyLength / length;
+
+            // Re-read bounds post-scale and drop the feet onto the rig's ground plane (the glb
+            // pivot sits at the body centre, not underfoot like the biped FBXs).
+            mb = rends[0].bounds;
+            foreach (Renderer r in rends) mb.Encapsulate(r.bounds);
+            model.transform.localPosition += Vector3.up * (root.transform.position.y - mb.min.y);
+
+            // glTFast's shader ignores the URP/Lit tint+emission properties TagAgent drives;
+            // rebuild each material as URP/Lit around the imported base texture (same recipe as
+            // the city-building relight pass).
+            Shader lit = Shader.Find("Universal Render Pipeline/Lit");
+            if (lit != null)
+            {
+                foreach (Renderer r in rends)
+                {
+                    Material src = r.sharedMaterial;
+                    if (src == null || src.shader == lit) continue;
+                    Texture? baseTex = src.mainTexture;
+                    if (baseTex == null && src.HasProperty("baseColorTexture")) baseTex = src.GetTexture("baseColorTexture");
+                    if (baseTex == null && src.HasProperty("_BaseMap")) baseTex = src.GetTexture("_BaseMap");
+                    var replacement = new Material(lit) { mainTexture = baseTex, color = Color.white };
+                    replacement.SetFloat("_Smoothness", 0.25f);
+                    r.material = replacement;
+                }
+            }
+        }
+
+        Transform capsule = root.transform.Find("Body");
+        if (capsule != null) capsule.gameObject.SetActive(false);
+
+        var presenter = wrapper.AddComponent<QuadrupedPresenter>();
+        presenter.Configure(motor, model.transform);
+
+        return (model.GetComponentInChildren<Renderer>(), false, null);
     }
 }

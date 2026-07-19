@@ -386,7 +386,9 @@ public sealed class TagAgent : MonoBehaviour
         UpdateColor();
     }
 
-    private static string ResourceForRole(Role role) => role == Role.Tagger ? "pest_control" : "raccoon";
+    // Runner = the static quadruped raccoon (all-fours, procedural gait via QuadrupedPresenter);
+    // "raccoon" (the retired biped FBX) still ships in Resources as an easy revert.
+    private static string ResourceForRole(Role role) => role == Role.Tagger ? "pest_control" : "raccoon_quad";
 
     /// <summary>
     /// Re-attaches the rigged model to match <paramref name="role"/> (Runner looks like a raccoon,
