@@ -64,7 +64,7 @@ public static class PlayModeShot
         }
 
         // Report how many animated character models actually attached.
-        int models = Object.FindObjectsByType<Animator>(FindObjectsSortMode.None).Length;
+        int models = Object.FindObjectsByType<Animator>().Length;
         Debug.Log($"{result} animators={models}");
         EditorApplication.Exit(0);
     }

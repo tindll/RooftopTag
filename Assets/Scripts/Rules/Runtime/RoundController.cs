@@ -692,7 +692,7 @@ public sealed class RoundController : MonoBehaviour
         _cansEatenThisMatch = 0;
         _activeCans.Clear();
         _cans.Clear();
-        _cans.AddRange(FindObjectsByType<TrashCanInteractable>(FindObjectsSortMode.None));
+        _cans.AddRange(FindObjectsByType<TrashCanInteractable>());
         foreach (TrashCanInteractable can in _cans) can.ResetForRound();
 
         for (int i = _cans.Count - 1; i > 0; i--)

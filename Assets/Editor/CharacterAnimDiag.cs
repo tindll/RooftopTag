@@ -39,7 +39,7 @@ public static class CharacterAnimDiag
         if (el - _lastLog >= 0.6)
         {
             _lastLog = el;
-            foreach (Animator a in Object.FindObjectsByType<Animator>(FindObjectsSortMode.None))
+            foreach (Animator a in Object.FindObjectsByType<Animator>())
             {
                 var motor = a.GetComponentInParent<CharacterMotor>();
                 string clip = "none";
@@ -66,7 +66,7 @@ public static class CharacterAnimDiag
 
     static void TriggerDiveRolls()
     {
-        foreach (var b in Object.FindObjectsByType<CharacterAnimatorBridge>(FindObjectsSortMode.None))
+        foreach (var b in Object.FindObjectsByType<CharacterAnimatorBridge>())
             b.TriggerDiveRoll();
     }
 

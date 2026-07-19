@@ -7,11 +7,11 @@ using UnityEngine;
 namespace Game.Rules;
 
 /// <summary>
-/// Procedural, low-poly "Animal Crossing style" bug-net visual: a wooden pole with a blue
-/// cord-wrapped grip, an orange stitched-rim hoop, and a sagging cream mesh bag — all built from
-/// generated meshes and runtime URP/Lit materials, no imported assets. <see cref="BuildNet"/>
-/// produces the handheld tool a tagger carries; <see cref="BuildTrapDome"/> reuses every piece to
-/// build the dome-shaped trap that gets dropped over a caught raccoon.
+/// "Animal Crossing style" bug-net visual. <see cref="BuildNet"/> produces the handheld tool a
+/// tagger carries — preferring the imported <c>net_model.glb</c> (Resources) when present and
+/// falling back to a fully procedural build; <see cref="BuildTrapDome"/> always uses the
+/// procedural pieces to build the dome-shaped trap that gets dropped over a caught raccoon
+/// (the imported asset is a handheld net, not a dome).
 /// <para>
 /// Every mesh is hand-triangulated (vertices + triangles, then <c>RecalculateNormals</c>) rather
 /// than built from primitives, so winding is derived once and reused via small shared helpers
@@ -21,6 +21,19 @@ namespace Game.Rules;
 /// </summary>
 public static class NetVisual
 {
+    // Imported model (Assets/Art/Characters/Resources/net_model.glb): a single ~1.0m-tall mesh,
+    // pivot at its centre, pole along Y, hoop opening facing local -X. These constants map it onto
+    // the same contract the procedural net defines (pivot = grip ~25% up a 1.15m pole, opening
+    // facing +Z): yaw the opening from -X to +Z, scale to pole length, then lift so the pole's
+    // bottom lands at PoleBottomY below the pivot.
+    private const string NetModelResource = "net_model";
+    private const float NetModelYawDeg = 90f;
+    private const float NetModelScale = 0.85f; // judged in-hand at 1.74x character-bone scale; 1.2 read comically oversized
+    private const float NetModelNativeHalfHeight = 0.5f;
+
+    private static GameObject? _netModelPrefab;
+    private static bool _netModelLoadAttempted;
+
     // Pole: 8-sided cylinder running along local +Y. Origin (the grip point) sits 25% up the pole,
     // so the pole's own bottom lands below the origin and its top lands above it.
     private const int PoleSides = 8;
@@ -88,12 +101,28 @@ public static class NetVisual
     /// local X so the opening faces up-forward. Returns a "NetVisual" root with no colliders and no
     /// rigidbody.
     /// </summary>
-    public static GameObject BuildNet(Transform parent)
+    public static GameObject BuildNet(Transform? parent)
     {
         var root = new GameObject("NetVisual");
         root.transform.SetParent(parent, false);
         root.transform.localPosition = Vector3.zero;
         root.transform.localRotation = Quaternion.identity;
+
+        GameObject? prefab = NetModelPrefab();
+        if (prefab != null)
+        {
+            var model = UnityEngine.Object.Instantiate(prefab, root.transform, false);
+            model.name = "NetModel";
+            model.transform.localRotation = Quaternion.Euler(0f, NetModelYawDeg, 0f);
+            model.transform.localScale = Vector3.one * NetModelScale;
+            model.transform.localPosition =
+                new Vector3(0f, PoleBottomY + NetModelNativeHalfHeight * NetModelScale, 0f);
+            foreach (var collider in model.GetComponentsInChildren<Collider>(true))
+            {
+                UnityEngine.Object.Destroy(collider);
+            }
+            return root;
+        }
 
         BuildPole(root.transform, PoleBottomY);
 
@@ -115,7 +144,7 @@ public static class NetVisual
     /// like a dome/tent, and the pole propped sideways-up at roughly 40 degrees above horizontal
     /// near the rim. Origin = centre of the hoop at ground level.
     /// </summary>
-    public static GameObject BuildTrapDome(Transform parent, float hoopRadius)
+    public static GameObject BuildTrapDome(Transform? parent, float hoopRadius)
     {
         var root = new GameObject("NetVisual");
         root.transform.SetParent(parent, false);
@@ -144,6 +173,18 @@ public static class NetVisual
         BuildPole(pole.transform, 0f);
 
         return root;
+    }
+
+    // Caches the NULL result too (same pattern as GameAudio) so a missing model doesn't re-hit
+    // Resources.Load on every net build; domain reload resets both statics, which re-attempts.
+    private static GameObject? NetModelPrefab()
+    {
+        if (!_netModelLoadAttempted)
+        {
+            _netModelPrefab = Resources.Load<GameObject>(NetModelResource);
+            _netModelLoadAttempted = true;
+        }
+        return _netModelPrefab;
     }
 
     // ---- Assembly (pole/hoop/bag pieces, shared by both public entry points) ----
