@@ -2549,3 +2549,293 @@ kill-cam/round-end flow intact; zero exceptions in console across many rounds.
   live arena and hang every later test at WaitForFixedUpdate (that was the "stuck at 64/73" hang).
 - Swing energy-cap / vault-from-standstill / crane-camp / bot-cliff failures: pre-existing movement
   and map items, untouched code paths.
+
+### PHASE 2 — Buildings (DONE, in-scene)
+`Assets/Editor/KenneyBuildingPlacer.cs`: fills the ring blocks around the play cluster with varied Kenney
+buildings — 70% mid-rise / 12% skyscraper / 18% low-detail, no-two-identical-in-a-row, footprint fills
+the block but scale CAPPED at 11 (uniform block-fill turned skyscrapers into 100m towers → capped to
+~60m). Night-blue per-building tint. Keep-out = the whole play cluster (+5m): decor towers rise ~60m from
+the street, far above the rooftops (y~0-6), so they RING the playfield instead of engulfing it. ~40% of
+buildings are "lit": material rebuilt as URP/Lit (the Kenney GLBs ship the glTFast shader with no
+_BaseMap/_EmissionColor — first pass just spammed warnings) with the colormap as its own emission mask so
+window texels glow warm. `KENNEY_BUILDINGS: 48 placed, 16 keep-out`.
+
+### PHASE 3 — Traffic (DONE, in-scene + play-verified)
+`Assets/Editor/KenneyTrafficBuilder.cs`: builds a `TrafficNetwork` from the CityGrid (intersections =
+signalized nodes, road segments = two right-offset directed lanes) and spawns Kenney vehicles as
+`CarDrifter`s — reusing the proven stop-at-red-light + turn-at-intersection logic. Mixed models + rare
+hero taxi/police/ambulance. Old generated box cars disabled (theme.carCount=0). Each vehicle keeps a
+`CarImpact` trigger so the street-death path survives. First build spawned 288 (one per lane, gridlocked)
+→ SpawnChance gate to ~40 (`KENNEY_TRAFFIC: 81 nodes, 288 lanes, 38 vehicles`). Play-verified: vehicles
+drive the grid and moved over a 124s sim with zero errors; blind-authored code compiled first try.
+
+### PHASE 4 — Lighting (present, subtle from rooftop vantage)
+Existing night theme already carries fog + bloom + tonemap + vignette + colour-grade. Added: window
+emission 1.6→3.6 (for bloom pickup) and ~29 warm point lights at every 5th Kenney lamp (parented to the
+unscaled streets root so the ×8 tile scale doesn't blow up range; shadows off; range ~19m so they light
+the street, not the rooftops 25m up). Visible but subtle from the player's rooftop height — candidate for
+a stronger pass if wanted.
+
+### Known issue found + fixed
+Playable rooftops flashed MAGENTA after the many domain reloads this session (the documented
+static-cached-material-vs-reload artifact) — a clean rebuild recreates the materials and clears it;
+confirmed gone. Also navigated a CONCURRENT session (net-trap feature) that repeatedly held the editor in
+play/test mode and blocked builds — resolved by the user pausing it.
+
+### Feedback round 1 on the Kenney city (2026-07-19) — all five issues fixed
+
+User feedback (annotated screenshots): (1) some buildings blown-out white; (2) cars don't move in real
+play; (3) road grid reads as "squares and squares"; (4) old skyline buildings stand ON the new roads,
+cars clip through them; (5) new road dashes face the wrong way + old flat road texture still visible.
+
+**Fixes, all verified in-scene / in-play:**
+- **Cars now drive (the deep bug).** CarDrifter's editor-time Configure wrote non-serialized fields —
+  every car woke with _net=null in a real play session and parked forever (same-session smoke tests
+  masked it). Serialized the config; value fields then survived but the TYPED _net reference still loaded
+  NULL despite a correct fileID in the scene — this project's documented custom-asmdef deserialization
+  quirk extends to cross-component scene references. Fix: recover structurally in Awake
+  (`GetComponentInParent<TrafficNetwork>()`; cars are children of the network's root). PROOF by position
+  diffs: 4 sampled cars moved 20–80m and changed axis (turning at intersections) over ~55s of sim.
+  Memory note saved (project_asmdef_sceneref_null).
+- **Dash orientation**: road-straight runs along local X at rot 0, not Z — swapped the two rotation
+  constants (90°).
+- **Old roads gone**: `theme.legacyRoadStrips=false` gates SceneStyler.CreateRoads' strips + BSP backdrop
+  quads (ground slab/fall collider kept). skylineInnerRadius 72→155 so old skyline towers only spawn
+  beyond the Kenney city — no more buildings straddling roads / cars inside buildings.
+- **"Squares and squares" → varied city blocks**: per-column/row block sizes (2–4 tiles, seeded) and
+  block interiors paved with tile-low plinths so roads go AROUND solid blocks
+  (`KENNEY_ROADGRID: 81 intersections, 441 straights, 144 lights, 64 varied blocks, 600 fill tiles`).
+  First fill pass was blinding light-concrete (inverted the night contrast) → one shared URP/Lit
+  dark-slate material (0.30,0.32,0.42) across all fill tiles.
+- **White buildings fixed**: emission 3.6→1.1 (the colormap-as-emission-mask made cream WALLS glow, not
+  just windows), tint palette darkened (0.32–0.50 luma), model mix shifted toward the checkmarked dark
+  mid-rises/glass towers (62/24/14 mid/sky/low).
+
+Zero errors on every build; player rooftops/parkour untouched.
+
+### Cycling signal posts at every intersection (2026-07-19, KEEP)
+
+Closed the last Phase-3 spec gap: signals you can SEE. `TrafficLightPost` rewritten load-safe from the
+asmdef lesson — only value fields serialized; the network recovered via GetComponentInParent in Awake and
+the bulb material taken from the child renderer's `.material` (runtime per-post clone), so the editor
+bakes ONE shared bulb material across all 81 posts. Three states from the same clock the cars obey:
+green (own axis), red (cross axis green), AMBER during the all-red clearance — a real 3-phase cycle.
+`KenneyTrafficBuilder` places a pole+bulb post on the plinth corner of every intersection (colliders
+destroyed — decor only). Old SceneStyler call site updated to the new signature; new theme knob
+trafficLightYellow.
+
+Verified in a REAL play session (the standard that caught the car bug): 81 posts bound, `Signal_53`
+sampled amber (1.0,0.75,0.2) at t=0 → green (0.21,0.88,0.33) at t=39 — cycling confirmed; screenshot
+shows red/green/amber bulbs glowing at different junctions (per-node phase offsets) with cars queued
+nose-to-tail at a red. `KENNEY_TRAFFIC: 81 nodes, 288 lanes, 38 vehicles, 81 signal posts`, zero errors.
+
+Known remaining nicety (not built): no car-following — two cars on one lane can overlap; rare at 38
+cars / 288 lanes and invisible from the rooftops so far. Revisit only if density goes up.
+
+### Feedback round 2 — uniform dark city, building wall horizon, packed blocks (2026-07-19)
+
+User asks: (a) still too many "light" buildings; (b) replace the foggy horizon with solid building rows
+so the map edge is never visible; (c) 2-4 buildings per block instead of 1; (d) drop the GLB-model
+skyline — uniform dark scenery.
+
+**Forensics first (the "light buildings" hunt).** Audited every tall renderer by material: the cream
+towers were NOT the Kenney placements (all dark) — 33/33 were the PLAYABLE cluster's GlbShells, whose
+ShellTint clamps to [0.90,1.0] near-white by design. Fixed via new theme knob `glbShellNightTint`
+(0.34,0.36,0.46) multiplied into ShellTint — bucketing/material ceiling untouched, windows still glow.
+Then a SECOND source appeared: my own lit Kenney buildings — the colormap-as-emission-mask design is
+unfixable (Kenney's palette-strip colormap uses a blue-gray WALL color that no hue/luma threshold can
+separate from window glass; a baked thresholded mask still lit whole buildings). After three failed
+variants: per-building emission on Kenney placements REMOVED (LitBuildingFraction=0) — they are pure
+dark silhouettes; night life comes from the shells' real window masks, lamps, signals, cars. (If lit
+Kenney windows are ever wanted: TextureImporter isReadable + hand-verified palette-cell classification.)
+
+**Horizon wall.** `KenneyBuildingPlacer.PlacePerimeterWall`: two staggered rows (outsets 11/26m, outer
+row taller + half-step offset to plug gaps) of dark mid-rise/skyscrapers around the grid —
+`KENNEY_WALL: 224 wall buildings`. Legacy GLB skyline gated off (`legacyGlbSkyline=false` in
+CreateSilhouettes; playable shells unaffected). fogDensity back 0.007→0.006 so the wall reads as
+silhouette rows instead of drowning.
+
+**Packed blocks.** Blocks subdivided into ~10m plots (2×2 to 3×3): `KENNEY_BUILDINGS: 251 placed across
+48 blocks` (was 48 total, ~5.2/block), per-plot model/tint variety, no-repeat guard. Materials now
+SHARED per (tint,lit): 8 total across 475 buildings (was one per renderer).
+
+**Verdict (screenshots).** Uniform dark city ✓ zero cream towers ✓ solid skyline wall closes every
+sightline — no visible map edge, fog is depth not void ✓ blocks read dense and varied ✓ warm accents
+(shell windows, lamps, signal reds, colored cars) carry the night life. Zero errors all builds.
+
+### Net model swap (2026-07-19)
+User supplied `net_model.glb` (Tripo-generated butterfly net: red-rimmed hoop, cream bag, wooden
+pole; single ~1.0m mesh, pivot at centre, opening facing local -X, no animation clips). Moved it to
+`Assets/Art/Characters/Resources/` (same runtime-load pattern as raccoon/bins) and taught
+`NetVisual.BuildNet` to prefer it: instantiated under the "NetVisual" root yawed +90° (opening -X →
++Z), scaled, lifted so the pole bottom lands at the procedural PoleBottomY — the grip-pivot contract
+NetThrower/TagAgent rely on is unchanged, so throw/QTE/trap logic needed zero edits. Procedural
+build stays as fallback (missing Resources entry) and `BuildTrapDome` stays fully procedural (the
+asset is a handheld net, not a dome). Scale judged in-play: 1.2 read comically oversized at the
+1.74x character-bone scale → settled at 0.85 (`NetModelScale`). Verified live: 10/10 taggers carry
+the model net (0 procedural fallbacks), thrown hoops visible in flight, mob-with-raised-nets
+screenshots in `Assets/Screenshots/net_model_final_carry3.png` / `net_model_carry_085.png`; console
+clean. Also fixed the two CS8625 warnings (BuildNet/BuildTrapDome now take `Transform?`) and the
+CS0618 FindObjectsByType deprecations (RoundController, CharacterAnimDiag, PlayModeShot) → project
+compiles with zero warnings. Note: the glb contains no animation clips — the throw animation remains
+the procedural arm swing in CharacterAnimatorBridge.
+
+## Feedback round 3 — silhouette horizon, real lit windows, lamp glow, retro signals, Quaternius clouds (2026-07-19)
+
+User asks: (1) "shadows of small and large buildings" behind the farthest rows so the map never ends; (2) the dark buildings need window light; (3) street lights need visible light; (4) traffic lights nicer than "BIG square on stick" (pack welcome); (5) better clouds (pack welcome).
+
+- **Silhouette skyline**: `PlaceSilhouetteSkyline` — 228 unlit near-black boxes in 2 staggered rows (outsets 48/78, heights 34–110m + 12% spires) behind the perimeter wall. URP Unlit still receives fog → free atmospheric depth, zero lighting cost. `KENNEY_SILHOUETTE` marker.
+- **Lit Kenney windows — solved for real**: made colormap readable, dumped the palette (814 colors), then **UV-audited the meshes**: building models sample ONLY the palette's gradient strips, never the flat cells. Window glass = light-blue strip at x 352–383 / y 256–383 (bottom-up). 4-iteration test rig proved it (v1 blue-gray cells = walls; v2 dark cells = dark facades; v3 nothing; v4 exact region = panes glow, walls dark on every model). Mask saved as `Assets/Art/Generated/KenneyWindowMask.asset`; LitBuildingFraction 0→0.45, WallLitFraction 0.35, emission 1.3 (1.8 clipped white at street level).
+- **Lamp glow**: every lamp gets a shared emissive bulb cube (`AddLampGlow`, HDR ×3.2 + bloom); real point lights every 3rd lamp (was 5th).
+- **Traffic lights**: Kenney Retro Urban Kit (CC0) `detail-light-traffic.glb` + metal/roof textures → `Assets/Art/Kenney/UrbanProps/`. Curved pole at scale 4.6, arm over the roadway (LookRotation toward node center), posts moved onto the intersection tile's own kerb corner (3.55, was 4.6 — clipped building plots), emissive Bulb hung under the arm end. Shared night-tinted pole material (metal.png rendered near-white).
+- **Clouds**: 5 Quaternius CC0 cloud GLBs (poly.pizza, embedded textures) → `Assets/Art/Quaternius/Clouds/`. CreateClouds instantiates them scaled to the existing tier lengths (keeps CloudDrifter + fallback to generated blobs); cloudColor 0x6E7590→0x3A4055 + matte material (smoothness 0.04) — default 0.5 smoothness caught a moon specular that rendered them pale.
+- **BUG KILLED — whole-playfield magenta (481 renderers)**: TagArenaMapGeometry's static material caches (`RoleMaterialCache`, `FacadeMaterialCache`, `MaterialCache`, `Theme ??=`) returned **destroyed** materials after an AssetDatabase refresh unloaded them mid-session — TryGetValue hit, C# wrapper alive, Unity object dead → dead refs baked into the scene. Fix: Unity null-check on every cache hit. Audit after fix: broken=0.
+- Verified: build clean (zero errors), broken-material audit 0, screenshot-verified street/horizon/signal/overview vantages.
+
+## Feedback round 4 — Kenney playable towers, billboards gone, sky-high transparent clouds (2026-07-19)
+
+User asks: replace the towers we run on with Kenney buildings (must stay runnable, similar/higher, keep ramps + swings, walls climbable); remove the generated billboards; clouds much higher, slightly smaller, more transparent.
+
+- **CreateKenneyShells** (`theme.kenneyShells=true`, A/B back to Tripo via flag): same strip-the-renderers architecture as CreateGlbShells — a shell is a bare MeshFilter+MeshRenderer, colliders/rims/ramps/swings/climb anchors byte-for-byte untouched → runnable/climbable by construction. Model set restricted to measured **straight prisms** (top-quarter XZ extent ≥96% of footprint: skyscraper-a/b/e, building-m/l) so the visible wall stays coplanar with the BoxCollider — tiered skyscrapers would make wall-climbs read as climbing air. Each model cut at its **dominant roof plane** (up-facing tri-area histogram, ≥25% footprint above 55% height) so parapets never poke through the walkable deck; roof plane lands exactly on r.Center.y, base on buildingBaseY. `KENNEY_SHELLS: 31/31, 5 culled meshes, 4 shared materials` (NightTints + colormap + window-mask emission — the playable towers now match the city's art exactly).
+- **Billboards removed** from wall props (fire escapes only now; rng stream preserved; Props_Billboards mesh + material deleted). Marker: "71 wall props (fire escapes; billboards removed)".
+- **Clouds**: heights 68-102 → 175-240, lengths 44-96 → 34-70, new `cloudAlpha=0.45` renders the shared material as URP transparent surface — thin dark wisps way above the skyline, sky gradient visible through them.
+- Verified: clean build (zero errors), broken-material audit 0, play-mode sanity — 11 CharacterMotors active, bots moving across decks at correct heights (y≈3.1) for 45s with zero exceptions, screenshot-verified cluster/overview/sky vantages.
+
+### Quadruped raccoon (2026-07-19)
+User-supplied `raccoon_quad.glb` (Tripo from a Nano Banana concept: all-fours raccoon, striped
+tail, bandit mask) replaces the biped raccoon FBX for the Runner role. The glb is a STATIC mesh —
+no skeleton, no clips — so the swap is a new static-quadruped branch in `CharacterModelAttacher`
+(fires when the prefab has no Animator): wraps the mesh as CharacterModel→QuadBody (wrapper owned
+by TagAgent's net-trap wiggle/SwapModel, child owned by the new presenter — no transform fights),
+fits by body LENGTH (1.6m; the biped 1.8m-height rule would balloon a long low animal), grounds
+the feet from post-scale bounds (glb pivot is body-centre, not underfoot), yaws the mesh 180°
+(Tripo glb faces -Z; verified in-scene — tail-first at yaw 0), and rebuilds the glTFast material
+as URP/Lit around the base texture so TagAgent's tint/emission path works unchanged. New
+`QuadrupedPresenter` (Game.Movement) fakes the gait procedurally in LateUpdate: speed-scaled
+gallop bob+rock (stride 1.6m), airborne pitch from vertical velocity, superman dive pose, belly
+drop while sliding, nose-up climb/ladder scramble, yaw-rate lean into turns. Position/rotation
+only — TagAgent's landing squash already owns the renderer localScale. No bridge and no ragdoll on
+this path (both humanoid constructs; every caller tolerates the null bridge — headless self-play
+unaffected). Verified live: attach (1.6m long, feet exactly at rootY, URP/Lit), both SwapModel
+directions (5 bots Tagger→Runner biped→quad, forced one Runner→Tagger quad→biped — the same-frame
+"still quad" readout is just deferred Destroy), a fleeing bot raccoon mid-leap across a roof gap
+at 7.4 m/s (`Assets/Screenshots/quad_raccoon_gallop.png` — genuinely cute), zero exceptions.
+Known degrades, by design until a rigged quadruped export exists: no leg articulation (procedural
+bob only), no raccoon ragdoll (street death = no tumble), throw-arm pose N/A (runners don't
+throw). TagRulesConfig is CreateInstance'd fresh each session — in-play ApplyTaggerCount pokes
+don't persist, config default stays taggerCount=10.
+
+### Rigged raccoon + skeleton repair + skeletal gait (2026-07-19)
+User re-exported from Tripo with auto-rig: `rigged_raccoon.glb` (31 bones, fully skinned, NO
+animation clips, faces -X). Tripo's quadruped rig ships broken hierarchy: hind-leg chains
+(`0/1_Left_Limb_*`) and tail parented to ground-level Root instead of the pelvis — body motion
+would leave them behind (user spotted it in the bone view). Fixed at attach time in
+`CharacterModelAttacher.FixTripoQuadrupedSkeleton`: world-preserving reparent onto `tripo::Spine_0`
+— safe because Unity skinning uses bone WORLD transforms vs fixed bindposes, and this glb has no
+local-space animation keys to invalidate. Verified live: Root reduced to a single spine chain, 3
+strays under Spine_0, zero mesh distortion. Runner resource → "rigged_raccoon" (yaw const 90 for
+the -X facing; raccoon_quad + biped raccoon kept as reverts). QuadrupedPresenter upgraded from
+rigid-body bob to skeletal gait: bound-gallop leg swing (front/hind pairs in opposition, axis-in-
+world rotation so Tripo bone axes never matter), airborne/dive superman stretch, slide tuck,
+ladder scramble on a fixed phase clock, speed-scaled tail wag. Screenshots:
+`rigged_raccoon_leap.png` (stretch pose over the street canyon), `rigged_raccoon_gallop.png`
+(legs mid-swing at 7.5 m/s).
+**Bug found & fixed**: biped→quad conversion left CharacterRagdoll `_built=true` over the dead
+biped's bone list (quad path never calls Build) → street-fall/kill-cam Activate threw
+MissingReferenceException on destroyed colliders (seen 3x live). Fix: `CharacterRagdoll.Dismantle()`
+(reset without needing an Animator, restores root capsule/body if live) called from the quad attach
+path, plus Unity-null skips in Activate/Deactivate bone loops (also hardens the documented
+domain-reload stale-ragdoll case). Repro-verified: stale Activate no-ops, quad→biped rebuild
+activates/deactivates cleanly.
+
+### Fix: raccoon side-to-side sway while running (2026-07-19)
+User report: raccoon sways laterally when moving straight forward. Cause: QuadrupedPresenter
+composed the body pose as `_baseRot * Euler(pitch,0,roll)` — offset in the MODEL's own frame,
+where the facing yaw baked into _baseRot re-aims Euler X. Under the old static model's 180° yaw
+the axes stayed collinear (bug invisible); under the rigged glb's 90° yaw, every gallop nose-dip
+and airborne pitch landed on the agent's FORWARD axis = roll = sway. Fix: premultiply
+(`Euler(pitch,0,roll) * _baseRot`) so the offset lives in the wrapper frame. Verified live at 7
+m/s: mantling bot's 42° scramble is now pure pitch (dot up/fwd = -0.67, sway dot = -0.03);
+grounded residual sway ≤0.13 is the intended clamped turn-lean while bots steer.
+
+## Round 5 — under-construction playable cluster (Nano Banana concept match) (2026-07-19)
+
+Concept: half-built concrete towers, plank bridges, rooftop cranes, containers, scaffolding, worklights; deep indigo night + warm orange. Layout/movement untouched (Roofs/Links intact); backdrop city untouched.
+
+- New `ConstructionShells.cs` (agent-authored, fixed inline): construction facade atlases on the EXISTING window-atlas UV grid (glitch-proof by construction), bands 0x96, concrete (0.42,0.46,0.58); structured pillar ROWS + beams (row-or-nothing clearance), rebar, half-walls.
+- New `ConstructionDressing.cs` (agent-authored, fixed inline): plank bridges (wood 0.72,0.52,0.30 — 0.45,0.30,0.18 rendered near-black), scaffolds ABOVE the parapet (+2.4m — below-lip modules were invisible), 12 containers, 45 barriers/cones (x1.7 scale), stacks, 9 tarps, nets, 17 worklights (9 point lights), 9 truss girders, 2 Majadroid cranes ON the two largest decks (+14-18m mast — street-based cranes topped out BELOW deck level, invisible).
+- KEY LESSON — clearance starvation: RoofPropDresser.DefaultClearRadius (2.2m) on 8x8 decks crossed by link corridors rejected almost everything (1 container map-wide). Per-prop radii now: cones 0.8, worklights 0.9, containers/girders 1.2, stacks 1.3, pillar rows 1.2 (row-or-nothing).
+- Lighting: sky/fog to saturated indigo (seam rule kept), ambient up, bloom 0.45→0.72, rims 1.6→1.0 (flared under new bloom).
+- Concurrent-session revert: raccoon-runner commit rolled back SceneStyler/VisualThemeConfig (round 4 lost); re-applied billboards-removal + cloud alpha/height/size. Kenney playable shells NOT resurrected (superseded by construction pass; `constructionZone=false` restores Tripo shells).
+- Verified: 2 build iterations, zero errors, screenshot-compared aerial + deck vantages vs concept.
+
+## Round 6 — 3-D building anatomy (user: "boring bland and flat" vs concept) (2026-07-19)
+
+Root cause: the concept towers are GEOMETRY (protruding slabs, ragged parapets, columns past the roofline, deep reveals); ours were flat boxes with painted stripes. Paint can't fix that.
+
+- Slab lips: 281 pale concrete boxes wrapping every tower each storey (3m), 0.15m proud of the facade — the slab-sandwich read, pure decor outside the colliders.
+- Ragged parapets: 239 clearance-checked segments (0.45-1.3m tall, gapped) just inside the rims — the broken unfinished-top outline.
+- Corner columns: 79 thick pale columns rising 2.6-3.8m past the rooflines, base sunk 0.5m so they read structural.
+- Window reveals: baked lintel-shadow band + pale sill line inside every open atlas cell — punched-hole depth from two rows of pixels.
+- All on the SlabMaterial value-separated pale concrete so the skeleton pops off the darker infill, like the concept.
+- Verified: rebuild clean, aerial + deck screenshots compared to the concept before reporting (per feedback_screenshot_before_reporting).
+
+## Round 7 — user's modular building kit as the playable towers (2026-07-19)
+
+Pipeline (`ModularBuildings.cs`): PROCESS once (cached under Assets/Art/Generated/Modular) + STACK every build.
+- Decimation: UnityMeshSimplifier (already in manifest) on the 4 ~1.9M-tri modules → bot_D 10.0k, mid_C 8.3k, mid_D 21k, top_C 6.2k tris. 8 Tripo modules already at 4.4-5.2k. 12/12 processed, 0 failed.
+- Textures: GPU downscale to 1024 + posterize (16 levels) — kills AI paint smudge, reads as flat low-poly facets.
+- Stacking: per roof column, ONE type (A-D, seeded, no-adjacent-repeat): bottom (4m) + N middles (stretch-fit ~3m) + top CAP. Every tier scaled to the roof's exact SizeX/SizeZ (user's "same ratio per type" enforced by construction; visual walls coplanar with colliders). Top module's walkable deck plane (up-face histogram) lands exactly on r.Center.y.
+- BUG FIXED after first stacked build: tops are thin parapet CAPS with the deck near their bottom — the "one storey below deck" solve stretched parapets into 30m spikes. Now: Y scale proportional to footprint scale, parapet rise clamped 1.0-2.2m, middles fill to the deck.
+- Wiring: theme.modularBuildings=true (falls back to ConstructionShells generated facades when off); body/mass renderers stripped, colliders untouched; ConstructionDressing (cranes/planks/worklights/props) still applies.
+- MODULAR_TOWERS: 31 towers, 311 floors, all four types. Screenshot-verified aerial + deck vs concept across 3 iterations.
+
+## Round 8 — flat decks + cluster carved into its own street block (2026-07-19)
+
+- Tower tops: the ragged top modules were "waaay too much visual clutter" (user) — replaced by flat grey deck slabs (0.22m, +0.14 overhang, top face flush with the walkable collider) in a concrete tone matched to the module facades. Types now need only bot+mid; top GLBs stay processed for a possible comeback. Dressing (containers/cranes/planks/worklights) untouched.
+- Streets: `BuildRoadGrid` gained keepOut rects — road RUNS crossing the cluster footprint are dropped whole (tiles, lamps, traffic segment; no dead-end stubs), intersections inside vanish, fill tiles skipped. PlaygroundBuilder passes the cluster rect (+2.5m). Result: 81→72 intersections, 441→357 tiles, 288→240 lanes, 38→31 cars — the playable cluster is one super-block with streets ringing it.
+- Verified: BUILD_OK, MODULAR_TOWERS 31/323 floors, aerial + top-down screenshots (clean decks; streets flow around the site, none under towers).
+
+## Round 9 — user's plank.glb replaces all ramp visuals (2026-07-19)
+
+- `ModularBuildings.ProcessProp(path, key, triBudget, tint)` — the decimate+posterize pipeline generalized for one-off prop GLBs (cached on disk like the modules). plank.glb: 1,968,954 -> 3,000 tris exactly, texture 4096 -> 1024 posterized.
+- `BuildPlankBridges` rewritten: RampSurface RENDERERS stripped (walkable colliders untouched); each of the 20 ramps dressed with 2/3/4 real planks by ramp width, seeded slide/yaw jitter, per-plank lift (no z-fight), slight overhang past both lips; ~20% of 3+-plank ramps get a missing-slot gap; ~30% get a loose diagonal plank on top. Old generated rails/plank-texture path kept only as fallback if plank.glb goes missing.
+- Verified: BUILD_OK, zero errors, close-up + wide screenshots — bridges read as real stacked wooden planks matching the concept.
+
+## Round 10 — polish pass (2026-07-19)
+
+- FLICKER FIX: middle modules' top faces were exactly coplanar with the deck slab tops (z-fight, "floors flicker with shadows") — middles now stop 6cm short (slab hides the gap); decks stopped CASTING shadows (grazing-angle acne on big flat slabs was the other half).
+- RACCOON: back to the old rigged biped raccoon.fbx (TagAgent.ResourceForRole "rigged_raccoon"→"raccoon" — one line, per investigation; QuadrupedPresenter isn't referenced elsewhere, headless self-play unaffected, ragdoll path restored). Quad models stay on disk. Verified in play: 11/11 agents on the Animator path.
+- TEXTURES: module processing now 2048px, NO posterize (banding read as glitch), trilinear + aniso 8. Cached module textures purged for regen; plank kept on old settings (looked right).
+- YELLOW SWING CRANES: CreateGlbCranes now places Majadroid Crane-Mounted at every swing link via the same hook-meets-pivot solve (hook tip vertex-scanned at local (-8.49,26.76,-5.21), scale 0.42 ≈ 20m, foot-grounded mast column) — the ChainSwingInteractable chain hangs off the yellow hook; chain physics/grab/colliders untouched. crane_swing.glb kept as fallback.
+- DECLUTTER: barriers/cones 45→17 (1/3 of roofs, 1-2 each), girders 9→6, generated tarps OFF (modules carry baked tarps — they doubled up). Worklights/stacks/nets kept.
+- PHYSICAL CONTAINERS: 2.1m tall (inside the 2.2m mantle ceiling — always climbable) + BoxCollider auto-fitted on the mesh child. Clearance placement keeps them off bot corridors. Verified in play: 12/12 solid.
+- SITE FENCE (addition): 138 hoarding panels + posts ringing the carved super-block at street level, gate gaps per long side — explains the streets flowing around the site. Decor, no colliders.
+- Verified: BUILD_OK ×2, zero exceptions in play, screenshots (crane close-up, decks, street fence).
+
+## Round 11 — declutter, Quaternius props, climbable cranes, all swings craned, light.glb worklights (2026-07-20)
+
+- DECLUTTER: scaffolds/barriers/cones/stacks/nets/girders/tarps all OFF (builders kept for A/B). Kept: cranes, containers, plank bridges, climb pipes, worklights (deliberate — they're the night lighting; flagged to user).
+- QUATERNIUS DECOR: 8 new CC0 props fetched (crate, barrel, AC unit, water tank, chest, pallet, sandbags, bucket — all Quaternius, per-file licenses in Props/Rooftop/License.txt; no CC0 generator exists). 28 placed as SOLID mantleable elements (≤2.1m, BoxCollider auto-fit on mesh child, clearance-checked). Filename-driven pool — missing files shrink it, never break it.
+- ALL 6 SWINGS CRANED: CreateGlbCranes is marker-driven now (the Links-driven loop structurally missed the 4 ExtraRooftopSwings). BASE-ON-BUILDING solve: foot anchored exactly on a deck, jib yawed to aim the hook at the chain top, drop-derived scale makes hook height exact, ≤3.2m XZ hook-to-chain offset accepted (user: "more or less in the same place"). 5/6 grounded with climb kits; the east-pier swing (pivot 39,10,22.5) has NO roof in reach (probe: best mismatch ~5m at s=0.20) — it stands on the street via the mast column, coherently.
+- CLIMB KITS ("make the cranes climbable for fun"): solid mast collider + walkable jib collider (vertex-scanned local run) + player-only mast LADDER (marker pattern, never a bot graph edge) on the 5 grounded swing cranes + the mounted dressing crane. 6 masts, 6 jib walks, 27 total ladder triggers.
+- LIGHT.GLB (user, mid-round): worklight primitives replaced by the user's tripod floodlight model (4.8k tris — already at budget, no decimation), scaled 2.2m, SOLID (auto-fit collider), real point light at the head. 17 placed (9 lit). Fallback to primitives if the file goes missing.
+- Verified: 3 build iterations, screenshots (worklight close-up: warm glow from the head onto the deck; aerial: clean decks, 6 yellow cranes on towers), play 31s: 11/11 agents on decks, 6 live swings, zero exceptions.
+
+## Round 12 — base-plate cranes (correct model this time), exact chains, no giants, keep-list declutter (2026-07-20)
+
+- MODEL MIX-UP FIXED: the user's reference base-plate crane is Crane-On-GROUND (7.4x7.4 plate at y=0, vertex-scanned: hook (4.67,29.98,12.03), jib tip (18.1,51.8,30.6)) — round-12 v1 had standardized on Crane-Mounted, i.e. exactly backwards. All cranes (swing + dressing) are now On-Ground. FBXes needed isReadable=true for the scans.
+- MASSIVE CRANES FIXED: the street-level stand (35m drop → skyline-scale model) is gone; sy hard-capped 0.08-0.42 (≈4.5-23m). Result: 3 swing cranes at 10.8-12.6m.
+- EXACT CHAINS: per-axis solve retained — foot exactly on a deck, Y scale puts the hook at chain-top height, XZ stretch (f 0.65-1.55) makes jib reach exact → chain hangs off the hook tip on every placed crane.
+- 3 of 6 swings satisfy base-plate + exact-chain + size-cap; the other 3 KEEP their procedural crane (honest fallback — no floating/oversized models). Warning log names them.
+- CLIMB: standable base-plate collider + solid mast + walkable jib + invisible mast-face ladder (no pipe visual — the lattice is the ladder). 5 kits (3 swing + 2 dressing).
+- DECLUTTER: rooftop keep-list = containers + light.glb floodlights + plank ramps (Quaternius decor pass off; assets kept).
+- OPS NOTE: three build attempts were silently swallowed — the editor was in PLAY MODE (user testing); menu execute reported success anyway, and an Editor.log tail monitor matched STALE lines from the previous build. Fixes: fresh-byte-anchored log monitors, scene-file-mtime completion watcher, direct BuildRooftopArena() invocation which surfaces the play-mode exception immediately.
+- Verified: scene-save watcher + in-scene audits (3 cranes 10.8-12.6m, 5 plates/masts/ladders, RooftopDecor=0), crane close-up + aerial screenshots vs the reference.
+
+## Round 13 — wall-climb cranes, wide jib catwalk, deck-prop boxes gone (2026-07-20)
+
+- Crane ladders REMOVED (user: climb like a wall — wall-grab + jump). The solid mast collider is the wall; the existing climb/wall-hook mechanics handle it. Deleting the ladder was the feature.
+- Jib catwalk widened: min 1.6m (was scl.x*1.6 ≈ 0.5m — "falling off when I shouldn't be").
+- RoofPropDresser.DressRoofs disabled in RooftopArena.Build (the AC/vent/pipe grey boxes = the circled clutter). Off in BOTH scene + headless paths — physics parity preserved. Trash-can objectives untouched.
+- Verified in-scene post-build: craneLadders=0, deckProps=0, jibWalks=5 all ≥1.6m, 3 swing + 2 dressing cranes, zero errors.

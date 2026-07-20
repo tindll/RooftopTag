@@ -40,8 +40,8 @@ public static class RooftopInteractableBuilder
         var root = new GameObject("RooftopInteractables");
         if (parent != null) root.transform.SetParent(parent, false);
 
-        foreach ((Vector3 bottom, Vector3 top, Vector3 outward) in interactables.Ladders)
-            BuildLadder(root.transform, bottom, top, outward);
+        foreach ((Vector3 bottom, Vector3 top, Vector3 outward, float visualBottomY, float visualTopY) in interactables.Ladders)
+            BuildLadder(root.transform, bottom, top, outward, visualBottomY, visualTopY);
 
         foreach ((Vector3 pivot, float length, Vector3 exitDir) in interactables.Swings)
             BuildSwing(root.transform, pivot, length, exitDir);
@@ -53,21 +53,28 @@ public static class RooftopInteractableBuilder
     }
 
     /// <summary>Mirrors PlaygroundBuilder.BuildRoofLadder's functional pieces, but attaches a live
-    /// <see cref="LadderInteractable"/> instead of an InteractableMarker.</summary>
-    private static void BuildLadder(Transform root, Vector3 bottom, Vector3 top, Vector3 outward)
+    /// <see cref="LadderInteractable"/> instead of an InteractableMarker. <paramref name="visualBottomY"/>
+    /// and <paramref name="visualTopY"/> only stretch the collider-free pipe VISUAL (void pipes draw
+    /// down to the street slab and up to the roof lip); the climb anchors and the grab trigger stay on
+    /// the real <paramref name="bottom"/>/<paramref name="top"/>.</summary>
+    private static void BuildLadder(Transform root, Vector3 bottom, Vector3 top, Vector3 outward, float visualBottomY, float visualTopY)
     {
         float height = top.y - bottom.y;
         Vector3 midXZ = new(bottom.x, (bottom.y + top.y) * 0.5f, bottom.z);
 
-        // Backing wall sits just inside the climb line, offset toward the building (-outward): the
-        // plain-concrete (WallBody) building face the climb pipe runs along.
-        Vector3 wallCenter = midXZ - outward * 0.4f;
-        TagArenaMapGeometry.CreateBox("RoofLadderWall", root, wallCenter,
-            new Vector3(2f, height, 0.5f), TagArenaMapGeometry.SurfaceRole.WallBody);
-
-        // Climb pipe (collider-free dressing) along the actual climb line — inert in headless
-        // self-play, so movement/tag physics stay identical.
-        TagArenaMapGeometry.BuildClimbPipeVisual(root, bottom, top, outward);
+        // No backing wall box here: the climb line already runs right in front of the building's own
+        // solid facade (the roof box built by RooftopArena.Build), so a separate WallBody box only
+        // duplicated it as a floating grey rectangle proud of the real wall (user report). Climbing
+        // itself never reads this collider (TickLadder drives position off the LadderInteractable's
+        // own bottom/top transforms), so removing it changes no movement behavior.
+        //
+        // Climb pipe (collider-free dressing) along the VISUAL line — inert in headless self-play,
+        // so movement/tag physics stay identical. Its ends use visualBottomY/visualTopY, NOT
+        // bottom/top: a void pipe's climbable range is [VoidPipeFootY, deck - LadderTopDrop] but its
+        // visual runs the full street-slab-to-roof-lip wall so it doesn't read as ending in mid-air.
+        TagArenaMapGeometry.BuildClimbPipeVisual(root,
+            new Vector3(bottom.x, visualBottomY, bottom.z),
+            new Vector3(top.x, visualTopY, top.z), outward);
 
         var bottomGo = new GameObject("RoofLadderBottom");
         bottomGo.transform.SetParent(root, false);

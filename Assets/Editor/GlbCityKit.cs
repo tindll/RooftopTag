@@ -297,8 +297,35 @@ public static class GlbCityKit
         mat.SetColor("_EmissionColor", theme.windowLitColor * emissiveIntensity);
         mat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
 
+        // Surface relief + response. The GLB's own tangent-space normal map (glTF exports it
+        // OpenGL-convention as "NormalGL", which is exactly URP/Lit's _BumpMap expectation, so it
+        // binds straight across with no channel flip) gives the facade real depth. Only building4
+        // ships one; GetTexture returns null for the others and the bind is a harmless no-op.
+        Texture? normalTex = GetSourceMaterial(model)?.GetTexture("normalTexture");
+        if (normalTex != null)
+        {
+            mat.SetTexture("_BumpMap", normalTex);
+            mat.EnableKeyword("_NORMALMAP");
+            mat.SetFloat("_BumpScale", 1f);
+        }
+        // Concrete, not plastic: URP/Lit defaults to 0.5 smoothness, which reads as wet plastic on
+        // a night facade. The glTF metallicRoughness/ORM map is deliberately NOT bound to
+        // _MetallicGlossMap — glTF packs occlusion/roughness/metallic in channels URP reads
+        // differently, so a direct bind would be wrong; a scalar matte response is correct here.
+        mat.SetFloat("_Smoothness", 0.12f);
+        mat.SetFloat("_Metallic", 0f);
+
         LitMaterialCache[matKey] = mat;
         return mat;
+    }
+
+    /// <summary>The glTFast-imported source Material sub-asset for a model — the one whose
+    /// baseColour/normal/ORM texture slots glTFast wired at import time — or null if absent.
+    /// Shared read path for callers that need more than the base texture (e.g. the normal map).</summary>
+    internal static Material GetSourceMaterial(GlbModel model)
+    {
+        AssetDatabase.ImportAsset(model.Path);
+        return AssetDatabase.LoadAllAssetsAtPath(model.Path).OfType<Material>().FirstOrDefault();
     }
 
     /// <summary>Reads a model's baseColour texture back to the CPU via RenderTexture blit + ReadPixels

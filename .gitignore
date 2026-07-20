@@ -101,3 +101,7 @@ Assets/_Recovery/
 # MCP capture output
 Assets/Screenshots/
 Assets/Screenshots.meta
+
+# Regenerable processed textures (ModularBuildings rebuilds them on demand) — too big for the repo
+Assets/Art/Generated/Modular/*_tex.asset
+Assets/Art/Generated/Modular/*_tex.asset.meta

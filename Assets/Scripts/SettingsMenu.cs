@@ -193,7 +193,7 @@ public sealed class SettingsMenu : MonoBehaviour
     {
         const float width = 360f;
         const float pad = 28f;
-        const float titleH = 54f;
+        const float titleH = 0f;
         const float buttonH = 52f;
         const float gap = 12f;
         const int buttonCount = 4;
@@ -202,10 +202,6 @@ public sealed class SettingsMenu : MonoBehaviour
         float x = (GameUIStyle.DesignWidth - width) / 2f;
         float top = (GameUIStyle.DesignHeight - height) / 2f;
         GameUIStyle.Panel(new Rect(x, top, width, height));
-
-        GUIStyle titleStyle = GameUIStyle.Label(GameUIStyle.Title, TextAnchor.MiddleCenter, FontStyle.Bold);
-        titleStyle.normal.textColor = GameUIStyle.Text;
-        GUI.Label(GameUIStyle.Scaled(new Rect(x, top + pad - 6f, width, titleH)), "PAUSED", titleStyle);
 
         float innerX = x + pad;
         float innerWidth = width - pad * 2f;

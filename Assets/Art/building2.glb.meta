@@ -17,7 +17,7 @@ ScriptedImporter:
     texturesReadable: 0
     defaultMinFilterMode: 9729
     defaultMagFilterMode: 9729
-    anisotropicFilterLevel: 1
+    anisotropicFilterLevel: 8
   instantiationSettings:
     mask: -1
     layer: 0

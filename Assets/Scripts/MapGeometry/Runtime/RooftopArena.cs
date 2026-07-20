@@ -48,10 +48,18 @@ public static class RooftopArena
     /// interactable components/markers without re-deriving them from the link table.</summary>
     public readonly struct ArenaInteractables
     {
-        public readonly List<(Vector3 bottom, Vector3 top, Vector3 outward)> Ladders;
+        // visualBottomY / visualTopY: how far the collider-free climb-pipe VISUAL extends, split from
+        // the climbable bottom/top ends:
+        //  - bottom: void pipes must STOP climbing at VoidPipeFootY (-14, above the fall-reset line)
+        //    yet still LOOK like they reach the street slab at buildingBaseY (-25); a pipe visibly
+        //    ending 11m up the wall reads as broken (user report). Roof-to-roof ladders keep
+        //    visualBottomY == bottom.y so they never pierce the lower roof they stand on.
+        //  - top: the climb stops LadderTopDrop below the deck (see that constant) but the pipe still
+        //    LOOKS like it runs to the roof lip.
+        public readonly List<(Vector3 bottom, Vector3 top, Vector3 outward, float visualBottomY, float visualTopY)> Ladders;
         public readonly List<(Vector3 pivot, float length, Vector3 exitDir)> Swings;
         public readonly List<(Vector3 pos, int tier)> Cans;
-        public ArenaInteractables(List<(Vector3, Vector3, Vector3)> ladders, List<(Vector3, float, Vector3)> swings, List<(Vector3, int)> cans)
+        public ArenaInteractables(List<(Vector3, Vector3, Vector3, float, float)> ladders, List<(Vector3, float, Vector3)> swings, List<(Vector3, int)> cans)
         {
             Ladders = ladders; Swings = swings; Cans = cans;
         }
@@ -274,32 +282,67 @@ public static class RooftopArena
     // how deep the pipe reaches; every building bottoms at y=-3 (BuildingSkirt), so a BottomY below
     // that literally hangs into the void. Kept long (>=10m) on purpose — the old 1m "accent" pipes
     // read as useless.
+    // Shared foot height for every void pipe. NOT the street slab (-25): RoundController.FallResetY is
+    // -15 — the moment ANY agent's position crosses below it, the map "tags" you (Runner→Tagger) and
+    // respawns you, whether or not you're on a ladder (the check is pure position.y, it doesn't exempt
+    // climbers). A pipe that reached the real street would therefore drag a descending runner straight
+    // through the death line — the opposite of a safe escape. So pipes stop one metre ABOVE the reset
+    // line: a runner riding a pipe to its foot sits at ~-14, still safe and out of the bots' reach
+    // (pipes are not graph edges), ~11m of open air still below them. "Full wall" without the suicide.
+    private const float VoidPipeFootY = -14f;
+
+    // How far below the deck/anchor a ladder's CLIMB top stops (the visual still reaches the lip via
+    // visualTopY). The character's origin is its FEET (capsule center = height/2), so a climb top AT
+    // deck height rides the feet all the way up there — the whole body ends up hovering above the pipe
+    // while still attached (user report). One metre matches the movement playground's ladder convention
+    // ("tops out ~1m below its landing surface"), which is exactly what the top-dismount launch tuning
+    // (topDismountUpSpeed = 5 -> ~1.27m apex) is calibrated against; a bigger drop would undershoot
+    // the deck and reintroduce the "climber falls back down" bug.
+    private const float LadderTopDrop = 1.0f;
+
     public readonly struct VoidPipe
     {
         public readonly int Roof;
         public readonly Vector3 Face;   // outward unit dir into the void
         public readonly float BottomY;  // pipe foot, well below the roof surface (into the void)
         public VoidPipe(int roof, Vector3 face, float bottomY) { Roof = roof; Face = face; BottomY = bottomY; }
+        // Standard pipe: foot at the shared VoidPipeFootY. The 3-arg ctor stays for any pipe that ever
+        // needs a per-face override, but the street-death rule gives one uniform safe foot for all.
+        public VoidPipe(int roof, Vector3 face) : this(roof, face, VoidPipeFootY) { }
     }
 
     public static readonly VoidPipe[] VoidPipes =
     {
-        new(11, new Vector3(-1f, 0f,  0f), -8f), // Roof_Tower  west  face (h9) — longest, ~17m into the void
-        new(11, new Vector3( 0f, 0f,  1f), -8f), // Roof_Tower  north face — Tower's second exposed void face
-        new(10, new Vector3( 0f, 0f,  1f), -7f), // Roof_N2EE   north face (h7) — NE corner. (East face
-                                                 // pipe removed: the 10->30 ramp to East_Annex now runs
-                                                 // down that edge; north face keeps N2EE's void escape.)
-        new( 6, new Vector3( 1f, 0f,  0f), -7f), // Roof_N1EE   east  face (h6)
-        new(16, new Vector3(-1f, 0f,  0f), -7f), // Roof_N1WW   west  face (h6)
-        new( 8, new Vector3( 0f, 0f,  1f), -7f), // Roof_N2     north face (h5)
-        new(22, new Vector3(-1f, 0f,  0f), -7f), // Con_West    west  face (h3.5) — construction-zone edge
-        new(24, new Vector3( 0f, 0f, -1f), -7f), // Con_ScafHi  south face (h4) — SW corner
-        new(14, new Vector3( 0f, 0f, -1f), -7f), // Roof_S2     south face (h3) — south edge
+        // All feet at the shared VoidPipeFootY (-14) now — full-wall pipes stopping just above the
+        // fall-reset line (see VoidPipeFootY). Faces verified >=2m clear of every ramp centre-line
+        // (the ROOFTOP_VOIDPIPE_RAMP_CLIP threshold); computed min clearances noted where tight.
+        new(11, new Vector3(-1f, 0f,  0f)), // Roof_Tower  west  face (h9) — longest pipe on the map
+        new(11, new Vector3( 0f, 0f,  1f)), // Roof_Tower  north face — Tower's second exposed void face
+        new(10, new Vector3( 0f, 0f,  1f)), // Roof_N2EE   north face (h7) — NE corner. (East face
+                                            // pipe removed: the 10->30 ramp to East_Annex now runs
+                                            // down that edge; north face keeps N2EE's void escape.)
+        new( 6, new Vector3( 1f, 0f,  0f)), // Roof_N1EE   east  face (h6) — 5.9m clear of the E2/N1E ramps
+        new(16, new Vector3(-1f, 0f,  0f)), // Roof_N1WW   west  face (h6)
+        new( 8, new Vector3( 0f, 0f,  1f)), // Roof_N2     north face (h5)
+        new(22, new Vector3(-1f, 0f,  0f)), // Con_West    west  face (h3.5) — construction-zone edge
+        new(24, new Vector3( 0f, 0f, -1f)), // Con_ScafHi  south face (h4) — SW corner
+        new(14, new Vector3( 0f, 0f, -1f)), // Roof_S2     south face (h3) — south edge
 
-        new(29, new Vector3( 1f, 0f,  0f), -7f), // East_High   east  face (h6) — outer edge of the new zone
-        new(29, new Vector3( 0f, 0f, -1f), -7f), // East_High   south face
-        new(28, new Vector3( 0f, 0f, -1f), -7f), // East_PierS  south face (h3)
-        new(30, new Vector3( 0f, 0f,  1f), -7f), // East_Annex  north face (h5) — escape off the swing annex
+        new(29, new Vector3( 1f, 0f,  0f)), // East_High   east  face (h6) — outer edge of the new zone
+        new(29, new Vector3( 0f, 0f, -1f)), // East_High   south face — 4.97m clear of the PierS->High ramp
+        new(28, new Vector3( 0f, 0f, -1f)), // East_PierS  south face (h3) — 5.5m clear of the PierS->High ramp
+        new(30, new Vector3( 0f, 0f,  1f)), // East_Annex  north face (h5) — escape off the swing annex
+
+        // --- New street-access pipes: every zone now has >=2 street<->roof routes on ramp-clear faces,
+        // heights spread h2..h5. (East_Pier's EAST face was rejected — its foot lands 1.9m from the
+        // Pier->East_High ramp foot, under the 2m bar; PierN's north face covers the pier zone instead.)
+        new( 1, new Vector3( 0f, 0f, -1f)), // Roof_E1     south face (h4) — spawn-cluster access
+        new(12, new Vector3( 0f, 0f, -1f)), // Roof_S1     south face (h4) — spawn-cluster / south access
+        new( 9, new Vector3( 0f, 0f,  1f)), // Roof_N2E    north face (h5) — north edge, 2nd north route
+        new(15, new Vector3(-1f, 0f,  0f)), // Roof_W2     west  face (h4) — west perimeter access
+        new(19, new Vector3( 0f, 0f, -1f)), // Con_Deck    south face (h2) — construction low street access
+        new(27, new Vector3( 0f, 0f,  1f)), // East_PierN  north face (h5) — east-pier 2nd route
+        new(25, new Vector3( 0f, 0f, -1f)), // Roof_S2E    south face (h4) — south zone 2nd route
     };
 
     private const float BuildingSkirt = 3f; // how far each building drops below its roof (visual body)
@@ -333,7 +376,7 @@ public static class RooftopArena
             TagArenaMapGeometry.AddTopRim(roofBox);
         }
 
-        var ladders = new List<(Vector3, Vector3, Vector3)>();
+        var ladders = new List<(Vector3, Vector3, Vector3, float, float)>();
         var swings = new List<(Vector3, float, Vector3)>();
         var ramps = new List<(Vector3 foot, Vector3 top)>();
         foreach (Link link in Links)
@@ -344,7 +387,12 @@ public static class RooftopArena
                     ramps.Add(BuildRamp(root.transform, Roofs[link.From], Roofs[link.To]));
                     break;
                 case LinkKind.Ladder:
-                    ladders.Add(LadderAnchors(Roofs[link.From], Roofs[link.To]));
+                    // visualBottomY == bottom.y: a roof-to-roof ladder's visual must stop exactly at
+                    // the lower roof it stands on (extending it would pierce that roof's deck).
+                    // Climb top drops LadderTopDrop below the deck (visual still reaches it) — see
+                    // the constant's remarks.
+                    (Vector3 lBottom, Vector3 lTop, Vector3 lOut) = LadderAnchors(Roofs[link.From], Roofs[link.To]);
+                    ladders.Add((lBottom, lTop with { y = lTop.y - LadderTopDrop }, lOut, lBottom.y, lTop.y));
                     break;
                 case LinkKind.Swing:
                     swings.Add(BuildSwing(root.transform, Roofs[link.From], Roofs[link.To], link.Param));
@@ -360,8 +408,15 @@ public static class RooftopArena
 
         // Long over-void escape pipes (player features; see VoidPipes). Added to the same ladder list
         // the scene + headless builders consume, so they appear identically in both. Not graph edges.
+        // Visual foot at the street slab (buildingBaseY, -25) so the pipe LOOKS like it reaches the
+        // ground, while the CLIMB bottom stays at VoidPipeFootY (-14) — see that constant's remarks
+        // for why climbing lower would drag a runner through the fall-reset line.
+        float pipeVisualFootY = TagArenaMapGeometry.Theme.buildingBaseY;
         foreach (VoidPipe pipe in VoidPipes)
-            ladders.Add(VoidPipeAnchors(pipe));
+        {
+            (Vector3 pBottom, Vector3 pTop, Vector3 pOut) = VoidPipeAnchors(pipe);
+            ladders.Add((pBottom, pTop with { y = pTop.y - LadderTopDrop }, pOut, pipeVisualFootY, pTop.y));
+        }
 
         ValidateLadderRampClearance(ladders, ramps);
 
@@ -385,7 +440,10 @@ public static class RooftopArena
         // nav-clearance rule so link corridors, graph anchors and spawn points stay free (see
         // RoofPropDresser). Lives here, not SceneStyler, because physical props must exist
         // identically in saved scenes AND headless self-play.
-        RoofPropDresser.DressRoofs(root.transform);
+        // Round 13 (user: "remove all the little cubes and rectangular boxes on the rooftops, they
+        // just add clutter" — the AC/vent/pipe deck props are exactly those): pass disabled in BOTH
+        // build paths, so scene and headless physics stay identical. Re-enable by uncommenting.
+        // RoofPropDresser.DressRoofs(root.transform);
 
         // Trash-can objective anchors (see the Bins feature): one shared list both build paths
         // (PlaygroundBuilder scene + headless RooftopInteractableBuilder) consume. Each spot is
@@ -556,7 +614,7 @@ public static class RooftopArena
     /// (1.5m) plus the ladder's own footprint, so anything under threshold is a real visual clip risk,
     /// not a false positive from the check being overly strict.</summary>
     private static void ValidateLadderRampClearance(
-        List<(Vector3 bottom, Vector3 top, Vector3 outward)> ladders,
+        List<(Vector3 bottom, Vector3 top, Vector3 outward, float visualBottomY, float visualTopY)> ladders,
         List<(Vector3 foot, Vector3 top)> ramps)
     {
         const float minClearance = 1.5f;

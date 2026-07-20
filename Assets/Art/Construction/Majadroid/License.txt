@@ -1,0 +1,126 @@
+Assets/Art/Construction/Majadroid/ - License Documentation
+=============================================================
+Pack:     "3D House Construction Site (LowPoly, CC0)"
+Author:   Maik Hoffmann (Majadroid)
+Source:   https://opengameart.org/content/3d-house-construction-site-lowpoly-cc0
+Download: https://opengameart.org/sites/default/files/lowpoly-house-construction-site-by-majadroid_2.zip
+Website:  http://www.majadroid.com
+Itch.io:  https://majadroid.itch.io/
+OGA user: https://opengameart.org/users/majadroid
+License:  CC0 1.0 — "This art package is published under CC0 licence.
+          Attribution is not required but appreciated." (verbatim from
+          the pack's own INFO.txt, copied below unmodified.)
+Extra:    Color palette/gradient texture technique by Imphenzia
+          (www.imphenzia.com) — used under the same CC0 terms by the pack.
+
+--- Full contents of the downloaded archive (majadroid_2.zip) ---
+LowPoly-House-Construction-Site-By-Majadroid/
+  HouseConstructionSite-SingleObject.blend      (NOT copied - Blender source, not needed in Unity)
+  HouseConstructionSite.blend                   (NOT copied - Blender source, not needed in Unity)
+  INFO.txt                                      (copied, see below)
+  ImphenziaPalette01-256-Gradient.png            (copied - shared gradient texture used by all FBX)
+  Overview.png                                   (copied - pack preview render)
+  Majadroid Brand Resources/                    (NOT copied - studio logo/branding PNGs, not props)
+    md-majadroid-letters-border.png
+    md-majadroid-letters-only-black.png
+    md-majadroid-letters-only-white.png
+    md-majadroid-letters-only.png
+    md-majadroid-letters.png
+  fbx files/                                     (all 13 FBX files copied, see "fbx files/" below)
+    Building.fbx
+    Construction-Materials.fbx
+    Containers-Cargo.fbx
+    Containers-Office.fbx
+    Containers.fbx
+    Crane-Mounted.fbx
+    Crane-On-Ground.fbx
+    Fence.fbx
+    Ground.fbx
+    Ramp.fbx
+    Road.fbx
+    Trucks.fbx
+    _HouseConstructionSite-AllInOneObject_.fbx
+
+Copied into this folder: INFO.txt, ImphenziaPalette01-256-Gradient.png,
+Overview.png, and the full "fbx files/" subfolder (all 13 FBX). The two
+.blend files (8.6 MB combined, Blender-only source) and the studio
+branding PNGs were left out of the Unity project since they add bulk
+with no runtime use; they are still in the original zip if ever needed
+(re-download from the OGA URL above).
+
+--- Object/mesh structure of each FBX (inspected by parsing the FBX
+    binary strings, no FBX SDK available) ---
+This is a whole scene broken into per-category FBX files, NOT one
+combined file per part. HOWEVER, each individual category FBX (e.g.
+Crane-Mounted.fbx, Building.fbx, Trucks.fbx, Containers.fbx) itself
+contains exactly ONE Model + ONE Geometry node, i.e. all of that
+category's sub-parts are pre-joined into a single mesh named after the
+file (confirmed: every FBX file scanned has Geometry-token count = 1 and
+Model-token count = 1). Object names found:
+  Crane-Mounted.fbx   -> single mesh object "Crane Mounted"
+  Crane-On-Ground.fbx -> single mesh object "Crane Ground"
+(Same one-mesh-per-file pattern applies to the other category FBX files;
+ not individually re-verified but the token counts match across
+ Building.fbx, Containers.fbx, and Trucks.fbx as well.)
+There is also _HouseConstructionSite-AllInOneObject_.fbx, which bundles
+the entire site (building + both cranes + containers + trucks + fence +
+ground + ramp + road) as one file, for whoever wants the whole scene at
+once rather than picking category pieces.
+
+--- Texture note (Unity import) ---
+Every FBX references ImphenziaPalette01-256-Gradient.png as a single
+shared "base_color_texture" via a relative path of the form
+"<FileName>.fbm\ImphenziaPalette01-256-Gradient.png" (Autodesk's default
+FBX-side-folder convention). That .fbm subfolder does NOT exist in the
+zip — the texture ships once, flat, in the pack root. On import into
+Unity, the FBX importer will likely show the material with a missing/
+pink texture until you manually assign
+Assets/Art/Construction/Majadroid/ImphenziaPalette01-256-Gradient.png
+to the material's base color slot (or use "Extract Materials" and repoint
+it). This is expected — it is how the source pack ships, not a corrupt
+download.
+
+--- Verbatim INFO.txt from the pack ---
+/----------------------------------------------------------------->
+|
+|	Majadroid		by Maik Hoffmann
+|
+|----------------------------------------------------------------->
+|
+|	Website:		http://www.majadroid.com
+|
+|	Itch.io			https://majadroid.itch.io/
+|	OpenGameArt		https://opengameart.org/users/majadroid
+|
+|	Twitter			https://twitter.com/majadroid
+|
+|----------------------------------------------------------------->
+|
+|	Feel free to support my work via Patreon!
+|	Patreon			http://patreon.com/majadroid
+|
+\----------------------------------------------------------------->
+
+
+/----------------------------------------------------------------->
+|
+|	This art package is published under CC0 licence.
+|	Attribution is not required but appreciated.
+|
+\----------------------------------------------------------------->
+
+
+/----------------------------------------------------------------->
+|
+|	Color Palette by Imphenzia (www.imphenzia.com).
+|
+\----------------------------------------------------------------->
+
+--- Recommendation for Task A (tower crane) ---
+Crane-On-Ground.fbx and Crane-Mounted.fbx in fbx files/ are genuine
+yellow lattice-mast tower cranes with a horizontal jib and hook line
+(see Overview.png — two of them are visible flanking the modeled
+apartment building). Since poly.pizza's only CC0 "crane" result turned
+out to be a hook/cable prop, not a tower-crane silhouette (see
+../Cranes/License.txt), these two FBX are the actually-usable CC0 tower
+crane assets in this drop.

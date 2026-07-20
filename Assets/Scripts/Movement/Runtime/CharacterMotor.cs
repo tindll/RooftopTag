@@ -1529,7 +1529,12 @@ public sealed class CharacterMotor : MonoBehaviour
         {
             if (_currentLadder is null
                 && Time.time - _lastLadderDetachTime >= config.ladder.regrabCooldown
-                && col.TryGetComponent(out LadderInteractable ladder))
+                && col.TryGetComponent(out LadderInteractable ladder)
+                // Feet (the transform origin) must be BELOW the climb top: standing on the roof above
+                // a pipe, the grab sphere still reaches the trigger's top sliver, and attaching there
+                // projected to t=1 — "on the pipe" while the whole body is above it, resolved a tick
+                // later by a nonsense dismount hop. Falling past the top re-qualifies naturally.
+                && transform.position.y < ladder.PointAt(1f).y - 0.1f)
             {
                 AttachToLadder(ladder);
                 return true;

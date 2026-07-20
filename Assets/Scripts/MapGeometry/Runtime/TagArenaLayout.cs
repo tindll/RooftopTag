@@ -26,7 +26,7 @@ public sealed class TagArenaLayout
 {
     // ---- Shared section constants (were duplicated as literals across geometry + graph) ----
     // One edit here moves both the physical boxes and the graph nodes (that's the whole point of
-    // TagArenaLayout) — tune freely without desync, but re-run RooftopTag/Build Tag Arena afterwards
+    // TagArenaLayout) — tune freely without desync, but re-run RooftopTag/Build Rooftop Arena afterwards
     // so the saved scene geometry matches. NOTE (M4 loop): narrowing gaps to ≤7m made falls *worse*
     // (bots jump at fixed ~8.5m power, so smaller gaps overshoot into the next pit). The old 3m
     // opening gap was below the bots' controllable range — a fixed-power sprint jump flew clean over

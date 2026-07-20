@@ -36,11 +36,15 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// the whole theme. It has to bottom out this hard for the rest of the pass to work — every window,
     /// billboard and rim trim below is sold by CONTRAST against this, not by its own brightness (which
     /// is why several emissive intensities could come DOWN in this re-theme rather than up).</summary>
-    public Color skyZenith = new Color32(0x08, 0x0B, 0x16, 0xFF);
+    // Construction-zone re-theme (round 5, matched to the Nano Banana concept): the whole night moved
+    // from violet-grey toward saturated INDIGO-BLUE and brightened a step — the concept reads as a
+    // blue-hour diorama with hot orange worklights, not near-black. Band monotonicity and the
+    // skyHorizon == skyGround == fogColor seam rule are preserved.
+    public Color skyZenith = new Color32(0x0C, 0x12, 0x2A, 0xFF);
     /// <summary>#B45252 (the sunset's red band) -> #141A2C, a dark blue sitting between the zenith and
     /// the horizon's light dome. Monotonic by value with its neighbours — horizon (46,44,58) > mid
     /// (20,26,44) > zenith (8,11,22) — so the sky darkens all the way up with no band inversion.</summary>
-    public Color skyMid = new Color32(0x14, 0x1A, 0x2C, 0xFF);
+    public Color skyMid = new Color32(0x1B, 0x24, 0x45, 0xFF);
     /// <summary>The sky AT the horizon, and this is why it is exactly <see cref="fogColor"/> (was
     /// #F0904A, then #D9906A at sunset, now the night fog): Unity's fog does NOT apply to the skybox, so
     /// wherever fully-fogged geometry meets the sky it meets an UNFOGGED colour, and any mismatch reads
@@ -51,12 +55,12 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// horizon == fog is now the literal physical claim rather than a convenient match. The punch at the
     /// horizon still comes from the moon disc the skybox shader ADDS on top, and skyMid still drives the
     /// gradient above. Keep these two and fogColor equal — retuning one alone re-opens the seam.</summary>
-    public Color skyHorizon = new Color32(0x2E, 0x2C, 0x3A, 0xFF);
+    public Color skyHorizon = new Color32(0x2C, 0x37, 0x60, 0xFF);
     /// <summary>Below-horizon sky. Also fogColor (was #FFC873, then #D9906A), same reason as
     /// <see cref="skyHorizon"/> — and it costs nothing: the ground slab now spans past the skyline, so in
     /// RooftopArena this is only visible in the ~4-degree sliver between the slab's far edge and the
     /// horizon. (In MovementPlayground, which builds no slab, it reads as a flat haze floor.)</summary>
-    public Color skyGround = new Color32(0x2E, 0x2C, 0x3A, 0xFF);
+    public Color skyGround = new Color32(0x2C, 0x37, 0x60, 0xFF);
     /// <summary>0.35 -> 0.25. Where <see cref="skyMid"/> lands as a fraction of the way up the sky, so
     /// lowering it COMPRESSES the horizon->mid transition down toward the horizon. That is the shape of a
     /// real light dome: a city's glow is a tight band hugging the skyline that falls off fast, not a
@@ -115,14 +119,14 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// sequence watchable. Night is sold here by HUE (purple sun-bounce -> cool blue) and by the black sky
     /// and popping windows around it — not by driving this toward zero, which would take the street with
     /// it. Do not lower this without raising roadColor/sidewalkColor to match.</summary>
-    public Color ambientSky = new Color32(0x33, 0x3C, 0x5C, 0xFF);
+    public Color ambientSky = new Color32(0x40, 0x4E, 0x82, 0xFF);
     /// <summary>#C97B5A -> #3A3446, ~40% of the old luminance — the largest ambient cut in the re-theme,
     /// and the one that does the most work. This lights VERTICAL surfaces (normals at the horizon), i.e.
     /// the facades, and at sunset it was a strong warm bounce that kept every wall glowing — which is
     /// precisely what left the window grids with nothing to read against. Now it is the city's own dome
     /// (tinted toward fogColor's violet) faintly lifting the walls off black. Facades land at ~40% of
     /// their sunset brightness between this and the key: that gap IS the window pop.</summary>
-    public Color ambientEquator = new Color32(0x3A, 0x34, 0x46, 0xFF);
+    public Color ambientEquator = new Color32(0x33, 0x3C, 0x62, 0xFF);
     /// <summary>#4A3844 -> #2A2430 (~67%). DOWN-facing surfaces only — ledge undersides, overhangs, the
     /// cosmetic masses' soffits, cloud bellies. Despite the name this is NOT the street's light (see
     /// <see cref="ambientSky"/>); it is the light the street throws back UP. Kept faintly warm rather than
@@ -142,7 +146,7 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// planes, and skylineHazeBlend drives the entire backdrop skyline 75% toward it. It is why the far
     /// city does not simply vanish at night: the buildings out there dissolve INTO a visible dome rather
     /// than into black.</summary>
-    public Color fogColor = new Color32(0x2E, 0x2C, 0x3A, 0xFF);
+    public Color fogColor = new Color32(0x2C, 0x37, 0x60, 0xFF); // == skyHorizon/skyGround (seam rule)
     /// <summary>Density for EXPONENTIAL-SQUARED fog (SceneStyler.ApplyEnvironment sets the mode; the
     /// two numbers are not interchangeable — read that comment before retuning this).
     ///
@@ -155,6 +159,9 @@ public sealed class VisualThemeConfig : ScriptableObject
     ///   34m: 29% -> 4%   |   340m (skyline): 96.7% -> 98.4%   |   460m (ground edge): 99.0% -> 99.95%
     /// Better at BOTH ends. Raising this past ~0.007 starts tinting the play area again; below ~0.005
     /// the ground's far edge climbs back out of the fog and the world-edge returns.</summary>
+    // Back to 0.006 (from the 0.007 fog-as-culling pass): the horizon is now a solid Kenney building
+    // WALL (~160-190m out) instead of a sparse fogged skyline, and at 0.007 the wall itself drowned. At
+    // 0.006 the wall rows read as dark silhouettes closing off the map while depth haze remains.
     public float fogDensity = 0.006f;
     public int hazePlaneCount = 3;
     /// <summary>Y of the highest haze plane — must sit strictly BELOW the lowest walkable roof
@@ -366,6 +373,20 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// ledge, is identical either way. Flipping this off restores the flat boxes with the simulation
     /// byte-for-byte unchanged; the two builds differ in nothing but what you see.</summary>
     public bool glbShellEnabled = true;
+
+    /// <summary>Round 5: the playable cluster is an UNDER-CONSTRUCTION site (Nano Banana concept):
+    /// concrete-shell facades restyled onto the existing collider-exact roof bodies/masses (no shell
+    /// models, no renderer stripping), plus ConstructionShells toppers and ConstructionDressing
+    /// props/cranes/worklights. When true, the Tripo GLB shells are skipped for the playable towers —
+    /// the backdrop city keeps its finished Kenney look (deliberate contrast: a construction site
+    /// inside a living city). Movement geometry untouched either way.</summary>
+    public bool constructionZone = true;
+
+    /// <summary>Round 7: playable towers are stacked from the user's modular building GLBs
+    /// (Assets/buildings — bottom/middle/top per type, see ModularBuildings). Takes precedence over
+    /// the generated construction facades when constructionZone is also true; flip off to fall back
+    /// to the ConstructionShells generated look. Colliders identical either way.</summary>
+    public bool modularBuildings = true;
     /// <summary>How far above a model's own <c>DeckY</c> a triangle must sit before the shell drops it.
     /// In the models' MODEL-LOCAL normalized space (height ~= 1.0), NOT metres — the culled mesh is
     /// cached once per model and shared by every roof that picks it, so it cannot depend on any one
@@ -382,6 +403,30 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// stair hut at 0.113 above its deck; building3's is 0.176). Expect ~0% dropped on building1 — it
     /// has no rooftop clutter geometry at all, its clutter is painted into the texture.</summary>
     public float glbShellCullEpsilon = 0.02f;
+    /// <summary>How far each shell's concrete tint may deviate from pure white (SceneStyler.ShellTint),
+    /// as a fraction subtracted from 1.0 — i.e. every tinted RGB component lands in [1 - jitter, 1.0].
+    /// Kept subtle and one-sided (never brighter than white, only darker/greyer) because the tint
+    /// MULTIPLIES the model's own painted texture (see GlbCityKit.BuildLitMaterial): pushing a component
+    /// above 1 cannot brighten past what the texture already bakes in, it just clips. 0.10 is deliberately
+    /// restrained — the goal is "two identical models read as two different buildings", not a visibly
+    /// colour-graded skyline; see <see cref="wallValueJitter"/> for the same restraint on the procedural
+    /// concrete palette this mirrors.</summary>
+    [Range(0f, 0.25f)] public float glbTintJitter = 0.10f;
+    /// <summary>Night-palette multiplier applied over the whole ShellTint result. The bucketed jitter above
+    /// stays near WHITE by design (it varies buildings against each other); this is what pulls every GLB
+    /// shell down into the dark slate/blue city so none of them read as bright cream towers (user feedback,
+    /// twice: the "light buildings" were these shells, not the Kenney placements). Windows still glow —
+    /// emission is independent of the base multiply.</summary>
+    public Color glbShellNightTint = new(0.34f, 0.36f, 0.46f);
+    /// <summary>How many DISTINCT tint buckets a shell's seed is hashed into — the same draw-call/material
+    /// discipline as <see cref="glbWindowSeedVariants"/> and <see cref="skylineHazeBandCount"/>, and for
+    /// the identical reason: GlbCityKit.BuildLitMaterial mints one material PER (model, tint) pair, there
+    /// is a hard ceiling of 96 GLB materials in the project, and the skyline already spends ~44 of them.
+    /// A per-instance tint (31 roofs x continuous colour) would mint up to 31 more materials for one model
+    /// alone; bucketing into a handful of shared tints keeps the count bounded regardless of roof count.
+    /// 6 mirrors glbWindowSeedVariants's own bucket count, so a shell's tint and its window pattern quantise
+    /// at the same granularity.</summary>
+    [Range(1, 12)] public int glbTintVariants = 6;
 
     [Header("GLB swing crane (crane_swing.glb over each RooftopArena swing link, PHASE 5)")]
     /// <summary>Uniform scale of the crane_swing.glb model SceneStyler.CreateGlbCranes places at each
@@ -414,10 +459,10 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// doesn't sit flush with its visible surface the way the primitive cylinder's did.</summary>
     public float glbPipeOutwardNudge = 0f;
     /// <summary>Extra yaw (degrees), applied on top of the wall-facing solve that points the model's
-    /// local +Z at the wall (assumed to be modular_pipe.glb's bracket-clamp side, matching
-    /// CreateGlbCranes' same +Z-is-front convention for crane_swing.glb). Zero by default; the lever to
-    /// turn if that axis assumption is wrong for this particular GLB.</summary>
-    public float glbPipeYawOffsetDegrees = 0f;
+    /// local +Z at the wall. 180 because modular_pipe.glb models its bracket clamp on local -Z (the
+    /// opposite of crane_swing.glb's +Z-is-front convention CreateGlbPipes assumes): at 0 the wall-mount
+    /// tabs visibly faced the street instead of the facade.</summary>
+    public float glbPipeYawOffsetDegrees = 180f;
 
     [Header("Rim trims (moonlit roof edges — FUNCTIONAL, see remarks)")]
     /// <summary>#FFB668 (warm, "sun-lit roof edge") -> #BFD4F5, a pale cool white-blue: moonlight
@@ -441,7 +486,10 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// one thing that got better for free and take the ledge cue with it. It stays over bloomThreshold
     /// (1.0) on purpose: the slight bloom is what makes a ledge catch your eye peripherally, which is
     /// exactly when you need it.</summary>
-    public float rimEmissiveIntensity = 1.6f;
+    // 1.0, was 1.6: under the construction re-theme's stronger bloom the rims flared into glaring
+    // white outlines that dominated every shot; 1.0 keeps the functional ledge glow (readability at
+    // speed) without the flare. (Round 5.)
+    public float rimEmissiveIntensity = 1.0f;
     public float rimThickness = 0.15f;
     public float rimHeight = 0.12f;
 
@@ -480,8 +528,15 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// <summary>The backdrop skyline still occupies this annulus around the play area: a BSP block whose
     /// centre falls outside [inner, outer] gets no building. Per-band colour is pushed toward
     /// <see cref="fogColor"/> by <see cref="skylineHazeBlend"/> across it, for atmospheric perspective.</summary>
-    public float skylineInnerRadius = 72f;
-    public float skylineOuterRadius = 340f;
+    // Raised 72 -> 155: the Kenney city grid now owns everything out to ~130m from the cluster centre
+    // (varied blocks + its own buildings), and old skyline towers placed inside that span stood ON the
+    // new roads with cars clipping through them (user-reported). The old backdrop generator now only
+    // fills the fogged ring BEYOND the Kenney city.
+    public float skylineInnerRadius = 155f;
+    // Pulled 340 -> 240 with the heavier fog (fogDensity 0.007): the 240-340 ring sat at 95-99% fog, so
+    // dropping it is nearly invisible but culls its buildings' draw calls, and it compresses the
+    // near->far fill gradient into the band you can actually see, for a denser-reading near city.
+    public float skylineOuterRadius = 240f;
     /// <summary>Chance a qualifying BSP block gets a building, at <see cref="skylineInnerRadius"/> and at
     /// <see cref="skylineOuterRadius"/> respectively — this is what replaces the old per-ring count and it
     /// preserves the same radial character: the near city stays sparse and legible, the far city piles up
@@ -489,10 +544,16 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// so these two land 134 buildings in it — the ring code placed 128, and matching it is deliberate:
     /// the skyline's density was already tuned against the fog. Pushing Far past ~0.9 makes the horizon
     /// read as one solid unbroken slab rather than a skyline.</summary>
-    [Range(0f, 1f)] public float skylineBlockFillNear = 0.21f;
-    [Range(0f, 1f)] public float skylineBlockFillFar = 0.53f;
+    // Density raised from 0.21/0.53 (~134 buildings, tuned to match the old ring code against the OLD
+    // fog) as part of the living-metropolis pass: a denser near/mid skyline reads busier from the
+    // rooftops, and the heavier near-fog (see fogDensity) both hides the far edge and culls the extra
+    // far buildings, so the net cost stays in hand. Far kept well under the ~0.9 "solid slab" ceiling.
+    [Range(0f, 1f)] public float skylineBlockFillNear = 0.36f;
+    [Range(0f, 1f)] public float skylineBlockFillFar = 0.68f;
     public float skylineHeightMin = 7f;
-    public float skylineHeightMax = 40f;
+    // Max raised 40 -> 52: a few taller landmark towers give the skyline vertical variety instead of a
+    // uniform mid-rise band.
+    public float skylineHeightMax = 52f;
     public float skylineWidthMin = 6f;
     public float skylineWidthMax = 18f;
     [Range(0f, 1f)] public float skylineHazeBlend = 0.75f;
@@ -655,6 +716,59 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// 22m below the lowest playable surface (see SceneStyler.CreateCars).</summary>
     public float carTriggerMargin = 0.3f;
 
+    [Header("Traffic (lane network + signals, RooftopArena only)")]
+    /// <summary>Roughly one car per this many metres of LANE (each street has one lane per direction),
+    /// summed over the whole network — density is layout-derived, not a fixed count. Smaller = busier
+    /// streets and more draw calls. See SceneStyler.CreateCars / BuildTrafficGraph.</summary>
+    public float carSpacing = 15f;
+    /// <summary>Lanes shorter than this (metres) route through-traffic but spawn no parked car — a stub
+    /// between two adjacent junctions would otherwise pin a car between two stop lines.</summary>
+    public float carMinLaneSpawnLength = 7f;
+    /// <summary>Full traffic-light period (seconds): X-travel lanes hold green for the first half of the
+    /// cycle at each junction, Z-travel lanes the second half. TrafficNetwork.IsGreen is a pure function
+    /// of Time.time, so this needs no per-light state.</summary>
+    public float trafficLightCycle = 9f;
+    /// <summary>All-red clearance (seconds) trimmed off the end of each half-cycle so a junction empties
+    /// before the cross direction pulls away.</summary>
+    public float trafficLightClearance = 0.8f;
+    /// <summary>Metres the stop line sits before a junction centre — where a car halts on a red.</summary>
+    public float carStopMargin = 3.0f;
+    /// <summary>Max lateral offset (metres) of a lane centre from its street centre (capped at a quarter
+    /// of the road width). Separates the two directions onto opposite halves of the asphalt.</summary>
+    public float carLaneOffsetMax = 1.7f;
+    /// <summary>Car acceleration pulling away from a stop (m/s^2).</summary>
+    public float carAccel = 6f;
+    /// <summary>Car braking deceleration approaching a red (m/s^2).</summary>
+    public float carDecel = 16f;
+    /// <summary>Height (metres) of a backdrop traffic-light post's pole. The lit bulb sits on top; from
+    /// the rooftops the pole is nearly invisible and the glowing bulb is what reads.</summary>
+    public float trafficPostHeight = 5.5f;
+    /// <summary>Edge length (metres) of the emissive signal bulb — sized to read as a glowing dot from
+    /// 20m+ above, not a realistic 0.3m lens.</summary>
+    public float trafficBulbSize = 1.0f;
+    /// <summary>Dark pole/mast colour (the non-glowing structure).</summary>
+    public Color trafficPostColor = new Color32(0x0E, 0x0F, 0x12, 0xFF);
+    /// <summary>Bulb colour while this post's axis is GREEN (go).</summary>
+    public Color trafficLightGreen = new Color32(0x35, 0xE0, 0x55, 0xFF);
+    /// <summary>Bulb colour while this post's axis is RED (stop).</summary>
+    public Color trafficLightRed = new Color32(0xF0, 0x2A, 0x22, 0xFF);
+    /// <summary>Bulb colour during the all-red clearance gap between phases — shown as AMBER, which is
+    /// exactly when a real signal is amber.</summary>
+    public Color trafficLightYellow = new Color32(0xFF, 0xBF, 0x33, 0xFF);
+    /// <summary>HDR emission multiplier on the lit bulb. Kept modest: too high and bloom clips the bulb's
+    /// core to white and the red/green reading is lost — the colour has to survive the glow.</summary>
+    public float trafficLightEmission = 2.6f;
+
+    /// <summary>Legacy flat road strips + BSP backdrop-road quads (SceneStyler.CreateRoads). OFF since the
+    /// Kenney modular street grid replaced them — the ground slab (fall-landing collider) is always kept.
+    /// Re-enable only to compare against the old look.</summary>
+    public bool legacyRoadStrips = false;
+    /// <summary>Legacy GLB-model backdrop skyline (SceneStyler.CreateSilhouettes, building1-4.glb). OFF:
+    /// the horizon is now KenneyBuildingPlacer.PlacePerimeterWall's solid dark building rows — uniform
+    /// with the near city, and the map edge is hidden by geometry instead of fog (user request). The
+    /// PLAYABLE cluster's GLB shells are untouched by this flag.</summary>
+    public bool legacyGlbSkyline = false;
+
     [Header("Streets (road strips + sidewalk ground slab, RooftopArena only)")]
     /// <summary>Road width is NOT a knob — it is per-segment layout data living next to the
     /// coordinates it constrains (see SceneStyler.StreetSegments), because the map genuinely has two
@@ -782,18 +896,23 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// Their bellies get a faint warm underlight for free from ambientGround (down-facing normals, kept
     /// warm as street bounce) — cool tops, warm undersides, which is the whole city-at-night cloud read
     /// and cost nothing to arrange.</summary>
-    public Color cloudColor = new Color32(0x6E, 0x75, 0x90, 0xFF);
+    // Darkened for the Quaternius model clouds (round 3): the hand-authored meshes catch far more sky
+    // light than the old faceted blobs did, so the same tint rendered pale gray against the night.
+    public Color cloudColor = new Color32(0x3A, 0x40, 0x55, 0xFF);
+    /// <summary>Cloud opacity (round 4, re-applied after a concurrent-session revert): the shared cloud
+    /// material renders as URP transparent at this alpha so the sky gradient reads through.</summary>
+    public float cloudAlpha = 0.45f;
     public int cloudCount = 10;
-    /// <summary>Cloud altitude band. Well above the tallest rooftop gameplay (roofs top ~9m, cranes
-    /// ~15m) so clouds read as sky, not ceiling. Free to sit high: clouds are on the minimap-culled
-    /// Dressing layer (see SceneStyler.CreateClouds), so raising them past the minimap camera's
-    /// player-Y+40 costs nothing.</summary>
-    public float cloudHeightMin = 68f;
-    public float cloudHeightMax = 102f;
+    /// <summary>Cloud altitude band. Round 4 ("much much higher", re-applied): a true sky band far
+    /// above the decks and perimeter towers so clouds never crowd a vantage. Free to sit high: clouds
+    /// are on the minimap-culled Dressing layer (see SceneStyler.CreateClouds).</summary>
+    public float cloudHeightMin = 175f;
+    public float cloudHeightMax = 240f;
     /// <summary>Long (drift) axis of a cloud in metres. Quantised into 3 discrete size tiers across
-    /// the sky (see SceneStyler.CreateClouds) so the layout reads as varied, not one repeated puff.</summary>
-    public float cloudLengthMin = 44f;
-    public float cloudLengthMax = 96f;
+    /// the sky (see SceneStyler.CreateClouds) so the layout reads as varied, not one repeated puff.
+    /// Round 4: "slightly smaller" — 34-70, was 44-96 (re-applied).</summary>
+    public float cloudLengthMin = 34f;
+    public float cloudLengthMax = 70f;
     /// <summary>Length:width ratio — the flat footprint is this many times longer than it is deep, so
     /// each cloud reads as wider-than-tall rather than a round ball.</summary>
     public float cloudAspectMin = 2.6f;
@@ -850,6 +969,15 @@ public sealed class VisualThemeConfig : ScriptableObject
     [Range(0f, 1f)] public float ambienceVolume = 0.10f;
 
     [Header("Post-processing")]
+    /// <summary>The filmic tonemap applied to the HDR frame — the base of the whole grade, run before
+    /// bloom/contrast are even meaningful. Without one, the emissive ladder (windows 1.5 / billboards 2.0
+    /// / interactables 2.6) clips flat past 1.0 and the windows never read as glowing light sources, just
+    /// bright stickers. Neutral, NOT ACES, on purpose: ACES desaturates and hue-shifts warm tones, which
+    /// would drain the exact warm window/sign colours this night scene is built around (see colorFilter and
+    /// the class remarks — cool ambient, warm points of interest). Neutral keeps that palette intact while
+    /// still giving a soft filmic rolloff into the highlights.</summary>
+    public UnityEngine.Rendering.Universal.TonemappingMode tonemapMode =
+        UnityEngine.Rendering.Universal.TonemappingMode.Neutral;
     /// <summary>0.65 -> 0.45. Bloom is ADDITIVE, so the same 0.65 that read as a tasteful sheen when added
     /// to a bright sunset reads roughly twice as strong added to a night frame — nothing has changed about
     /// the bloom except that there is now no ambient brightness for it to disappear into. This is the knob
@@ -857,7 +985,7 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// a facade at windowLitChance 0.45 merges its lit rooms into a single glowing block. 0.45 keeps
     /// windows, billboards and ledge trims individually resolvable while still bleeding enough to sell
     /// them as light sources rather than bright stickers.</summary>
-    public float bloomIntensity = 0.45f;
+    public float bloomIntensity = 0.72f; // construction re-theme: the concept's worklights GLOW
     /// <summary>Unchanged at 1.0, and it got easier: at night nothing NON-emissive comes close to 1.0
     /// (the brightest albedo in the scene is concreteFloor under a 0.55 moon), so this threshold now
     /// cleanly separates "is a light" from "is lit by one" without any tuning. Everything above it is

@@ -39,7 +39,22 @@ public static class SceneStyler
         if (GameObject.Find("RooftopArena") != null)
         {
             CreateBuildingExtensions(theme);
-            CreateGlbShells(theme);
+            if (theme.constructionZone)
+            {
+                // Round 5/7: the playable cluster is an under-construction site. Preferred path
+                // (round 7): the user's modular building kit stacked per tower — it strips the
+                // body/mass renderers and carries all its own facade detail, so the generated
+                // ConstructionShells facade/topper pass must NOT also run. Fallback (flag off):
+                // the generated construction facades. Dressing (cranes/planks/worklights/props)
+                // applies in both cases.
+                if (theme.modularBuildings) ModularBuildings.Apply(theme);
+                else ConstructionShells.Apply(theme);
+                ConstructionDressing.Apply(theme);
+            }
+            else
+            {
+                CreateGlbShells(theme);
+            }
             CreateGlbCranes(theme);
             CreateGlbPipes(theme);
             CreateRoads(theme);
@@ -79,10 +94,18 @@ public static class SceneStyler
         // strip's last ~0.5m inside the Tower's footprint. -9 clears it with 0.5m of margin. (Harmless
         // for the car: its path is simply 1m shorter.)
         (new Vector2(-9f, 19.5f),  new Vector2(29f, 19.5f), 2.5f),
-        (new Vector2(-55f, 45f),   new Vector2(40f, 45f),   8.0f),  // perimeter N — nearest East_Annex (z<=36), 9m clear
-        (new Vector2(45f, -50f),   new Vector2(45f, 38f),   3.5f),  // perimeter E — pinched by East_Pier (x<=43), 2m clear
-        (new Vector2(-52f, -46f),  new Vector2(35f, -46f),  8.0f),  // perimeter S — nearest Con_ScafHi (z>=-36), 10m clear
-        (new Vector2(-60f, -42f),  new Vector2(-60f, 35f),  8.0f),  // perimeter W — nearest Con_West (x>=-42), 18m clear
+        // The four perimeter avenues form a CLOSED RING sharing four corner coordinates — (-60,45),
+        // (45,45), (45,-46), (-60,-46) — so each corner is a real 4-arm... 2-arm signalized intersection
+        // out in the open where it's actually visible from the rooftops (the interior grid's 8 junctions
+        // are 22m down in the alley canyons). Cars now flow AROUND the ring, stopping at corner lights and
+        // turning, instead of U-turning at dead ends. Every band is still verified clear of every roof:
+        // N z[41,49] vs East_Annex z<=36 (5m); E x[43.25,46.75] threads East_Pier x<=43 (0.25m) / East_High
+        // x>=47.5 (0.75m) — the same pinch the 3.5m width was chosen for; S z[-50,-42] vs Con_ScafHi z>=-36
+        // (6m); W x[-64,-56] vs Con_West x>=-42 (14m). WarnIfStripClipsRoof re-checks at build.
+        (new Vector2(-60f, 45f),   new Vector2(45f, 45f),   8.0f),  // perimeter N (ring top)
+        (new Vector2(45f, -46f),   new Vector2(45f, 45f),   3.5f),  // perimeter E (ring right, narrow — East pinch)
+        (new Vector2(-60f, -46f),  new Vector2(45f, -46f),  8.0f),  // perimeter S (ring bottom)
+        (new Vector2(-60f, -46f),  new Vector2(-60f, 45f),  8.0f),  // perimeter W (ring left)
     };
 
     /// <summary>Street level under RooftopArena: one ground slab spanning the whole CITY — past the far
@@ -159,6 +182,12 @@ public static class SceneStyler
         // mesh needs no scale: the size is baked into the vertices, so the collider can't inherit it from
         // the transform the way CreatePrimitive(Cube)'s does.
         ground.AddComponent<BoxCollider>().size = groundSize;
+
+        // The Kenney modular street grid (KenneyCityBuilder — real 3D tiles with sidewalks/crosswalks)
+        // has replaced the flat generated strips and the BSP backdrop-road quads; drawing both stacked
+        // two road systems on top of each other (user-reported). Only the slab above — the fall-landing
+        // collider — survives from this method unless the legacy strips are explicitly re-enabled.
+        if (!theme.legacyRoadStrips) return;
 
         // Two shared materials, one draw-call group each: avenues get the generated lane markings,
         // alleys get flat asphalt. A dashed CENTRE line on a 2.5m strip (cars are 2.1m wide) would
@@ -656,7 +685,42 @@ public static class SceneStyler
         // ONE shared opaque material for every cloud (was one translucent Sprites/Default material
         // PER cloud) — clouds are now solid low-poly meshes, so there is nothing left that needs a
         // per-cloud material instance.
-        var material = new Material(LitOrStandardShader()) { color = theme.cloudColor };
+        Color cloudTint = theme.cloudColor;
+        cloudTint.a = Mathf.Clamp01(theme.cloudAlpha);
+        var material = new Material(LitOrStandardShader()) { color = cloudTint };
+        // Matte: URP/Lit's default 0.5 smoothness catches a moon specular sheen that renders the
+        // hand-authored cloud models pale gray against the night sky.
+        material.SetFloat("_Smoothness", 0.04f);
+        material.SetFloat("_Metallic", 0f);
+        // Round 4 ("more transparent", re-applied after a concurrent-session revert): URP transparent
+        // surface at theme.cloudAlpha so the sky gradient reads through the puffs.
+        material.SetFloat("_Surface", 1f);
+        material.SetOverrideTag("RenderType", "Transparent");
+        material.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
+        material.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+        material.SetFloat("_ZWrite", 0f);
+        material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
+        material.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+        material.SetColor("_BaseColor", cloudTint);
+
+        // Quaternius CC0 cloud models (round 3: "our clouds really really suck") — hand-authored
+        // low-poly clouds replacing the generated icosphere blobs. Long axis is local X, same as the
+        // generated meshes, so tier lengths translate directly into a uniform scale. Falls back to
+        // the old generated meshes if the assets are missing.
+        var cloudModels = new System.Collections.Generic.List<(GameObject asset, Bounds bounds)>();
+        for (int m = 1; m <= 5; m++)
+        {
+            var asset = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>($"Assets/Art/Quaternius/Clouds/Cloud_0{m}.glb");
+            if (asset == null) continue;
+            var b = new Bounds(Vector3.zero, Vector3.zero);
+            bool first = true;
+            foreach (Renderer r in asset.GetComponentsInChildren<Renderer>(true))
+            {
+                if (first) { b = r.bounds; first = false; }
+                else b.Encapsulate(r.bounds);
+            }
+            cloudModels.Add((asset, b));
+        }
 
         for (int i = 0; i < theme.cloudCount; i++)
         {
@@ -686,13 +750,35 @@ public static class SceneStyler
             // straight into the mesh (local space, metres) below, because a non-uniform transform
             // scale would shear the blobs and wreck the flat-shaded facets.
 
-            var meshFilter = cloud.AddComponent<MeshFilter>();
-            meshFilter.sharedMesh = BuildCloudMesh(theme, length, width, puff, rng);
-            var renderer = cloud.AddComponent<MeshRenderer>();
-            renderer.sharedMaterial = material;
-            // Backdrop: a cloud shadow sweeping the rooftops would fight ledge readability at speed.
-            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-            renderer.receiveShadows = false;
+            if (cloudModels.Count > 0)
+            {
+                (GameObject asset, Bounds srcBounds) = cloudModels[rng.Next(cloudModels.Count)];
+                var vis = (GameObject?)UnityEditor.PrefabUtility.InstantiatePrefab(asset, cloud.transform);
+                if (vis == null) vis = Object.Instantiate(asset, cloud.transform);
+                float scale = length / Mathf.Max(0.01f, srcBounds.size.x);
+                vis!.transform.localScale = Vector3.one * scale;
+                // Center the visual on the parent pivot (Cloud_03's pivot sits below its mass).
+                vis.transform.localPosition = -srcBounds.center * scale;
+                vis.transform.localRotation = Quaternion.identity;
+                foreach (Renderer r in vis.GetComponentsInChildren<Renderer>(true))
+                {
+                    r.sharedMaterial = material;
+                    // Backdrop: a cloud shadow sweeping the rooftops would fight ledge readability at speed.
+                    r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                    r.receiveShadows = false;
+                    if (dressingLayer >= 0) r.gameObject.layer = dressingLayer;
+                }
+            }
+            else
+            {
+                var meshFilter = cloud.AddComponent<MeshFilter>();
+                meshFilter.sharedMesh = BuildCloudMesh(theme, length, width, puff, rng);
+                var renderer = cloud.AddComponent<MeshRenderer>();
+                renderer.sharedMaterial = material;
+                // Backdrop: a cloud shadow sweeping the rooftops would fight ledge readability at speed.
+                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+                renderer.receiveShadows = false;
+            }
 
             float driftAngle = (float)rng.NextDouble() * Mathf.PI * 2f;
             var direction = new Vector3(Mathf.Cos(driftAngle), 0f, Mathf.Sin(driftAngle));
@@ -981,6 +1067,15 @@ public static class SceneStyler
     /// owns them.</summary>
     public static void CreateSilhouettes(VisualThemeConfig theme)
     {
+        // The horizon is now KenneyBuildingPlacer.PlacePerimeterWall's solid dark rows — uniform with the
+        // near city (user request: no GLB-model skyline, no bright buildings, no visible map edge). The
+        // playable cluster's GLB shells are dressed elsewhere and unaffected.
+        if (!theme.legacyGlbSkyline)
+        {
+            Debug.Log("ROOFTOP_SKYLINE: skipped (legacyGlbSkyline=false — Kenney perimeter wall is the horizon).");
+            return;
+        }
+
         var root = new GameObject("SilhouetteDressing");
         var rng = new System.Random(1234); // fixed seed: identical on every rebuild
         var center2D = new Vector2(6f, 13f);  // matches the play area's rough center offset
@@ -1304,7 +1399,7 @@ public static class SceneStyler
             // glbWindowSeedVariants patterns (it is not RooftopArena's per-building tint seed), so 31
             // roofs mint at most 6 materials per model rather than 31 emission textures.
             shell.AddComponent<MeshRenderer>().sharedMaterial =
-                GlbCityKit.BuildLitMaterial(model.Name, Color.white, theme.windowEmissiveIntensity, seed: i);
+                GlbCityKit.BuildLitMaterial(model.Name, ShellTint(i, theme), theme.windowEmissiveIntensity, seed: i);
 
             // The shell's walls are now coplanar with both boxes' walls and its deck with the roof body's
             // top face: they are pure z-fight, and one shell already covers the whole column they spanned.
@@ -1345,11 +1440,52 @@ public static class SceneStyler
     {
         if (!theme.glbShellEnabled) return;
 
-        GlbCityKit.GlbModel model = GlbCityKit.Get("crane_swing");
-        Vector3 hookLocal = model.HookLocal!.Value; // measured hook tip, model-local Unity space
-        Mesh mesh = GetSkylineMesh(model);          // full uncelled crane mesh, reused loader, shared
-        Material material = CraneModelMaterial(model);
-        float s = theme.craneModelScale;
+        // Round 10 (user: "replace the existing cranes with the yellow ones from the pack... make
+        // them actually work as the swing ropes"): the visual is now the Majadroid CC0 yellow tower
+        // crane, placed by the SAME hook-meets-pivot solve — its measured hook tip (vertex-scanned
+        // model-local (-8.49, 26.76, -5.21)) lands exactly on the swing pivot, so the live
+        // ChainSwingInteractable chain hangs straight off the yellow hook. Chain physics, grab
+        // trigger and the procedural crane's structural COLLIDERS are all untouched; only renderers
+        // changed. Falls back to crane_swing.glb if the FBX is missing.
+        // Round 12 fix (user: "you replaced the only good one" + the screenshot): the base-plate
+        // crane is Crane-On-GROUND — flat 7.4x7.4 plate at its foot, exactly the reference image.
+        // Every crane is now this model; Crane-Mounted is out.
+        var majAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(
+            "Assets/Art/Construction/Majadroid/fbx files/Crane-On-Ground.fbx");
+        MeshFilter? majMf = majAsset != null ? majAsset.GetComponentInChildren<MeshFilter>(true) : null;
+
+        Mesh mesh;
+        Material material;
+        Vector3 hookLocal;
+        Vector3 footLocal;
+        float s;
+        if (majMf != null && majMf.sharedMesh != null)
+        {
+            mesh = majMf.sharedMesh;
+            hookLocal = new Vector3(4.67f, 29.98f, 12.03f); // hanging hook tip (vertex scan, On-Ground)
+            footLocal = new Vector3(-0.15f, 0.0f, 0.16f);   // base-plate centroid (vertex scan)
+            s = 0.24f; // fallback-only: ~13m crane
+            var palette = UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(
+                "Assets/Art/Construction/Majadroid/ImphenziaPalette01-256-Gradient.png");
+            Shader lit = LitOrStandardShader();
+            material = new Material(lit) { name = "SwingCraneYellow", color = new Color(0.85f, 0.82f, 0.75f) };
+            if (palette != null) material.SetTexture("_BaseMap", palette);
+            material.SetColor("_BaseColor", new Color(0.85f, 0.82f, 0.75f));
+            material.SetFloat("_Metallic", 0f);
+            material.SetFloat("_Smoothness", 0.3f);
+            material.EnableKeyword("_EMISSION");
+            material.SetColor("_EmissionColor", new Color(0.85f, 0.82f, 0.75f) * 0.08f);
+            material.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+        }
+        else
+        {
+            GlbCityKit.GlbModel model = GlbCityKit.Get("crane_swing");
+            mesh = GetSkylineMesh(model);
+            material = CraneModelMaterial(model);
+            hookLocal = model.HookLocal!.Value;
+            footLocal = new Vector3(-0.092f, mesh.bounds.min.y, -0.083f);
+            s = theme.craneModelScale;
+        }
         var scale = new Vector3(s, s, s); // uniform — it's a machine, no aspect stretch
         int dressingLayer = LayerMask.NameToLayer("Dressing");
 
@@ -1358,50 +1494,184 @@ public static class SceneStyler
         // markers to flag are already in the scene.
         InteractableMarker[] markers = Object.FindObjectsByType<InteractableMarker>(FindObjectsInactive.Exclude);
 
-        foreach (RooftopArena.Link link in RooftopArena.Links)
+        // ROUND 11 (user): EVERY chain swing gets the yellow crane — the old loop iterated
+        // RooftopArena.Links and structurally could not see the 4 hand-placed ExtraRooftopSwings, so
+        // only 2 of the 6 swings had a crane. Now marker-driven: every Swing InteractableMarker in
+        // the built scene (pointA = pivot transform, per the marker contract).
+        //
+        // BASE-ON-A-BUILDING SOLVE (user: "make sure the crane base is on one of our buildings —
+        // just rotate them so the chain is more or less in the same place"): the chain ALWAYS hangs
+        // at the marker pivot (hook-meets-pivot fixes that); the free parameters are the crane's yaw
+        // and uniform scale. For every (roof, yaw in 10° steps): the scale that puts the mast foot
+        // exactly on that roof's deck is s = (pivot.y - deckY) / hookDrop; accept candidates whose
+        // foot lands inside the roof footprint (1m inset) with a sane scale, score by foot depth and
+        // scale sanity, take the best. Fallback (no roof works): old behavior — yaw from the swing
+        // exit, mast column dropped to street.
+        float hookDrop = hookLocal.y - footLocal.y; // model-local metres of mast between hook and foot
+        int placedCount = 0, onRoof = 0;
+        foreach (InteractableMarker swingMarker in markers)
         {
-            if (link.Kind != RooftopArena.LinkKind.Swing) continue;
-            RooftopArena.Roof from = RooftopArena.Roofs[link.From];
-            RooftopArena.Roof to = RooftopArena.Roofs[link.To];
-            Vector3 pivot = RooftopArena.SwingPivot(from, to, link.Param);
-            Vector3 exit = new Vector3(to.Center.x - from.Center.x, 0f, to.Center.z - from.Center.z).normalized;
+            if (swingMarker.kind != InteractableMarker.Kind.Swing || swingMarker.pointA == null) continue;
+            Vector3 pivot = swingMarker.pointA.position;
+            Vector3 exit = swingMarker.outwardDirection.sqrMagnitude > 0.001f
+                ? swingMarker.outwardDirection.normalized : Vector3.forward;
 
-            Quaternion rot = Quaternion.LookRotation(exit, Vector3.up); // +X -> side, +Z -> exit
-            Vector3 position = pivot + theme.craneHookNudge - rot * Vector3.Scale(scale, hookLocal);
+            // ROUND-12 SOLVE (user: base-plate cranes only, AND "make sure the chain/rope hangs off
+            // the end of them"): both constraints are now EXACT via per-axis scale. Foot anchored on
+            // a deck; Y scale from the drop puts the hook at exactly chain-top HEIGHT; the horizontal
+            // scale is then set to f·s so the jib's reach equals the foot→pivot distance exactly —
+            // the chain hangs off the hook tip, always. f is clamped to [0.62, 1.6] (a lattice crane
+            // up to ~50% wider/narrower still reads as a crane; beyond that it reads as a mistake),
+            // which is what limits which decks qualify. The site ground (street level, inside the
+            // fence) is a candidate too — that's what grounds the east-pier swing whose pivot has no
+            // roof in reach (probe-proven last round); it gets a tall street crane instead.
+            Vector2 hookOffsetLocalXZ = new(hookLocal.x - footLocal.x, hookLocal.z - footLocal.z);
+            float localReachAngle = Mathf.Atan2(hookOffsetLocalXZ.x, hookOffsetLocalXZ.y) * Mathf.Rad2Deg;
+            float localReach = hookOffsetLocalXZ.magnitude;
 
-            var go = new GameObject($"SwingCrane_{from.Name}_to_{to.Name}");
+            // Candidate stands: every roof, plus the site ground slab (cluster bounds at street level).
+            float gMinX = float.MaxValue, gMaxX = float.MinValue, gMinZ = float.MaxValue, gMaxZ = float.MinValue;
+            foreach (RooftopArena.Roof rr in RooftopArena.Roofs)
+            {
+                gMinX = Mathf.Min(gMinX, rr.Center.x - rr.SizeX * 0.5f);
+                gMaxX = Mathf.Max(gMaxX, rr.Center.x + rr.SizeX * 0.5f);
+                gMinZ = Mathf.Min(gMinZ, rr.Center.z - rr.SizeZ * 0.5f);
+                gMaxZ = Mathf.Max(gMaxZ, rr.Center.z + rr.SizeZ * 0.5f);
+            }
+            // Round-12 fix: ROOF stands only — the street-level stand produced the "massive cranes"
+            // the user rejected (a 35m drop meant a skyline-scale model). Size is hard-capped via sy;
+            // a swing with no roof stand keeps its procedural crane instead of getting a monster.
+            var stands = new List<(Vector3 center, float sizeX, float sizeZ)>();
+            foreach (RooftopArena.Roof rr in RooftopArena.Roofs)
+                stands.Add((rr.Center, rr.SizeX, rr.SizeZ));
+
+            float bestScore = float.MinValue;
+            float bestSy = 0f, bestSxz = 0f, bestYaw = 0f, bestDeckY = 0f;
+            Vector3 bestFoot = Vector3.zero;
+            foreach ((Vector3 sc, float sizeX, float sizeZ) in stands)
+            {
+                float drop = pivot.y - sc.y;
+                if (drop < 2.5f) continue;
+                float sy = drop / hookDrop; // hook height exact
+                if (sy < 0.08f || sy > 0.42f) continue; // hard size cap: ~4.5-23m cranes, never massive
+                float baseReach = sy * localReach;
+                float halfX = sizeX * 0.5f - 1.2f;
+                float halfZ = sizeZ * 0.5f - 1.2f;
+                if (halfX <= 0f || halfZ <= 0f) continue;
+                float step = Mathf.Max(1.0f, Mathf.Min(halfX, halfZ) / 6f);
+                for (float fx = -halfX; fx <= halfX; fx += step)
+                {
+                    for (float fz = -halfZ; fz <= halfZ; fz += step)
+                    {
+                        var foot = new Vector3(sc.x + fx, sc.y, sc.z + fz);
+                        var toPivot = new Vector2(pivot.x - foot.x, pivot.z - foot.z);
+                        float f = toPivot.magnitude / Mathf.Max(0.01f, baseReach);
+                        if (f < 0.65f || f > 1.55f) continue; // stretch budget: reads as a crane, not a mistake
+                        float edgeDepth = Mathf.Min(halfX - Mathf.Abs(fx), halfZ - Mathf.Abs(fz));
+                        // Prefer f≈1 (unstretched), sane crane sizes, roof stands over the street stand.
+                        float score = -Mathf.Abs(f - 1f) * 4f - Mathf.Abs(sy - 0.34f) * 2f + edgeDepth * 0.2f;
+                        if (score > bestScore)
+                        {
+                            bestScore = score;
+                            bestSy = sy;
+                            bestSxz = sy * f;
+                            bestYaw = Mathf.Atan2(toPivot.x, toPivot.y) * Mathf.Rad2Deg - localReachAngle;
+                            bestDeckY = sc.y;
+                            bestFoot = foot;
+                        }
+                    }
+                }
+            }
+
+            bool grounded = bestScore > float.MinValue;
+            if (!grounded)
+            {
+                // Round 12: no base-plate stand exists for this pivot — per the user ("only have the
+                // cranes that have this base"), place NO floating model; the procedural crane keeps
+                // rendering so the chain still visibly hangs from something.
+                Debug.LogWarning($"GLBCRANE: swing at pivot {pivot} has no valid crane stand even with " +
+                    "per-axis stretch — keeping its procedural crane visible.");
+                continue;
+            }
+
+            var rot = Quaternion.Euler(0f, bestYaw, 0f);
+            var scl = new Vector3(bestSxz, bestSy, bestSxz); // per-axis: hook lands EXACTLY on the chain top
+            Vector3 position = bestFoot - rot * Vector3.Scale(scl, footLocal);
+
+            var go = new GameObject($"SwingCrane_{placedCount}");
             if (dressingLayer >= 0) go.layer = dressingLayer;
             go.transform.SetParent(root.transform, false);
             go.transform.SetPositionAndRotation(position, rot);
-            go.transform.localScale = scale;
-            go.AddComponent<MeshFilter>().sharedMesh = mesh;   // shared across both crane instances
+            go.transform.localScale = scl;
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
             go.AddComponent<MeshRenderer>().sharedMaterial = material;
 
-            // GROUND THE TOWER: the hook-meets-pivot solve leaves the model's mast base floating ~30m
-            // over the swing chasm (user report — "crane tower base ends above the roof/street"). Drop a
-            // plain mast column from the model's measured tower-base foot (model-local XZ (-0.092,-0.083),
-            // from a base-band vertex scan of crane_swing.glb) straight down to street level so the crane
-            // reads as standing on the ground rather than hovering. Bare renderer, no collider — same
-            // dressing guarantee as the crane model, so nothing solid drops into the chasm the swing crosses.
-            Vector3 towerBase = go.transform.TransformPoint(new Vector3(-0.092f, mesh.bounds.min.y, -0.083f));
-            float streetY = theme.buildingBaseY;
-            var mast = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            mast.name = "TowerBase";
-            if (dressingLayer >= 0) mast.layer = dressingLayer;
-            Object.DestroyImmediate(mast.GetComponent<BoxCollider>());
-            mast.transform.SetParent(root.transform, false);
-            mast.transform.position = new Vector3(towerBase.x, (streetY + towerBase.y) * 0.5f, towerBase.z);
-            mast.transform.localScale = new Vector3(1.2f, towerBase.y - streetY, 1.2f);
-            mast.GetComponent<MeshRenderer>().sharedMaterial = material;
+            // CLIMB KIT: solid mast + walkable jib + an invisible ladder ON the mast face (round 12:
+            // no more glued-on pipe visual — the lattice mast IS the ladder you see).
+            AttachCraneClimbKit(root.transform, bestFoot, bestDeckY, scl, rot, dressingLayer);
+            onRoof++;
 
-            // Suppress the procedural crane's renderers on the matching swing (by pivot) so its boxes
-            // don't double-render under the model. Colliders stay — physics/camp behaviour is unchanged.
-            InteractableMarker? marker = FindSwingMarkerNear(markers, pivot);
-            if (marker != null) marker.craneRenderersVisible = false;
-            else Debug.LogWarning($"GLBCRANE: no Swing marker found at pivot {pivot} for " +
-                $"{from.Name}->{to.Name} — its procedural crane will double-render under the model.");
+            swingMarker.craneRenderersVisible = false; // colliders stay; procedural renderers off
+            placedCount++;
         }
-        Debug.Log($"GLBCRANE: placed crane_swing over {root.transform.childCount} swing links at scale {s:F1}.");
+        Debug.Log($"GLBCRANE: placed {(majMf != null ? "Majadroid yellow crane" : "crane_swing")} over " +
+            $"{placedCount} swings ({onRoof} based on buildings with climb kits).");
+    }
+
+    /// <summary>Round 11/12: makes a yellow crane a parkour object — a solid mast column, a walkable
+    /// collider along the jib (measured local run), and a player-only ladder ON the mast's outer
+    /// face. Round 12: the ladder builds its own marker WITHOUT the climb-pipe visual (user: no
+    /// glued-on pipe — the lattice mast itself is the ladder you see; you climb the crane). Scale is
+    /// a full vector because round-12 cranes are per-axis stretched (jib reach solved independently
+    /// of height). Never a bot graph edge.</summary>
+    internal static void AttachCraneClimbKit(Transform parent, Vector3 footWorld, float deckY, Vector3 scl,
+        Quaternion rot, int dressingLayer)
+    {
+        // Constants vertex-scanned from Crane-On-GROUND.fbx (round-12 model): base plate 7.4x7.4 at
+        // y=0, jib running toward local (+0.51,+0.86), tip (18.1, 51.8, 30.6).
+        // Standable base plate — the pale slab in the user's reference shot; you can hop onto it.
+        var plateGo = new GameObject("CraneBasePlate");
+        plateGo.transform.SetParent(parent, false);
+        plateGo.transform.SetPositionAndRotation(new Vector3(footWorld.x, deckY + scl.y * 0.4f * 0.5f, footWorld.z), rot);
+        var plateBox = plateGo.AddComponent<BoxCollider>();
+        plateBox.size = new Vector3(scl.x * 7.4f, Mathf.Max(0.1f, scl.y * 0.4f), scl.z * 7.4f);
+
+        // Solid mast: from the plate to just under the jib.
+        float mastH = scl.y * 50f;
+        var mastGo = new GameObject("CraneMastSolid");
+        mastGo.transform.SetParent(parent, false);
+        mastGo.transform.SetPositionAndRotation(new Vector3(footWorld.x, deckY + mastH * 0.5f, footWorld.z), rot);
+        var mastBox = mastGo.AddComponent<BoxCollider>();
+        mastBox.size = new Vector3(scl.x * 2.6f, mastH, scl.z * 2.6f);
+
+        // Walkable jib along the TOP chord (round 14: the deck sat on the BOTTOM chord at y≈51 —
+        // "looks like we're walking on the 1st layer"; the vertex-scanned top chord is y=54.0).
+        var jibStartRel = new Vector3(0f, 53.8f, 0f);
+        var jibEndRel = new Vector3(18.2f, 53.8f, 30.4f);
+        Vector3 a = footWorld + rot * Vector3.Scale(scl, jibStartRel);
+        Vector3 b = footWorld + rot * Vector3.Scale(scl, jibEndRel);
+        var jibGo = new GameObject("CraneJibWalk");
+        jibGo.transform.SetParent(parent, false);
+        jibGo.transform.SetPositionAndRotation((a + b) * 0.5f, Quaternion.LookRotation((b - a).normalized, Vector3.up));
+        var jibBox = jibGo.AddComponent<BoxCollider>();
+        // Round 13 (user: "the physics floor at the top is too thin, I'm falling off"): the jib walk
+        // deck is a generous catwalk now — at least 1.6m wide regardless of crane scale.
+        jibBox.size = new Vector3(Mathf.Max(1.6f, scl.x * 4.0f), 0.35f, Vector3.Distance(a, b) + scl.x * 1.0f);
+
+        // Round 14: the BACK of the crane (counter-jib over the concrete counterweights, local proj
+        // -1..-10.8 behind the mast, half-width 2.6) gets a floor too — you no longer fall through
+        // when walking behind the mast. Same top-chord height as the jib deck.
+        var counterDir = new Vector3(-0.51f, 0f, -0.86f);
+        Vector3 c1 = footWorld + rot * Vector3.Scale(scl, counterDir * 1.0f + Vector3.up * 53.8f);
+        Vector3 c2 = footWorld + rot * Vector3.Scale(scl, counterDir * 10.8f + Vector3.up * 53.8f);
+        var counterGo = new GameObject("CraneCounterWalk");
+        counterGo.transform.SetParent(parent, false);
+        counterGo.transform.SetPositionAndRotation((c1 + c2) * 0.5f, Quaternion.LookRotation((c2 - c1).normalized, Vector3.up));
+        var counterBox = counterGo.AddComponent<BoxCollider>();
+        counterBox.size = new Vector3(Mathf.Max(1.6f, scl.x * 5.2f), 0.35f, Vector3.Distance(c1, c2) + scl.x * 1.0f);
+
+        // Round 13: NO ladder — the user wants cranes climbed like WALLS (wall-grab + jump). The
+        // solid mast collider is exactly that; the existing climb/wall-hook mechanics handle it.
     }
 
     /// <summary>PHASE 7 of the GLB integration plan: modular_pipe.glb tiled up every climbable wall pipe
@@ -1624,6 +1894,57 @@ public static class SceneStyler
         Mathf.Abs(Mathf.Log(s.x / s.y)),
         Mathf.Max(Mathf.Abs(Mathf.Log(s.z / s.y)), Mathf.Abs(Mathf.Log(s.x / s.z))));
 
+    /// <summary>Subtle, BUCKETED per-shell concrete tint (theme.glbTintJitter/glbTintVariants) so two roofs
+    /// sharing a model don't render as literal clones. Quantised into a handful of buckets rather than one
+    /// continuous tint per instance for the same reason <see cref="VisualThemeConfig.glbWindowSeedVariants"/>
+    /// buckets window patterns: GlbCityKit.BuildLitMaterial mints one material per (model, tint) pair, there
+    /// is a hard ceiling of 96 GLB materials project-wide, and the skyline alone already spends ~44 of them —
+    /// a per-instance tint would mint up to one more material per roof, unbounded as the map grows.
+    ///
+    /// Deliberately NOT UnityEngine.Random: this must reproduce the same tint for the same seed on every
+    /// build (see every other seed in the visual pass), so the bucket comes from a small deterministic
+    /// integer hash instead.
+    ///
+    /// Stays close to white and low-saturation on purpose — the tint MULTIPLIES the model's own painted
+    /// concrete texture (see GlbCityKit.BuildLitMaterial's remarks), so every component is clamped to
+    /// [1 - jitter, 1]: brightening past 1 cannot lighten the baked texture further, it only clips, and
+    /// pushing saturation up would read as coloured paint rather than "the same grey concrete under
+    /// slightly different light". A whisper of warm/cool skew between R and B is enough to make some
+    /// buildings feel a touch warmer and others a touch cooler without ever looking tinted.</summary>
+    private static Color ShellTint(int seed, VisualThemeConfig theme)
+    {
+        int variants = Mathf.Max(1, theme.glbTintVariants);
+        int bucket = Mathf.Abs(TintHash(seed)) % variants;
+        float t = variants > 1 ? (float)bucket / (variants - 1) : 0f; // 0..1 across the buckets
+
+        float jitter = theme.glbTintJitter;
+        float floor = 1f - jitter;
+        float brightness = Mathf.Lerp(floor, 1f, t); // value/luminance spread, never above white
+
+        // Tiny symmetric warm/cool skew: some buckets nudge R up and B down (warm concrete), others the
+        // opposite (cool concrete), capped well under the brightness cut so hue never dominates over value.
+        // Clamped to the SAME [floor, 1] band as brightness (not just [0,1]) so the skew can never push a
+        // component below the theme's own jitter floor at the extreme buckets.
+        float skew = (t - 0.5f) * 2f * Mathf.Min(0.03f, jitter);
+        float r = Mathf.Clamp(brightness + skew, floor, 1f);
+        float b = Mathf.Clamp(brightness - skew, floor, 1f);
+        // The near-white jitter above varies buildings AGAINST each other; glbShellNightTint then pulls
+        // the whole result into the dark night palette so no shell reads as a bright cream tower (the
+        // "light buildings" of two feedback rounds were exactly these shells). Bucketing/material-ceiling
+        // behaviour unchanged — this is a constant multiply on every bucket.
+        Color night = theme.glbShellNightTint;
+        return new Color(r * night.r, brightness * night.g, b * night.b, 1f);
+    }
+
+    /// <summary>FNV-1a over a single int, local to the Editor assembly (TagArenaMapGeometry's own Hash is
+    /// private to that class) — deterministic and stable across runs/machines, unlike string.GetHashCode.</summary>
+    private static int TintHash(int seed)
+    {
+        uint h = 2166136261u;
+        unchecked { h = (h ^ (uint)seed) * 16777619u; h = (h ^ (h >> 13)) * 16777619u; }
+        return unchecked((int)h);
+    }
+
     /// <summary>Removes ONLY the MeshRenderer, leaving the GameObject, its BoxCollider and its (sibling)
     /// rim trims alone — the box stops drawing and stays exactly as solid as it was. Null-tolerant on
     /// purpose: BuildingMasses does not exist if CreateBuildingExtensions bailed on a misconfigured
@@ -1753,9 +2074,7 @@ public static class SceneStyler
         var metalVerts = new System.Collections.Generic.List<Vector3>();
         var metalNormals = new System.Collections.Generic.List<Vector3>();
         var metalTris = new System.Collections.Generic.List<int>();
-        var billboardVerts = new System.Collections.Generic.List<Vector3>();
-        var billboardNormals = new System.Collections.Generic.List<Vector3>();
-        var billboardTris = new System.Collections.Generic.List<int>();
+        // (Billboard vertex lists removed with the billboards themselves — round 4, re-applied.)
         var darkVerts = new System.Collections.Generic.List<Vector3>();
         var darkNormals = new System.Collections.Generic.List<Vector3>();
         var darkTris = new System.Collections.Generic.List<int>();
@@ -1814,8 +2133,11 @@ public static class SceneStyler
                 Vector3 normal = faceNormals[rng.Next(4)];
                 bool isXFace = normal.x != 0f; // this face's outward normal runs along world X
                 float faceHalfWidth = (isXFace ? r.SizeZ : r.SizeX) * 0.5f;
-                int kind = rng.Next(2); // 0 = billboard, 1 = fire escape
-                float footprintWidth = kind == 0 ? theme.propBillboardWidth : theme.propFireEscapeSlatWidth;
+                // Round 4 (re-applied after a concurrent-session revert): billboards removed (user:
+                // "they suck") — every wall prop is a fire escape. rng.Next(2) still consumed so the
+                // rest of the prop layout stays deterministic.
+                rng.Next(2);
+                float footprintWidth = theme.propFireEscapeSlatWidth;
                 float span = Mathf.Max(0f, 2f * faceHalfWidth - footprintWidth);
                 float along = ((float)rng.NextDouble() - 0.5f) * span;
                 float wallX = isXFace ? r.Center.x + normal.x * r.SizeX * 0.5f : r.Center.x + along;
@@ -1823,11 +2145,7 @@ public static class SceneStyler
                 float y = Mathf.Lerp(massBottom, massTop, (float)rng.NextDouble());
 
                 var wallPos = new Vector3(wallX, y, wallZ);
-                if (kind == 0)
-                    AddBillboardPanel(billboardVerts, billboardNormals, billboardTris, wallPos, normal,
-                        theme.propBillboardWidth, theme.propBillboardHeight, theme.propBillboardProtrusion);
-                else
-                    AddFireEscape(darkVerts, darkNormals, darkTris, wallPos, normal, theme);
+                AddFireEscape(darkVerts, darkNormals, darkTris, wallPos, normal, theme);
                 VerifyPropKeepOut(wallPos, theme, "wall prop");
                 wallPropCount++;
             }
@@ -1835,19 +2153,15 @@ public static class SceneStyler
 
         Shader shader = LitOrStandardShader();
         Material metalMat = new(shader) { color = theme.concreteWall }; // reuses the existing concrete knob
-        Material billboardMat = new(shader) { color = theme.propBillboardColor };
-        billboardMat.EnableKeyword("_EMISSION");
-        billboardMat.SetColor("_EmissionColor", theme.propBillboardColor * theme.propBillboardEmissiveIntensity);
         Material darkMat = new(shader) { color = theme.silhouetteColor }; // reuses the existing silhouette knob
 
         BuildMergedPropMesh(root.transform, "Props_ConcreteMetal", metalVerts, metalNormals, metalTris, metalMat, dressingLayer);
-        BuildMergedPropMesh(root.transform, "Props_Billboards", billboardVerts, billboardNormals, billboardTris, billboardMat, dressingLayer);
+        // Round 4 (re-applied): no Props_Billboards mesh — billboards are gone, fire escapes carry the walls.
         BuildMergedPropMesh(root.transform, "Props_FireEscapes", darkVerts, darkNormals, darkTris, darkMat, dressingLayer);
 
         Debug.Log($"ROOFTOP_FACADE_PROPS: {roofPropCount} roof props (water tower/AC) on skyline buildings, " +
-            $"{wallPropCount} wall props (billboard/fire escape) on the playable cluster's masses. " +
-            $"Merged mesh vertex counts — concrete/metal: {metalVerts.Count}, billboards: {billboardVerts.Count}, " +
-            $"fire escapes: {darkVerts.Count}.");
+            $"{wallPropCount} wall props (fire escapes; billboards removed) on the playable cluster's masses. " +
+            $"Merged mesh vertex counts — concrete/metal: {metalVerts.Count}, fire escapes: {darkVerts.Count}.");
     }
 
     /// <summary>Expected prop count for one building: floor(density) guaranteed, plus a seeded
@@ -2054,11 +2368,12 @@ public static class SceneStyler
         }
     }
 
-    /// <summary>A handful of generated-mesh "cars" ping-ponging along <see cref="StreetSegments"/> at
-    /// street level (now the ROAD surface built by <see cref="CreateRoads"/>, same array so the two
-    /// can't drift apart), plus a few looping the open perimeter. Slow, continuous, seen as small
-    /// moving shapes from the rooftops far above. Motion is a CarDrifter (presentation-only runtime
-    /// component), the same pattern as the clouds.
+    /// <summary>Generated-mesh "cars" driving the backdrop lane network (<see cref="TrafficNetwork"/>,
+    /// baked here by <see cref="BuildTrafficGraph"/> from the same <see cref="StreetSegments"/> the roads
+    /// are drawn from, so the two can't drift apart): they follow lanes on their own side, ease to a stop
+    /// at red lights and turn at intersections. Slow, continuous, seen as small moving shapes from the
+    /// rooftops far above. Motion is a <see cref="CarDrifter"/> (presentation-only runtime component); the
+    /// shared graph and light timing live on the StreetCars root's <see cref="TrafficNetwork"/>.
     ///
     /// Each car's impact trigger is the THIRD and last collider this file deliberately creates (the
     /// others are the building masses — <see cref="CreateBuildingExtensions"/> — and the ground slab —
@@ -2084,7 +2399,18 @@ public static class SceneStyler
         int dressingLayer = LayerMask.NameToLayer("Dressing");
         int ragdollLayer = LayerMask.NameToLayer("Ragdoll");
 
-        float y = theme.buildingBaseY; // mesh origin is at road level (wheel bottoms at local y=0)
+        // The lane graph is baked from the SAME StreetSegments the roads are drawn from, so cars can
+        // never sit off the asphalt, and serialized onto the StreetCars root so play mode drives it. Only
+        // ever attached here (editor time) — never in the headless harness — same as the cars themselves.
+        (TrafficNetwork.Node[] nodes, TrafficNetwork.Lane[] lanes) = BuildTrafficGraph(theme);
+        var net = root.AddComponent<TrafficNetwork>();
+        net.SetData(nodes, lanes, theme.trafficLightCycle, theme.trafficLightClearance,
+            theme.carStopMargin, theme.carAccel, theme.carDecel);
+
+        // Literal signal posts at every junction, glowing bulb driven off the SAME net so the light and
+        // the cars that obey it can't disagree. The ring corners are the ones actually seen; the interior
+        // alley posts sit 20m down but cost almost nothing.
+        CreateTrafficLightPosts(root.transform, net, nodes, theme, dressingLayer, shader);
 
         var cache = new System.Collections.Generic.Dictionary<Color, Material>();
         Material MatFor(Color c)
@@ -2096,40 +2422,32 @@ public static class SceneStyler
         }
         Material wheelMaterial = new(shader) { color = theme.carWheelColor };
 
-        // ponytail: cars per segment now scale with segment LENGTH (~one per carSpacing metres, min 2)
-        // instead of the old one-car-per-segment cap (Mathf.Min(carCount, StreetSegments.Length)) — that
-        // cap was the "no cars" bug: 10 cars across 10 segments, most of them buried in the deep 2.5m
-        // interior alley canyons 22m below the roofs, so the street read as empty from where you play.
-        // The long open perimeter avenues get the most cars (they're the only street you can actually
-        // see), the interior death-zone alleys keep at least 2 each. theme.carCount is now just the
-        // on/off gate (checked above); density is layout-derived so it can't drift from the road layout.
-        const float carSpacing = 14f;
+        // Density is layout-derived: ~one car per carSpacing metres of lane, both directions of every
+        // street (each lane is a single direction offset to its own side), so the long open perimeter
+        // avenues — the only streets actually visible from the rooftops — carry the most traffic while
+        // the interior alleys keep a car or two. Lanes shorter than carMinLaneSpawnLength still route
+        // through-traffic but spawn no parked car (a stub between two adjacent junctions would just pin a
+        // car between two stop lines). theme.carCount is the on/off gate only (checked above).
         int carIndex = 0;
-        foreach ((Vector2 a2, Vector2 b2, _) in StreetSegments)
-        {
-            // Width is the road's, not the car's — the car reads only the path. A 2.1m body (plus
-            // 0.14m of wheel each side) on a 2.5m alley may overhang the asphalt a hair; that is
-            // cosmetic and fine, and it still clears the building masses by ~0.3m.
-            var segA = new Vector3(a2.x, y, a2.y);
-            var segB = new Vector3(b2.x, y, b2.y);
-            int perSegment = Mathf.Max(2, Mathf.RoundToInt(Vector3.Distance(segA, segB) / carSpacing));
+        int signalized = 0;
+        foreach (TrafficNetwork.Node n in nodes) if (n.signalized) signalized++;
 
-            for (int j = 0; j < perSegment; j++, carIndex++)
+        for (int li = 0; li < lanes.Length; li++)
+        {
+            TrafficNetwork.Lane lane = lanes[li];
+            float laneLen = Vector3.Distance(lane.entry, lane.exit);
+            if (laneLen < theme.carMinLaneSpawnLength) continue;
+
+            int perLane = Mathf.Max(1, Mathf.RoundToInt(laneLen / theme.carSpacing));
+            for (int j = 0; j < perLane; j++, carIndex++)
             {
-                // Every other car runs the segment BACKWARDS (swap endpoints) so traffic flows both
-                // ways. CarDrifter ping-pongs from whichever end it's handed and CarImpact reads (b-a)
-                // for its launch direction, so swapping a/b gives genuine oncoming traffic AND keeps the
-                // impact impulse pointing the right way — no change to either runtime component.
-                bool reversed = (j & 1) == 1;
-                Vector3 a = reversed ? segB : segA;
-                Vector3 b = reversed ? segA : segB;
+                float jitter = 1f + ((float)rng.NextDouble() * 2f - 1f) * theme.carSizeJitter;
+                var size = new Vector3(theme.carSize.x, theme.carSize.y, theme.carSize.z * jitter);
 
                 var car = new GameObject($"Car_{carIndex}");
                 if (dressingLayer >= 0) car.layer = dressingLayer;
                 car.transform.SetParent(root.transform, false);
 
-                float jitter = 1f + ((float)rng.NextDouble() * 2f - 1f) * theme.carSizeJitter;
-                var size = new Vector3(theme.carSize.x, theme.carSize.y, theme.carSize.z * jitter);
                 // Baked into the mesh, not the transform: localScale stays Vector3.one (see BuildCarMesh) —
                 // a non-uniform transform scale would shear the flat-shaded body/cabin/wheel facets.
                 car.AddComponent<MeshFilter>().sharedMesh = BuildCarMesh(theme, size);
@@ -2137,16 +2455,17 @@ public static class SceneStyler
                 renderer.sharedMaterials = new[] { MatFor(theme.carColors[carIndex % theme.carColors.Length]), wheelMaterial };
 
                 float speed = Mathf.Lerp(theme.carSpeedMin, theme.carSpeedMax, (float)rng.NextDouble());
-                // Stagger start positions evenly along the segment (+ jitter) so a segment's cars string
-                // out down the road instead of clumping at one end.
-                float startT = (j + (float)rng.NextDouble()) / perSegment;
-                car.AddComponent<CarDrifter>().Configure(a, b, speed, startT);
+                // Stagger start positions along the lane (+ jitter) so a lane's cars string out down the
+                // road instead of clumping at one end. Each car gets its own seed so turn choices at
+                // intersections are independent yet reproducible across rebuilds.
+                float startDist = (j + (float)rng.NextDouble()) / perLane * laneLen;
+                car.AddComponent<CarDrifter>().Configure(net, li, speed, startDist, 9137 + carIndex);
 
                 // The impact trigger goes on a CHILD, not on the car itself, for one blunt reason: layer is
                 // a property of the GameObject, not of the collider. The car must stay on Dressing (that is
                 // what keeps its renderer out of the minimap); the trigger must be on Ragdoll. One object
                 // cannot be both. Built at identity local rotation, so CarImpact's transform.forward is
-                // exactly the parent's travel direction (CarDrifter.FaceTravel writes the parent's).
+                // exactly the parent's travel direction (CarDrifter keeps the parent LookRotated down its lane).
                 var impact = new GameObject("Impact");
                 if (ragdollLayer >= 0) impact.layer = ragdollLayer;
                 impact.transform.SetParent(car.transform, false);
@@ -2176,6 +2495,198 @@ public static class SceneStyler
                 impact.AddComponent<CarImpact>().Configure(theme.carImpactForwardImpulse, theme.carImpactUpImpulse);
             }
         }
+
+        Debug.Log($"ROOFTOP_TRAFFIC: {nodes.Length} nodes ({signalized} signalized), {lanes.Length} lanes, " +
+            $"{carIndex} cars on the road.");
+    }
+
+    /// <summary>Bakes the directed lane graph for the backdrop traffic from <see cref="StreetSegments"/>
+    /// — the SAME source the road strips are drawn from, so cars can never leave the asphalt and the two
+    /// can't drift apart (identical guarantee to <see cref="CreateRoads"/>). Every axis-aligned segment
+    /// crosses every perpendicular one it spans to form signalized intersection nodes; each segment is
+    /// then cut at those crossings (plus its endpoints) into sub-edges, and each sub-edge becomes TWO
+    /// directed lanes, one per travel direction, each offset to the driver's right so oncoming traffic
+    /// separates onto opposite sides. Deterministic (no RNG): the graph is a pure function of the layout,
+    /// so a rebuild is byte-identical (same convention as the rest of this file).</summary>
+    private static (TrafficNetwork.Node[] nodes, TrafficNetwork.Lane[] lanes) BuildTrafficGraph(VisualThemeConfig theme)
+    {
+        float y = theme.buildingBaseY; // road surface: mesh origin sits here (wheel bottoms at local y=0)
+        float cycle = Mathf.Max(1f, theme.trafficLightCycle);
+
+        var nodeList = new System.Collections.Generic.List<TrafficNetwork.Node>();
+        var nodeKey = new System.Collections.Generic.Dictionary<(int, int), int>();
+
+        int NodeAt(Vector2 p, bool signalized)
+        {
+            var key = (Mathf.RoundToInt(p.x * 10f), Mathf.RoundToInt(p.y * 10f));
+            if (nodeKey.TryGetValue(key, out int idx))
+            {
+                if (signalized && !nodeList[idx].signalized)
+                {
+                    TrafficNetwork.Node upgraded = nodeList[idx];
+                    upgraded.signalized = true;
+                    nodeList[idx] = upgraded;
+                }
+                return idx;
+            }
+            idx = nodeList.Count;
+            // Per-node phase offset from position so neighbouring junctions don't switch in unison.
+            float phase = Mathf.Repeat(Mathf.Abs(p.x * 7.3f + p.y * 13.1f), cycle);
+            nodeList.Add(new TrafficNetwork.Node { pos = new Vector3(p.x, y, p.y), signalized = signalized, phaseOffset = phase });
+            nodeKey[key] = idx;
+            return idx;
+        }
+
+        // Classify segments and, for each, collect the split points along it (endpoints + crossings).
+        int segCount = StreetSegments.Length;
+        var vertical = new bool[segCount];
+        var splits = new System.Collections.Generic.List<Vector2>[segCount];
+        for (int i = 0; i < segCount; i++)
+        {
+            (Vector2 a, Vector2 b, _) = StreetSegments[i];
+            vertical[i] = Mathf.Approximately(a.x, b.x); // travels along Z (axis 1); else along X (axis 0)
+            splits[i] = new System.Collections.Generic.List<Vector2> { a, b };
+        }
+
+        // Crossings: every horizontal segment against every vertical one it actually spans.
+        for (int h = 0; h < segCount; h++)
+        {
+            if (vertical[h]) continue;
+            (Vector2 ha, Vector2 hb, _) = StreetSegments[h];
+            float zc = ha.y, hx0 = Mathf.Min(ha.x, hb.x), hx1 = Mathf.Max(ha.x, hb.x);
+            for (int v = 0; v < segCount; v++)
+            {
+                if (!vertical[v]) continue;
+                (Vector2 va, Vector2 vb, _) = StreetSegments[v];
+                float xc = va.x, vz0 = Mathf.Min(va.y, vb.y), vz1 = Mathf.Max(va.y, vb.y);
+                if (xc < hx0 - 0.01f || xc > hx1 + 0.01f || zc < vz0 - 0.01f || zc > vz1 + 0.01f) continue;
+                var cross = new Vector2(xc, zc);
+                splits[h].Add(cross);
+                splits[v].Add(cross);
+                NodeAt(cross, signalized: true); // register the junction now so its flag is set
+            }
+        }
+
+        var laneList = new System.Collections.Generic.List<TrafficNetwork.Lane>();
+        for (int i = 0; i < segCount; i++)
+        {
+            bool vert = vertical[i];
+            int axis = vert ? 1 : 0;
+            float width = StreetSegments[i].width;
+            float offset = Mathf.Min(width * 0.25f, theme.carLaneOffsetMax);
+
+            // Order the split points along the segment and drop duplicates (a crossing that coincides
+            // with an endpoint), then emit both directed lanes for every consecutive pair.
+            System.Collections.Generic.List<Vector2> pts = splits[i];
+            pts.Sort((p, q) => vert ? p.y.CompareTo(q.y) : p.x.CompareTo(q.x));
+
+            Vector2 prev = pts[0];
+            int prevNode = NodeAt(prev, false);
+            for (int k = 1; k < pts.Count; k++)
+            {
+                Vector2 cur = pts[k];
+                float gap = vert ? Mathf.Abs(cur.y - prev.y) : Mathf.Abs(cur.x - prev.x);
+                if (gap < 0.05f) continue; // duplicate point
+                int curNode = NodeAt(cur, false);
+
+                var p3 = new Vector3(prev.x, y, prev.y);
+                var c3 = new Vector3(cur.x, y, cur.y);
+                Vector3 dir = (c3 - p3).normalized;
+                Vector3 right = Vector3.Cross(Vector3.up, dir); // driver's right for the prev->cur direction
+
+                // prev -> cur, offset onto its own right-hand side.
+                laneList.Add(new TrafficNetwork.Lane
+                {
+                    from = prevNode, to = curNode, axis = axis,
+                    entry = p3 + right * offset, exit = c3 + right * offset,
+                });
+                // cur -> prev, whose right is the opposite side, so the two lanes sit on opposite halves.
+                laneList.Add(new TrafficNetwork.Lane
+                {
+                    from = curNode, to = prevNode, axis = axis,
+                    entry = c3 - right * offset, exit = p3 - right * offset,
+                });
+
+                prev = cur;
+                prevNode = curNode;
+            }
+        }
+
+        return (nodeList.ToArray(), laneList.ToArray());
+    }
+
+    /// <summary>One glowing traffic-light post at every signalized junction, its bulb colour driven each
+    /// frame by <see cref="TrafficLightPost"/> off the shared <see cref="TrafficNetwork"/> (green while
+    /// this post's axis is green, red otherwise) so it agrees with the cars stopping under it. Pole mesh
+    /// and material are shared across all posts; the bulb mesh is shared but each bulb gets its OWN
+    /// material instance because neighbouring junctions run on different light phases. HDR emission → the
+    /// post volume's bloom turns each bulb into a visible coloured dot from the rooftops. No colliders,
+    /// shadows off, "Dressing" layer (kept out of the minimap) — pure decor, 20m below the play area.</summary>
+    private static void CreateTrafficLightPosts(Transform parent, TrafficNetwork net,
+        TrafficNetwork.Node[] nodes, VisualThemeConfig theme, int dressingLayer, Shader shader)
+    {
+        float poleH = theme.trafficPostHeight;
+        float bulbSize = theme.trafficBulbSize;
+
+        var poleVerts = new System.Collections.Generic.List<Vector3>();
+        var poleNormals = new System.Collections.Generic.List<Vector3>();
+        var poleTris = new System.Collections.Generic.List<int>();
+        AddBox(poleVerts, poleNormals, poleTris, new Vector3(0f, poleH * 0.5f, 0f), new Vector3(0.25f, poleH, 0.25f));
+        var poleMesh = new Mesh { name = "TrafficPoleMesh" };
+        poleMesh.SetVertices(poleVerts);
+        poleMesh.SetNormals(poleNormals);
+        poleMesh.SetTriangles(poleTris, 0);
+        poleMesh.RecalculateBounds();
+        Material poleMat = new(shader) { color = theme.trafficPostColor };
+
+        var bulbVerts = new System.Collections.Generic.List<Vector3>();
+        var bulbNormals = new System.Collections.Generic.List<Vector3>();
+        var bulbTris = new System.Collections.Generic.List<int>();
+        AddBox(bulbVerts, bulbNormals, bulbTris, new Vector3(0f, poleH + bulbSize * 0.5f, 0f), Vector3.one * bulbSize);
+        var bulbMesh = new Mesh { name = "TrafficBulbMesh" };
+        bulbMesh.SetVertices(bulbVerts);
+        bulbMesh.SetNormals(bulbNormals);
+        bulbMesh.SetTriangles(bulbTris, 0);
+        bulbMesh.RecalculateBounds();
+
+        int idx = 0;
+        for (int i = 0; i < nodes.Length; i++)
+        {
+            if (!nodes[i].signalized) continue;
+
+            var post = new GameObject($"TrafficLight_{idx}");
+            if (dressingLayer >= 0) post.layer = dressingLayer;
+            post.transform.SetParent(parent, false);
+            // Offset diagonally off the junction centre so the post reads as kerbside, not mid-crossing.
+            post.transform.position = nodes[i].pos + new Vector3(2.6f, 0f, 2.6f);
+
+            var pole = new GameObject("Pole");
+            if (dressingLayer >= 0) pole.layer = dressingLayer;
+            pole.transform.SetParent(post.transform, false);
+            pole.AddComponent<MeshFilter>().sharedMesh = poleMesh;
+            var pr = pole.AddComponent<MeshRenderer>();
+            pr.sharedMaterial = poleMat;
+            pr.shadowCastingMode = ShadowCastingMode.Off;
+
+            var bulb = new GameObject("Bulb");
+            if (dressingLayer >= 0) bulb.layer = dressingLayer;
+            bulb.transform.SetParent(post.transform, false);
+            bulb.AddComponent<MeshFilter>().sharedMesh = bulbMesh;
+            var bulbMat = new Material(shader) { color = theme.trafficLightRed };
+            bulbMat.EnableKeyword("_EMISSION");
+            bulbMat.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
+            var br = bulb.AddComponent<MeshRenderer>();
+            br.sharedMaterial = bulbMat;
+            br.shadowCastingMode = ShadowCastingMode.Off;
+
+            // Axis 0 (X): the bulb shows the X-approach's state — green when X traffic goes, red otherwise.
+            // (Load-safe signature: the post recovers the network + its "Bulb" child material in Awake.)
+            post.AddComponent<TrafficLightPost>().Configure(i, 0,
+                theme.trafficLightGreen, theme.trafficLightYellow, theme.trafficLightRed, theme.trafficLightEmission);
+            idx++;
+        }
+
+        Debug.Log($"ROOFTOP_TRAFFIC_LIGHTS: {idx} signal posts.");
     }
 
     /// <summary>Builds one car's mesh: submesh 0 = body + a smaller inset cabin (the car's colour),
@@ -2275,6 +2786,11 @@ public static class SceneStyler
 
         var profile = ScriptableObject.CreateInstance<VolumeProfile>();
         profile.name = "ThemePostProfile";
+
+        // Filmic tonemap first — it's the base of the grade, mapping the HDR emissive values (windows,
+        // billboards, interactables) onto a curve so they read as glowing light rather than clipping flat.
+        Tonemapping tonemap = profile.Add<Tonemapping>();
+        tonemap.mode.Override(theme.tonemapMode);
 
         Bloom bloom = profile.Add<Bloom>();
         bloom.intensity.Override(theme.bloomIntensity);

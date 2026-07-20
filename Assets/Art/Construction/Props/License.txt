@@ -1,0 +1,42 @@
+Assets/Art/Construction/Props/ - License Documentation
+=========================================================
+All models below are CC0 1.0 (Public Domain), sourced from poly.pizza
+(https://poly.pizza), no login required. Format: GLB, converted by
+poly.pizza from the original FBX. Each verified self-contained (no
+external texture URIs in the glTF JSON chunk).
+
+scaffolding_truss_01.glb
+  Title:    "Scaffolding"
+  Source:   https://poly.pizza/m/AYQd5RQ8w4
+  Author:   lakescorp
+  License:  CC0 1.0
+  Note:     Despite the title, this is a single straight lattice TRUSS/
+            GIRDER segment (like a construction crane jib section), not a
+            multi-story scaffolding tower with platforms/ladders. Useful
+            as a modular girder/truss piece, not as full scaffolding.
+  Textures: none (vertex-color / flat material only, no images in glTF).
+
+shipping_container_01.glb
+  Title:    "Shipping Container"
+  Source:   https://poly.pizza/m/dQXRtm5GbO
+  Author:   Quaternius
+  License:  CC0 1.0
+  Note:     Standard red 20ft shipping container, good general-purpose prop.
+  Textures: none (vertex-color / flat material only).
+
+construction_barrier_01.glb
+  Title:    "Construction Barrier"
+  Source:   https://poly.pizza/m/4mrO9ueiQr
+  Author:   Kenney
+  License:  CC0 1.0
+  Textures: none (flat material only).
+
+metal_support_truss_01.glb
+  Title:    "Metal Support"
+  Source:   https://poly.pizza/m/ZyUjmgnTyw
+  Author:   Quaternius
+  License:  CC0 1.0
+  Note:     Same shape family as scaffolding_truss_01 (lattice truss/girder
+            segment), from a different author — useful as a visual variant.
+  Textures: embedded "Atlas.png" (referenced via bufferView, not an
+            external file — self-contained, verified).

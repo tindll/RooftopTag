@@ -42,12 +42,25 @@ public static class TagArenaMapGeometry
     public enum SurfaceRole { Floor, WallBody, Ramp, Interactable, Trim, Silhouette, BuildingFacade }
 
     private static VisualThemeConfig? _theme;
-    public static VisualThemeConfig Theme => _theme ??= ScriptableObject.CreateInstance<VisualThemeConfig>();
+    // Unity null check, never ??= — a destroyed instance keeps a live C# wrapper that ??= would hand
+    // straight back (see project_dynamic_material_domain_reload).
+    public static VisualThemeConfig Theme
+    {
+        get
+        {
+            if (_theme == null) _theme = ScriptableObject.CreateInstance<VisualThemeConfig>();
+            return _theme;
+        }
+    }
 
     public static Material GetMaterial(SurfaceRole role, int seed = 0)
     {
         string key = $"{role}:{seed}";
-        if (RoleMaterialCache.TryGetValue(key, out Material cached)) return cached;
+        // Unity null check on the cache hit, NOT just TryGetValue: an AssetDatabase refresh mid-session
+        // can UnloadUnusedAssets and destroy these non-asset materials while the dictionary still holds
+        // live C# wrappers — returning one bakes a dead reference into the scene (whole-playfield
+        // magenta, round 3). Same disease as project_dynamic_material_domain_reload, dictionary form.
+        if (RoleMaterialCache.TryGetValue(key, out Material cached) && cached != null) return cached;
 
         VisualThemeConfig t = Theme;
         Material material = role switch
@@ -100,7 +113,8 @@ public static class TagArenaMapGeometry
     public static Material GetFacadeMaterial(Color tint, float emissiveIntensity)
     {
         string key = $"{ColorUtility.ToHtmlStringRGBA(tint)}:{emissiveIntensity}";
-        if (FacadeMaterialCache.TryGetValue(key, out Material cached)) return cached;
+        // Unity null check — see GetMaterial(SurfaceRole)'s cache-hit comment (destroyed-material hazard).
+        if (FacadeMaterialCache.TryGetValue(key, out Material cached) && cached != null) return cached;
 
         VisualThemeConfig t = Theme;
         Material m = PlainMaterial(tint);
@@ -601,14 +615,18 @@ public static class TagArenaMapGeometry
     /// pipe sits proud of the wall face along this direction and the brackets reach back toward the wall.</param>
     /// <param name="radius">Pipe radius. Default 0.16m — a slim but clearly-climbable pipe that sits
     /// inside the oversized 2m grab trigger.</param>
-    public static void BuildClimbPipeVisual(Transform? parent, Vector3 bottom, Vector3 top, Vector3 outward, float radius = 0.16f)
+    public static void BuildClimbPipeVisual(Transform? parent, Vector3 bottom, Vector3 top, Vector3 outward, float radius = 0.16f, float wallInset = 0.4f)
     {
         Vector3 fwd = outward.sqrMagnitude > 1e-6f ? outward.normalized : Vector3.forward;
 
         float height = Mathf.Max(0.05f, top.y - bottom.y);
         Vector3 baseXZ = new(bottom.x, 0f, bottom.z);
-        // Push the pipe a touch outward of the climb line so it sits clearly proud of the wall face.
-        Vector3 faceOffset = fwd * (radius + 0.04f);
+        // The climb LINE (bottom/top) sits wallInset (0.4m) proud of the facade — that's character
+        // clearance and must not move. The VISUAL doesn't owe the climb line anything, so it's pulled
+        // back toward the wall until its surface nearly kisses the facade (0.02m gap): offset from the
+        // climb line = -(wallInset - radius - 0.02). A pipe floating 0.4m off the wall read as detached
+        // (user report); the trigger/interactable stay on the climb line, so gameplay is untouched.
+        Vector3 faceOffset = -fwd * (wallInset - radius - 0.02f);
         Vector3 mid = new(baseXZ.x + faceOffset.x, bottom.y + height * 0.5f, baseXZ.z + faceOffset.z);
 
         var group = new GameObject("ClimbPipeVisual");
@@ -628,6 +646,8 @@ public static class TagArenaMapGeometry
         // building exterior" read without extra joints or bends.
         int brackets = Mathf.Max(2, Mathf.RoundToInt(height / 2.5f));
         Quaternion rot = Quaternion.LookRotation(fwd, Vector3.up); // local z = outward
+        // The pipe surface now sits 0.02m off the facade (see faceOffset), so the brackets are back to
+        // short clamps: radius + 0.12 reaches from the pipe centreline into the wall with a ~0.1m embed.
         float bracketDepth = radius + 0.12f;                       // spans from the pipe back into the wall face
         for (int i = 0; i < brackets; i++)
         {
@@ -1015,7 +1035,13 @@ public static class TagArenaMapGeometry
         var camGo = new GameObject("Main Camera");
         camGo.tag = "MainCamera";
         Camera cam = camGo.AddComponent<Camera>();
-        cam.GetUniversalAdditionalCameraData().renderPostProcessing = true;
+        var camData = cam.GetUniversalAdditionalCameraData();
+        camData.renderPostProcessing = true;
+        // SMAA over MSAA on the player camera: it's a post resolve, so it survives HDR + the
+        // post stack and doesn't depend on the target having MSAA sample buffers. Kills the
+        // shimmering on thin rooftop poles/antennae the baseline showed.
+        camData.antialiasing = AntialiasingMode.SubpixelMorphologicalAntiAliasing;
+        camData.antialiasingQuality = AntialiasingQuality.High;
         camGo.AddComponent<AudioListener>();
 
         return (rigGo, cam, yawGo.transform);
@@ -1089,7 +1115,8 @@ public static class TagArenaMapGeometry
     private static Material GetMaterial(Color color)
     {
         string key = ColorUtility.ToHtmlStringRGBA(color);
-        if (MaterialCache.TryGetValue(key, out Material cached)) return cached;
+        // Unity null check — see GetMaterial(SurfaceRole)'s cache-hit comment (destroyed-material hazard).
+        if (MaterialCache.TryGetValue(key, out Material cached) && cached != null) return cached;
 
         Shader shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
         var material = new Material(shader) { color = color };

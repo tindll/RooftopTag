@@ -10,131 +10,26 @@ using UnityEngine.SceneManagement;
 namespace Game.EditorTools;
 
 /// <summary>
-/// Procedurally builds the M1 movement playground. Run headlessly via:
-/// Unity.exe -batchmode -nographics -quit -projectPath &lt;path&gt; -executeMethod Game.EditorTools.PlaygroundBuilder.Build
-/// (there is no manual GUI-editing step in this project's workflow, so the scene is code-defined and reproducible).
+/// Procedurally builds the RooftopArena scene — the game's single scene — via the
+/// "RooftopTag/Build Rooftop Arena" menu item. The whole map is code-defined and reproducible
+/// (there is no manual GUI-editing step in this project's workflow); re-run the menu item to
+/// regenerate it.
 ///
 /// Note: this environment's headless Unity cannot reliably resolve custom-asmdef script types
 /// when deserializing persisted data — confirmed via <c>MonoScript.GetClass()</c> returning null
-/// for these types, which breaks both loading standalone ScriptableObject assets AND attaching
-/// scene-embedded components of those types (non-deterministically, even with a correct guid
-/// reference — observed passing for one type and silently failing for another with identical
-/// serialized structure). in-memory <c>CreateInstance&lt;T&gt;()</c>/<c>AddComponent&lt;T&gt;()</c>
-/// within a live process is unaffected, since that path resolves the type directly from the
-/// loaded assembly rather than through Unity's serialization bridge.
-///
-/// So this builder does two things to route entirely around the problem:
-/// (1) MovementConfig is only ever created in-memory here, purely to size the geometry from real
-/// default values — the scene never persists a config asset reference; CharacterMotor/
-/// ThirdPersonCameraRig fall back to their own CreateInstance default at Awake. A human can still
-/// create a real tunable asset via Assets &gt; Create &gt; RooftopTag and assign it in the
-/// Inspector in their own session for the M4 tuning loop.
-/// (2) The scene itself never has CharacterMotor/PlayerInputProvider/ThirdPersonCameraRig/
-/// LadderInteractable/ChainSwingInteractable directly attached. Instead it persists plain
-/// placeholder objects (<see cref="InteractableMarker"/>, and a <c>PlaygroundBootstrap</c>
-/// component — both deliberately namespace-free and outside any custom asmdef) that attach the
-/// real components live via AddComponent&lt;T&gt;() at Awake, sidestepping the broken
-/// deserialization path entirely.
-///
-/// Most of the actual geometry creation (boxes, ramps, the map's sequential sections) has no
-/// Editor dependency at all and lives in <c>Game.MapGeometry.TagArenaMapGeometry</c> instead, so
-/// a headless self-play harness can build the identical physical geometry at runtime without
-/// going through this Editor-only scene-saving path. Ladder/swing-chasm geometry stays here since
-/// it attaches an <see cref="InteractableMarker"/>, which — per the note above — must stay
-/// namespace-free and can't be referenced from a custom asmdef.
+/// for these types, which breaks attaching scene-embedded components of those types (even with a
+/// correct guid). in-memory <c>CreateInstance&lt;T&gt;()</c>/<c>AddComponent&lt;T&gt;()</c> within a
+/// live process is unaffected. So the scene never has CharacterMotor/PlayerInputProvider/
+/// ThirdPersonCameraRig/interactable components directly attached: it persists plain placeholder
+/// objects (<see cref="InteractableMarker"/>, a namespace-free bootstrap component) that attach the
+/// real components live via AddComponent&lt;T&gt;() at Awake, sidestepping the broken deserialization
+/// path. Most geometry has no Editor dependency and lives in
+/// <c>Game.MapGeometry.TagArenaMapGeometry</c>/<c>RooftopArena</c> so the headless self-play harness
+/// can build the identical physical geometry at runtime; roof ladder/swing geometry stays here
+/// because it attaches an <see cref="InteractableMarker"/>, which must be namespace-free.
 /// </summary>
 public static class PlaygroundBuilder
 {
-    private const string ScenePath = "Assets/Scenes/MovementPlayground.unity";
-
-    [MenuItem("RooftopTag/Build Movement Playground")]
-    public static void Build()
-    {
-        var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
-        int playerLayer = EnsureLayer("Player");
-        int groundMask = ~(1 << playerLayer);
-        // Ensures the "Dressing" layer slot exists before SceneStyler assigns presentation-only
-        // objects (clouds/haze/silhouettes) to it — see RoundController.SetupMinimap, which
-        // excludes this layer from the minimap camera's cullingMask so cloud slabs don't wash it out.
-        EnsureLayer("Dressing");
-        // Same deal for "Ragdoll", reserved for CharacterRagdoll's bone colliders — CharacterMotor
-        // subtracts it from both probe masks so an active ragdoll isn't stand-on-able. Reserved here
-        // (rather than left to the runtime) because a layer only exists if TagManager.asset says so,
-        // and CharacterRagdoll resolves it by NAME at build-time with a warn-and-degrade fallback.
-        EnsureLayer("Ragdoll");
-
-        Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-        Light sun = BuildMapGeometry(movementConfig);
-
-        GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, new Vector3(0f, 1.1f, 2f), new Color(0.2f, 0.6f, 1f));
-        (GameObject cameraRig, Camera cam, Transform yawPivot) = TagArenaMapGeometry.BuildCamera(player);
-
-        BuildBootstrap(player, cameraRig, cam, yawPivot, groundMask, groundMask);
-
-        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>(), sun);
-
-        EditorSceneManager.MarkSceneDirty(scene);
-        EditorSceneManager.SaveScene(scene, ScenePath);
-        Debug.Log($"PLAYGROUND_BUILD_OK: saved to {ScenePath}");
-    }
-
-    /// <summary>Builds the shared greybox map geometry (ramps, gaps, wall-run alley, ledges, ladder, swing). Reused by both the M1 movement playground and the M2 tag arena. Returns the directional light so the caller can thread it into SceneStyler.</summary>
-    private static Light BuildMapGeometry(MovementConfig movementConfig)
-    {
-        float z = TagArenaMapGeometry.BuildMainCorridor(movementConfig, out Light sun);
-        z = BuildLadder(z);
-        BuildSwingChasm(z, movementConfig);
-        TagArenaMapGeometry.BuildFallCatchPlane();
-        return sun;
-    }
-
-    private const string TagArenaScenePath = "Assets/Scenes/TagArena.unity";
-    // "Chase me" debug mode: 3 agents (player + 2 bot Taggers). The player is always a Runner
-    // (see the default forcePlayerAsRunner=true on BuildTagArenaBootstrap below) so a human can
-    // quickly playtest being chased without waiting on role RNG. Built on the same branching
-    // RooftopArena topology as BuildRooftopArena — see RooftopAgentCount there for the full
-    // 1v10 "chase me" ruleset, which is now the main game scene.
-    private const int TagArenaAgentCount = 3;
-
-    [MenuItem("RooftopTag/Build Tag Arena")]
-    public static void BuildTagArena()
-    {
-        var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
-        int playerLayer = EnsureLayer("Player");
-        int groundMask = ~(1 << playerLayer);
-        // See the matching calls in Build() — "Dressing" before SceneStyler.Apply, "Ragdoll" for
-        // CharacterRagdoll's bone colliders.
-        EnsureLayer("Dressing");
-        EnsureLayer("Ragdoll");
-
-        Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-
-        RooftopArena.ArenaInteractables interactables = RooftopArena.Build(movementConfig, out Light sun);
-        foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward);
-        foreach (var s in interactables.Swings) BuildRoofSwing(s.pivot, s.length, s.exitDir);
-        foreach (var c in interactables.Cans) BuildRoofTrashCan(c.pos, c.tier);
-        TagArenaMapGeometry.BuildFallCatchPlane();
-
-        Vector3[] spawnPoints = RooftopArena.SpawnPoints(TagArenaAgentCount);
-        GameObject player = TagArenaMapGeometry.BuildAgentCapsule("Player", playerLayer, spawnPoints[0], new Color(0.2f, 0.6f, 1f));
-        (GameObject cameraRig, Camera cam, Transform yawPivot) = TagArenaMapGeometry.BuildCamera(player);
-
-        var botRoots = new GameObject[TagArenaAgentCount - 1];
-        for (int i = 0; i < botRoots.Length; i++)
-            botRoots[i] = TagArenaMapGeometry.BuildAgentCapsule($"Bot_{i}", playerLayer, spawnPoints[i + 1], new Color(0.6f, 0.6f, 0.6f));
-
-        // Chase-me debug mode: the player is always a Runner (default forcePlayerAsRunner=true)
-        // being chased by 2 bot Taggers — unlike the main RooftopArena scene, which assigns
-        // roles to the player like any other agent.
-        BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask);
-
-        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>(), sun);
-
-        EditorSceneManager.MarkSceneDirty(scene);
-        EditorSceneManager.SaveScene(scene, TagArenaScenePath);
-        Debug.Log($"TAG_ARENA_BUILD_OK: saved to {TagArenaScenePath}");
-    }
-
     private const string RooftopScenePath = "Assets/Scenes/RooftopArena.unity";
     // "Chase me" mode, scaled up: 1 human Runner + 10 bot Taggers hunting them (forcePlayerAsRunner
     // below). This is the main game scene. Built on the branching RooftopArena topology (the old
@@ -156,7 +51,7 @@ public static class PlaygroundBuilder
         Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
         RooftopArena.ArenaInteractables interactables = RooftopArena.Build(movementConfig, out Light sun);
-        foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward);
+        foreach (var l in interactables.Ladders) BuildRoofLadder(l.bottom, l.top, l.outward, l.visualBottomY, l.visualTopY);
         foreach (var s in interactables.Swings) BuildRoofSwing(s.pivot, s.length, s.exitDir);
         foreach (var c in interactables.Cans) BuildRoofTrashCan(c.pos, c.tier);
 
@@ -189,30 +84,105 @@ public static class PlaygroundBuilder
         // wiring as TagArena's 3-agent debug scene, just scaled up to the full 1v10 ruleset.
         BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, forcePlayerAsRunner: true);
 
-        SceneStyler.Apply(ScriptableObject.CreateInstance<VisualThemeConfig>(), sun);
+        var theme = ScriptableObject.CreateInstance<VisualThemeConfig>();
+        // Old generated box cars OFF — the Kenney vehicles (BuildKenneyStreets → KenneyTrafficBuilder)
+        // drive the new modular grid instead. carCount<=0 makes SceneStyler.CreateCars a no-op.
+        theme.carCount = 0;
+        SceneStyler.Apply(theme, sun);
+
+        // Modular Kenney street grid (CC0 decor) at street level, centred on the play cluster — real 3D
+        // road tiles (straights, crosswalk intersections, curbed sidewalks, lamp posts) replacing the flat
+        // generated strips in the visible near area. Lifted just above the old strips to hide them; the
+        // ground slab (fall-landing collider) is untouched. Blocks/intersections it returns feed the
+        // building + traffic passes (later phases).
+        BuildKenneyStreets(theme);
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, RooftopScenePath);
         Debug.Log($"ROOFTOP_ARENA_BUILD_OK: saved to {RooftopScenePath}");
     }
 
+    // Kenney modular street grid centred on the playable roof cluster's XZ bounds, at street level.
+    private static void BuildKenneyStreets(VisualThemeConfig theme)
+    {
+        float minX = float.MaxValue, maxX = float.MinValue, minZ = float.MaxValue, maxZ = float.MinValue;
+        foreach (RooftopArena.Roof r in RooftopArena.Roofs)
+        {
+            minX = Mathf.Min(minX, r.Center.x - r.SizeX * 0.5f);
+            maxX = Mathf.Max(maxX, r.Center.x + r.SizeX * 0.5f);
+            minZ = Mathf.Min(minZ, r.Center.z - r.SizeZ * 0.5f);
+            maxZ = Mathf.Max(maxZ, r.Center.z + r.SizeZ * 0.5f);
+        }
+        var center = new Vector3((minX + maxX) * 0.5f, 0f, (minZ + maxZ) * 0.5f);
+        int dressing = LayerMask.NameToLayer("Dressing");
+        var root = new GameObject("KenneyCity");
+        // Round 8 (user: "buildings in rooftop arena aren't inside blocks"): the playable cluster's
+        // footprint is carved OUT of the road lattice — streets flow around it as one super-block
+        // instead of running under the towers. Same rect the building keep-out uses, tighter margin
+        // (roads may hug the site fence).
+        var roadKeepOut = new System.Collections.Generic.List<Rect>
+        {
+            Rect.MinMaxRect(minX - 2.5f, minZ - 2.5f, maxX + 2.5f, maxZ + 2.5f),
+        };
+        // 8×8 blocks at 8m tiles → ~256m span: the modular street grid rings the ~120m play cluster.
+        CityGrid grid = KenneyCityBuilder.BuildRoadGrid(
+            root.transform, center, theme.buildingBaseY + 0.2f, 8, 8, 3, 8f, dressing, roadKeepOut);
+
+        // Fill the blocks OUTSIDE the play cluster with varied Kenney buildings (heights/footprints/palette,
+        // ~40% warm-lit windows). Keep-out = the whole playable cluster (+margin): a decor tower rises ~60m
+        // from the street, far above the rooftops at y~0-6, so any placed inside the play footprint would
+        // engulf the playfield — instead they ring it, selling the "rooftops above a city" fantasy.
+        const float keepMargin = 5f;
+        var keepOut = new System.Collections.Generic.List<Rect>
+        {
+            Rect.MinMaxRect(minX - keepMargin, minZ - keepMargin, maxX + keepMargin, maxZ + keepMargin),
+        };
+        KenneyBuildingPlacer.PlaceBuildings(root.transform, grid.Blocks, theme.buildingBaseY, keepOut, 4242, dressing);
+
+        // Kenney vehicles driving the grid: stop at red lights, turn at intersections, keep a street-death
+        // impact trigger (same TrafficNetwork/CarDrifter/CarImpact logic proven on the old ring).
+        KenneyTrafficBuilder.BuildTraffic(root.transform, grid, theme.buildingBaseY, dressing);
+
+        // Solid dark building rows ringing the whole grid — the horizon: the map edge is hidden by
+        // geometry instead of fog, replacing the legacy GLB skyline (gated off in CreateSilhouettes).
+        float gMinX = float.MaxValue, gMaxX = float.MinValue, gMinZ = float.MaxValue, gMaxZ = float.MinValue;
+        foreach (Vector3 n in grid.Intersections)
+        {
+            gMinX = Mathf.Min(gMinX, n.x); gMaxX = Mathf.Max(gMaxX, n.x);
+            gMinZ = Mathf.Min(gMinZ, n.z); gMaxZ = Mathf.Max(gMaxZ, n.z);
+        }
+        var gridBounds = Rect.MinMaxRect(gMinX - 4f, gMinZ - 4f, gMaxX + 4f, gMaxZ + 4f);
+        KenneyBuildingPlacer.PlacePerimeterWall(root.transform, gridBounds, theme.buildingBaseY, 777, dressing);
+        // Behind the wall: cheap unlit "shadow" skyline rows so even the gaps between wall towers show
+        // more city, never empty sky-to-slab (user round 3). Fog fades them toward the sky for depth.
+        KenneyBuildingPlacer.PlaceSilhouetteSkyline(root.transform, gridBounds, theme.buildingBaseY, 4711, dressing);
+    }
+
     // Rooftop ladder: a climbable wall up the side of the taller roof, with the InteractableMarker
     // (namespace-free, so built here not in Game.MapGeometry). Mirrors BuildLadder's marker wiring.
-    private static void BuildRoofLadder(Vector3 bottom, Vector3 top, Vector3 outward)
+    // visualBottomY/visualTopY (default: the climb ends themselves) only stretch the collider-free
+    // pipe VISUAL — void pipes draw street-slab-to-roof-lip while their climb anchors/trigger stop at
+    // the safe foot (VoidPipeFootY) and below the deck (LadderTopDrop).
+    // internal: round 11 — SceneStyler/ConstructionDressing attach mast ladders to the yellow cranes
+    // through this same marker pattern (player-only, never a bot graph edge).
+    internal static void BuildRoofLadder(Vector3 bottom, Vector3 top, Vector3 outward, float? visualBottomY = null, float? visualTopY = null)
     {
         var root = new GameObject("RoofLadderSection");
         float height = top.y - bottom.y;
         Vector3 midXZ = new(bottom.x, (bottom.y + top.y) * 0.5f, bottom.z);
 
-        // Backing wall sits just inside the climb line (on the +outward side is open air; the wall is
-        // the building face, so offset it slightly toward the building, i.e. -outward). Plain concrete
-        // (WallBody): the building exterior the climb pipe runs along.
-        Vector3 wallCenter = midXZ - outward * 0.4f;
-        TagArenaMapGeometry.CreateBox("RoofLadderWall", root.transform, wallCenter, new Vector3(2f, height, 0.5f), TagArenaMapGeometry.SurfaceRole.WallBody);
-
-        // Climb pipe (collider-free dressing) along the actual climb line — shared helper, so this
-        // matches the runtime/self-play climb pipe built by RooftopInteractableBuilder.
-        TagArenaMapGeometry.BuildClimbPipeVisual(root.transform, bottom, top, outward);
+        // No backing wall box here: the climb line already runs right in front of the building's own
+        // solid facade (RooftopArena.Build's roof box), so a separate WallBody box only duplicated it
+        // as a floating grey rectangle proud of the real wall (user report). Climbing itself never
+        // reads this collider (TickLadder drives position off the ladder's own bottom/top transforms),
+        // so removing it changes no movement behavior.
+        //
+        // Climb pipe (collider-free dressing) along the VISUAL line (ends at visualBottomY/visualTopY,
+        // not the climbable ends) — shared helper, so this matches the runtime/self-play climb pipe
+        // built by RooftopInteractableBuilder.
+        TagArenaMapGeometry.BuildClimbPipeVisual(root.transform,
+            new Vector3(bottom.x, visualBottomY ?? bottom.y, bottom.z),
+            new Vector3(top.x, visualTopY ?? top.y, top.z), outward);
 
         var bottomGo = new GameObject("RoofLadderBottom");
         bottomGo.transform.SetParent(root.transform);
@@ -283,13 +253,11 @@ public static class PlaygroundBuilder
         // removing them touches no bot pathing — the parallel ramp already provides the route. The two
         // kept below are on faces with NO ramp, so they stay as genuine non-jump vertical routes.
 
-        // Up Con_ScafHi (idx24, h4, -30,-32 — SW corner) north face from Con_Deck (idx19, h2). Face
-        // z=-28 -> climb z=-27.6, off Deck's south edge. Vertical route out of the low SW construction
-        // flats up onto the scaffold high roof (no ramp here — 19<->24 is a Jump).
-        (new Vector3(-30f, 2.2f, -27.6f), new Vector3(-30f, 4f, -27.6f), new Vector3(0f, 0f, 1f)),
-        // Short accent pipe up Roof_S2E (idx25, h4, 13,-26) west face from Roof_S2 (idx14, h3). Face
-        // x=9 -> climb x=8.6, off S2's east edge. A 1m climb on the south row (no ramp on this face).
-        (new Vector3(8.6f, 3.2f, -26f), new Vector3(8.6f, 4f, -26f), new Vector3(-1f, 0f, 0f)),
+        // ...and the LAST TWO (Con_ScafHi north off Con_Deck, 1.8m; Roof_S2E west off Roof_S2, 0.8m)
+        // are gone as well: as stubby roof-to-roof pipes they read as tiny and useless (user report),
+        // and both rises sit inside climb.climbMaxHeight (3.0), so the automatic wall-scramble already
+        // covers those hops without any dressing. The 20 street-to-roof void pipes in
+        // RooftopArena.VoidPipes are now the only wall pipes, and every one runs a full facade.
     };
 
     private static void BuildRoofSwing(Vector3 pivot, float length, Vector3 exitDir)
@@ -333,122 +301,6 @@ public static class PlaygroundBuilder
         for (int i = 0; i < botRoots.Length; i++)
             botsProp.GetArrayElementAtIndex(i).objectReferenceValue = botRoots[i];
         so.ApplyModifiedProperties();
-    }
-
-    // ---------------------------------------------------------------- Ladder / swing chasm
-    //
-    // Kept here (not in Game.MapGeometry) because these attach an InteractableMarker component,
-    // which must stay in the default namespace-free assembly so it can be persisted into a saved
-    // scene — see the class remarks above and PlaygroundBuilder's original notes on the
-    // deserialization bug this project routes around.
-
-    private static float BuildLadder(float z)
-    {
-        var root = new GameObject("LadderSection");
-        const float ladderHeight = 8f;
-        const float runway = 6f;
-
-        TagArenaMapGeometry.CreateBox("LadderRunway", root.transform, new Vector3(0f, -0.5f, z + runway * 0.5f), new Vector3(5f, 1f, runway), TagArenaMapGeometry.SurfaceRole.Floor);
-        z += runway;
-
-        // Plain concrete backing wall (WallBody): the building exterior the climb pipe added below
-        // runs along.
-        TagArenaMapGeometry.CreateBox("LadderWall", root.transform, new Vector3(0f, ladderHeight * 0.5f, z + 0.5f), new Vector3(5f, ladderHeight, 1f), TagArenaMapGeometry.SurfaceRole.WallBody);
-
-        // The wall's near face sits at z. The climb line needs enough clearance that the
-        // capsule (radius 0.4) doesn't overlap it — at the old 0.3m offset it penetrated the
-        // wall by ~0.1m, causing continuous collision push-back that fought MovePosition every
-        // tick (visible as jitter while climbing). 0.6m offset leaves a clear 0.2m gap.
-        const float wallClearance = 0.6f;
-
-        var bottomGo = new GameObject("LadderBottom");
-        bottomGo.transform.SetParent(root.transform);
-        bottomGo.transform.position = new Vector3(0f, 0.2f, z - wallClearance);
-
-        var topGo = new GameObject("LadderTop");
-        topGo.transform.SetParent(root.transform);
-        topGo.transform.position = new Vector3(0f, ladderHeight, z - wallClearance);
-
-        var ladderGo = new GameObject("Ladder");
-        ladderGo.transform.SetParent(root.transform);
-        var box = ladderGo.AddComponent<BoxCollider>();
-        box.isTrigger = true;
-        box.size = new Vector3(2f, ladderHeight, 1.5f);
-        box.center = new Vector3(0f, ladderHeight * 0.5f, -wallClearance);
-        ladderGo.transform.position = new Vector3(0f, 0f, z);
-
-        InteractableMarker marker = ladderGo.AddComponent<InteractableMarker>();
-        marker.kind = InteractableMarker.Kind.Ladder;
-        marker.pointA = bottomGo.transform;
-        marker.pointB = topGo.transform;
-        // The wall is at +Z from the ladder; detaching should push the player back toward the
-        // runway (-Z), away from the wall. The default (+Z) pushed straight into it.
-        marker.outwardDirection = Vector3.back;
-
-        // Climb pipe along the climb line (bottomGo -> topGo), collider-free — shared helper so the
-        // playground climb pipe matches every rooftop climb pipe.
-        TagArenaMapGeometry.BuildClimbPipeVisual(root.transform, bottomGo.transform.position, topGo.transform.position, Vector3.back);
-
-        TagArenaMapGeometry.CreateBox("LadderTopLanding", root.transform, new Vector3(0f, ladderHeight + 0.5f, z + 2.5f), new Vector3(5f, 1f, 5f), TagArenaMapGeometry.SurfaceRole.Floor);
-
-        return z + 5f;
-    }
-
-    private static void BuildSwingChasm(float z, MovementConfig config)
-    {
-        var root = new GameObject("SwingChasm");
-        const float chasmLength = 12f;
-
-        TagArenaMapGeometry.CreateBox("SwingEntry", root.transform, new Vector3(0f, -0.5f, z + 2f), new Vector3(6f, 1f, 4f), TagArenaMapGeometry.SurfaceRole.Floor);
-        float chasmStart = z + 4f;
-        TagArenaMapGeometry.CreateBox("SwingExit", root.transform, new Vector3(0f, -0.5f, chasmStart + chasmLength + 2f), new Vector3(6f, 1f, 4f), TagArenaMapGeometry.SurfaceRole.Floor);
-
-        // Solid beam-hub the chain hangs from, at the pivot (SOLID now — the collider is kept, not
-        // destroyed, so the player stops phasing through it). It is a COMPACT 1.5x1.5 stub, NOT the old
-        // ~14m span: at maxTangentialSpeed=12 the energy cap lets this L=4 swing apex ~7.34m above the
-        // arc's lowest point (feet to pivot.y+3.34, ~147deg polar; the 1.8m capsule head to pivot.y+5.14),
-        // so a full-length beam at pivot height sat in the swept arc and would fight the taut-rope
-        // constraint. Whenever any capsule point is at beam height the bob is >=3.5m away along the swing
-        // axis, so a stub this size never intersects the swing (the crane's solid jib is the visible arm).
-        var beamGo = new GameObject("OverheadBeam");
-        beamGo.transform.SetParent(root.transform);
-        beamGo.transform.position = new Vector3(0f, 6f, chasmStart + chasmLength * 0.5f);
-        beamGo.transform.localScale = new Vector3(1.5f, 0.3f, 1.5f);
-        var beamRenderer = GameObject.CreatePrimitive(PrimitiveType.Cube);
-        beamRenderer.transform.SetParent(beamGo.transform, false);
-        beamRenderer.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.WallBody);
-
-        var pivotGo = new GameObject("ChainPivot");
-        pivotGo.transform.SetParent(root.transform);
-        pivotGo.transform.position = new Vector3(0f, 6f, chasmStart + chasmLength * 0.5f);
-
-        // No grab-trigger here: the live ChainSwingInteractable (added from this marker by the
-        // bootstrap) builds its own full-length capsule grab trigger in Initialize.
-        var chainGo = new GameObject("ChainSwing");
-        chainGo.transform.SetParent(root.transform);
-        chainGo.transform.position = pivotGo.transform.position + Vector3.down * 4f;
-
-        InteractableMarker marker = chainGo.AddComponent<InteractableMarker>();
-        marker.kind = InteractableMarker.Kind.Swing;
-        marker.pointA = pivotGo.transform;
-        marker.length = 4f;
-
-        Debug.Log($"PLAYGROUND_INFO: swing chasm length={chasmLength}m, chain length=4m, sprintSpeed={config.ground.sprintSpeed}");
-    }
-
-    // ---------------------------------------------------------------- Player / Camera / Bootstrap
-
-    private static void BuildBootstrap(GameObject player, GameObject cameraRig, Camera cam, Transform yawPivot, int groundMask, int wallMask)
-    {
-        var bootstrapGo = new GameObject("Bootstrap");
-        PlaygroundBootstrap bootstrap = bootstrapGo.AddComponent<PlaygroundBootstrap>();
-
-        SetObjectRef(bootstrap, "playerRoot", player);
-        SetObjectRef(bootstrap, "cameraRig", cameraRig);
-        SetObjectRef(bootstrap, "mainCamera", cam);
-        SetObjectRef(bootstrap, "cameraYawPivot", yawPivot);
-        SetInt(bootstrap, "groundMask", groundMask);
-        SetInt(bootstrap, "wallMask", wallMask);
     }
 
     // ---------------------------------------------------------------- Reflection / asset helpers

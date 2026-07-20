@@ -8,12 +8,6 @@ EditorBuildSettings:
   - enabled: 1
     path: Assets/Scenes/RooftopArena.unity
     guid: 4c58647cc85272041b0dbead1125b4f8
-  - enabled: 1
-    path: Assets/Scenes/TagArena.unity
-    guid: 1d93114834a179246bf772b8ed10ebf4
-  - enabled: 1
-    path: Assets/Scenes/MovementPlayground.unity
-    guid: 750ee89d5e944e4438aa7eb8e197d190
   m_configObjects:
     com.unity.dt.app-ui: {fileID: 11400000, guid: 1b1c20d82303e4b5781c3ef50ac1449f, type: 2}
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}

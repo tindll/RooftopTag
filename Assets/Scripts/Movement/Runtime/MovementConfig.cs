@@ -291,7 +291,8 @@ public sealed class MovementConfig : ScriptableObject
         forwardCheckDistance = 0.7f,   // tightened from 1.0 (user: vault zone a bit smaller) — E still doesn't need wall contact
         lowProbeHeight = 0.25f,        // second forward ray height; catches low walls the chest ray passes over
 
-        mantleDuration = 0.3f,  // snappier pull-up (was 0.35) — less animation-lock
+        mantleDuration = 0.45f,  // slower, weightier pull-up (was 0.3, felt too fast — user) — also slows the
+                                 // mantle a wall-climb flows into at its top (TickClimbing → StartMantle)
         vaultDuration = 0.18f,  // cap for the now speed-scaled vault (was 0.22) — see StartVault
     };
 

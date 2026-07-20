@@ -1,0 +1,20 @@
+Low-poly Cloud models by Quaternius
+
+Source: poly.pizza (hosted mirror of Quaternius's free asset library)
+License: CC0 1.0 Universal (Public Domain Dedication)
+         https://creativecommons.org/publicdomain/zero/1.0/
+
+You can use, modify, and redistribute this content for personal, educational,
+and commercial purposes without attribution (attribution appreciated but not required).
+
+Files and original source pages:
+  Cloud_01.glb  <- https://poly.pizza/m/KdFNOVn1Gf
+  Cloud_02.glb  <- https://poly.pizza/m/pjiBiLJwAl
+  Cloud_03.glb  <- https://poly.pizza/m/P1cMV8qtN2
+  Cloud_04.glb  <- https://poly.pizza/m/F6DzCxDz6I
+  Cloud_05.glb  <- https://poly.pizza/m/jTIsWRQd7T
+
+All models are self-contained binary glTF (.glb) with embedded geometry/materials
+(no external texture files, no relative texture paths to preserve).
+
+Author credit: Quaternius (https://quaternius.com)
