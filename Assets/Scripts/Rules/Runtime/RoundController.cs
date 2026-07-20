@@ -57,8 +57,8 @@ public sealed class RoundController : MonoBehaviour
     private TagAgent? _localPlayerAgent;
     private ThirdPersonCameraRig? _cameraRig;
 
-    // Phase-1 kill-cam: an always-on ring-buffer recorder, lazily created on the first RegisterAgent
-    // call. Nothing reads it yet (a later phase will) — see KillCamRecorder's own remarks for why it
+    // Always-on kill-cam ring-buffer recorder, lazily created on the first RegisterAgent call and
+    // read by KillCamPlayback to build a replay — see KillCamRecorder's own remarks for why it
     // needs no headless guard here (it guards itself in Awake).
     private KillCamRecorder? _killCam;
     public KillCamRecorder? KillCam => _killCam;
@@ -86,8 +86,8 @@ public sealed class RoundController : MonoBehaviour
 
     // Same asmdef-direction constraint as _requestMainMenu just above (Game.Rules can't hold a typed
     // MainMenuOverlay/SettingsMenu field): a plain query delegate TagArenaBootstrap wires up once both
-    // menus exist, so DrawRoundStartBanner/DrawCountdown can skip while either is open (user screenshot —
-    // both used to render on top of the pause menu AND the pre-launch main menu). Null in scenes with
+    // menus exist, so DrawRoundStartBanner/DrawCountdown can skip while either is open — neither banner
+    // may render on top of the pause menu or the pre-launch main menu. Null in scenes with
     // no menus (e.g. a bare test-built RoundController) — the banners just draw unconditionally there.
     private System.Func<bool>? _isMenuOpen;
 
@@ -366,7 +366,7 @@ public sealed class RoundController : MonoBehaviour
             // Pause menu owns timeScale — hold, don't resolve, don't stomp. The deadline is UNSCALED
             // (it keeps advancing while paused), so "holding" must also push it forward by the paused
             // time or any pause longer than the window silently expires it — Resume would then land
-            // the deferred tag instantly, with zero reaction time (review finding).
+            // the deferred tag instantly, with zero reaction time.
             _dodgeWindowEndUnscaled += Time.unscaledDeltaTime;
             return;
         }
@@ -506,16 +506,10 @@ public sealed class RoundController : MonoBehaviour
         return nearest;
     }
 
-    /// <summary>The fall-off-the-map consequence, unchanged from when it lived inline in the -15
-    /// check: the local player loses the round, a bot respawns at its start and a Runner is converted
-    /// to a Tagger on the way back (the map itself "tags" you). Now called from two places — straight
-    /// off the -15 check where there's no street, and at the end of the street sequence where there
-    /// is — which is the entire point: WHEN it happens moved, WHAT happens did not.</summary>
     /// <summary>Fired whenever a fall actually costs an agent something — the single place a fall is
-    /// consequenced, whether it happened instantly or at the end of a street sequence. Exists because
-    /// there was no way to MEASURE falls: self-play was polling for y &lt; -20, which this code makes
-    /// unreachable (agents are consequenced from -15), so its fall counter could only ever read zero
-    /// and "bots never fall" looked true for months.</summary>
+    /// consequenced, whether it lands instantly (no street under the scene) or at the end of a street
+    /// sequence. The local player loses the round; a bot respawns at its start and a Runner is
+    /// converted to a Tagger on the way back (the map itself "tags" you).</summary>
     public event System.Action<TagAgent>? AgentFell;
 
     private void ApplyFallConsequence(TagAgent agent)
@@ -738,8 +732,7 @@ public sealed class RoundController : MonoBehaviour
             // Chase-me (forceRunner): the local player is the SOLE Runner. Any bot beyond the tagger
             // count is BENCHED — deactivated, pulled out of play — instead of left as a Runner, so
             // lowering the Chasers count actually removes bots from the map rather than turning the
-            // surplus into fellow runners (user: "changing the taggers changes the runners too").
-            // Every agent passes through SetActive here, so raising the count again re-activates the
+            // surplus into fellow runners. Every agent passes through SetActive here, so raising the count again re-activates the
             // benched bots on the next round. Outside chase-me nothing benches (bench stays false).
             bool bench = forceRunner && !isPlayer && !isTagger;
             agent.gameObject.SetActive(!bench);
@@ -747,14 +740,10 @@ public sealed class RoundController : MonoBehaviour
 
             (Vector3 position, Quaternion rotation) = _spawnStates[agent];
 
-            // Found via self-play diagnostics: every single tag in a batch landed within ~8m of
-            // spawn, all within a couple seconds of the round-start grace ending. Roles were
-            // shuffled independently of spawn position, so a Tagger could — and typically did —
-            // start immediately adjacent to a Runner, tagging them the instant grace lifted before
-            // anyone had a real chance to flee. Pulling Taggers back along -Z (away from the
-            // runner cluster, which sits near the spawn platform's center) gives Runners genuine
-            // separation to use the grace period for. Offsetting only Z (not X) means multiple
-            // Taggers, who already have distinct X from the spawn grid, still can't overlap.
+            // Taggers must spawn pulled back along -Z (away from the runner cluster, which sits near
+            // the spawn platform's center) so Runners get genuine separation to use the grace period
+            // for, rather than starting immediately adjacent to a Tagger. Offsetting only Z (not X)
+            // means multiple Taggers, who already have distinct X from the spawn grid, still can't overlap.
             if (isTagger) position += TaggerSpawnBackOffset;
 
             agent.Motor.ResetState(position, rotation);
@@ -763,12 +752,11 @@ public sealed class RoundController : MonoBehaviour
         }
     }
 
-    // Tag Arena now spawns on RooftopArena.Roofs[0], a 12x12 roof (half-width 6). Its SpawnPoints(12)
+    // Tag Arena spawns on RooftopArena.Roofs[0], a 12x12 roof (half-width 6). Its SpawnPoints(12)
     // grid spreads agents up to Z=-3.75 from center (row-centering math in RooftopArena.SpawnPoints),
-    // so -6 (tuned for the old 24m linear-corridor platform) would push the most-offset Tagger to
-    // Z≈-9.75 — well off the roof. -1.5 keeps the worst case at 3.75+1.5=5.25, a 0.75m margin inside
-    // the +-6 bound. Round-start grace still independently protects against instant tag-cascades
-    // regardless of this offset's size.
+    // so this offset must keep the worst-case offset Tagger inside the +-6 bound: -1.5 keeps the
+    // worst case at 3.75+1.5=5.25, a 0.75m margin. Round-start grace still independently protects
+    // against instant tag-cascades regardless of this offset's size.
     private static readonly Vector3 TaggerSpawnBackOffset = new(0f, 0f, -1.5f);
 
     /// <summary>Arms the 3-2-1-GO countdown and freezes every agent at spawn for its duration. Skipped
@@ -989,8 +977,7 @@ public sealed class RoundController : MonoBehaviour
                     // Never reached headless — this whole branch is StreetFallEnabled-gated.
                     agent.SetInputLocked(true);
 
-                    // Die on impact, not on a timer (user: "I should just die, currently I freeze and
-                    // do nothing"): ragdoll RIGHT NOW, mid-fall — Activate inherits the fall velocity,
+                    // Die on impact, not on a timer: ragdoll RIGHT NOW, mid-fall — Activate inherits the fall velocity,
                     // so the body tumbles the rest of the way down and crumples onto the road, and
                     // UpdateStreetFallers' IsActive branch then arms the short ragdollLinger + death
                     // cam instead of the long standing-frozen timeout. Trade-off, accepted: CarImpact
@@ -999,25 +986,18 @@ public sealed class RoundController : MonoBehaviour
                     // (capsule-fallback models), leaving the original lock+timeout path as backstop.
                     agent.GetComponent<CharacterRagdoll>()?.Activate(Vector3.zero);
 
-                    // The local player's loss is decided HERE, not when their sequence ends. Everything
-                    // below -15 is presentation of an outcome, not a new rule — ApplyFallConsequence
-                    // has exactly one branch for them and it is always a loss.
+                    // The local player's loss must be decided HERE, not when their sequence ends: the
+                    // player can stand in the road for up to streetSequenceTimeout before EndRound, and
+                    // the round timer could otherwise expire inside that window and hand a SURVIVAL WIN
+                    // to someone lying in the street. ApplyFallConsequence has exactly one branch for
+                    // the local player and it is always a loss, so _playerLost is set immediately.
                     //
-                    // Recording it now closes a race the street sequence opened: the player now stands
-                    // in the road for up to streetSequenceTimeout before EndRound, and the round timer
-                    // can expire inside that window and fire "Runners win! N survived" — handing a
-                    // SURVIVAL WIN to someone lying in the street. (Before the street the window was
-                    // ~0, so the bug had nowhere to happen.)
-                    //
-                    // _playerLost is the honest lever rather than a reuse of convenience: it is read in
-                    // exactly two places (EndRound's session/match tally and DrawEndScreen's verdict),
-                    // both of which run only once the round is over, and both of which already mean
-                    // "the player lost regardless of what the role-based win check computed" — which is
-                    // precisely the claim being made here. Nothing reads it mid-round, so setting it
-                    // early changes no behaviour except the one that was wrong. The alternative —
-                    // excluding them from runnersRemaining — would instead corrupt the count that
-                    // decides whether the TAGGERS win, and a faller is genuinely still a Runner until
-                    // the map converts them.
+                    // _playerLost is read in exactly two places (EndRound's session/match tally and
+                    // DrawEndScreen's verdict), both of which run only once the round is over and both
+                    // of which already mean "the player lost regardless of what the role-based win check
+                    // computed". Nothing reads it mid-round. A faller is genuinely still a Runner until
+                    // the map converts them, so excluding them from runnersRemaining instead would
+                    // corrupt the count that decides whether the TAGGERS win.
                     if (agent == _localPlayerAgent) _playerLost = true;
                 }
             }
@@ -1035,8 +1015,7 @@ public sealed class RoundController : MonoBehaviour
         }
 
         // Trash-can objective, checked BEFORE the tag/timer win checks. Per active can, the single nearest
-        // eligible Runner within eatRadius fills it — no stand-still requirement, just proximity (per
-        // feel-test: having to stop dead at a can felt bad; being near it is enough). Going per-can
+        // eligible Runner within eatRadius fills it — no stand-still requirement, just proximity. Going per-can
         // means two Runners can never both fill the same can (the nearest owns it). Reaching
         // trashPointsToWin is an instant Runner win. No cans → the loop is empty and this is a no-op.
         // Iterate backwards so an eaten can can be removed from _activeCans in place.
@@ -1220,14 +1199,11 @@ public sealed class RoundController : MonoBehaviour
     /// best-of-5 instead.</summary>
     private void RestartRound()
     {
-        // FORFEIT: R on a LIVE mid-match round counts as a round LOSS (user). Before this, a mid-round
-        // R silently evaporated the round — no history entry, no score change — so the round counter
-        // never advanced and the "MATCH POINT" callout could repeat back-to-back while the score
-        // quietly desynced from rounds actually played. Routing through EndRound (the single tally
-        // path) keeps the accounting in one place: _playerLost forces the loss, EndRound records
-        // history/score/match-over, and the restart below then lands on StartRound — or StartMatch,
-        // if this forfeit just decided the match. Free restarts remain during the pre-GO countdown
-        // (nothing has been played yet) and in free-roam/headless (MatchActive false).
+        // FORFEIT: R on a LIVE mid-match round counts as a round LOSS. Routing through EndRound (the
+        // single tally path) keeps the accounting in one place: _playerLost forces the loss, EndRound
+        // records history/score/match-over, and the restart below then lands on StartRound — or
+        // StartMatch, if this forfeit just decided the match. Free restarts remain during the pre-GO
+        // countdown (nothing has been played yet) and in free-roam/headless (MatchActive false).
         if (MatchActive && !_roundOver && !_matchOver && !IsCountdownActive)
         {
             _playerLost = true;
@@ -1540,7 +1516,7 @@ public sealed class RoundController : MonoBehaviour
         // Verdict: "YOU ESCAPED" / "CAUGHT" (round-level), or the match-level headline once the
         // match itself is decided — pop-in punch + a short upward slide, both driven by openT.
         // "CAUGHT" only fits a loss with a catcher; a street fall has none (_caughtByName is set
-        // exclusively by PlayerCaught) and reads as "YOU DIED" instead (user).
+        // exclusively by PlayerCaught) and reads as "YOU DIED" instead.
         string verdict = matchEnd
             ? (playerWonMatch ? $"MATCH WON {_matchPlayerWins}-{_matchBotWins}" : $"MATCH LOST {_matchPlayerWins}-{_matchBotWins}")
             : (localWon ? "YOU ESCAPED" : (string.IsNullOrEmpty(_caughtByName) ? "YOU DIED" : "CAUGHT"));
@@ -1556,7 +1532,7 @@ public sealed class RoundController : MonoBehaviour
         Matrix4x4 savedMatrix = GUI.matrix;
         GUIUtility.ScaleAroundPivot(new Vector2(overshoot, overshoot), verdictRect.center);
         GUIStyle verdictStyle = GameUIStyle.Label(verdictSize, TextAnchor.MiddleCenter, FontStyle.Bold);
-        // Fit-to-width: "YOU ESCAPED" at Display size overflows the panel (user screenshot). Shrink
+        // Fit-to-width: "YOU ESCAPED" at Display size overflows the panel. Shrink
         // the font so the text fits at 0.85x of the rect width — the extra margin below 1.0 covers
         // the 1.12x punch-in overshoot so it can't clip even at the animation's widest frame.
         Vector2 verdictTextSize = verdictStyle.CalcSize(new GUIContent(verdict));
@@ -1595,7 +1571,7 @@ public sealed class RoundController : MonoBehaviour
             // Stats grid: tags / survival time / cans, three even columns under one hairline-framed
             // row instead of the old concatenated string.
             float colWidth = panel.width / 3f;
-            // 44 -> 54 tall: the value line needs ~34px for Body-bold digits without clipping.
+            // 54 tall: the value line needs ~34px for Body-bold digits without clipping.
             DrawStatCell(new Rect(panel.x, rowY, colWidth, 54f), "TAGS", _tagCounts.GetValueOrDefault(_localPlayerAgent).ToString());
             DrawStatCell(new Rect(panel.x + colWidth, rowY, colWidth, 54f), "SURVIVED", $"{_finalRoundLength:0.0}s");
             DrawStatCell(new Rect(panel.x + colWidth * 2f, rowY, colWidth, 54f), "CANS", _cansEatenThisMatch.ToString());
@@ -1657,12 +1633,12 @@ public sealed class RoundController : MonoBehaviour
 
         GUIStyle valueStyle = GameUIStyle.Label(GameUIStyle.Body, TextAnchor.UpperCenter, FontStyle.Bold);
         valueStyle.normal.textColor = GameUIStyle.Text;
-        // Fill the remaining cell height rather than a fixed 24 — Body-bold digits ("12.3s") clipped
-        // their descenders/tops in a 24px box (user report on the CAUGHT screen stats).
+        // Fill the remaining cell height rather than a fixed 24 — Body-bold digits ("12.3s") clip
+        // their descenders/tops in a 24px box.
         GUI.Label(GameUIStyle.Scaled(new Rect(designRect.x, designRect.y + 20f, designRect.width, designRect.height - 20f)), value, valueStyle);
     }
 
-    // ONE row of exactly 5 pips (user sketch) — one per round of the best-of-5, in play order:
+    // ONE row of exactly 5 pips — one per round of the best-of-5, in play order:
     // player-won = green, bot-won = tagger red, not-yet-played = hollow hairline. Replaces the old
     // two-groups-plus-score layout (3 player pips | "1-1" | 3 bot pips = 6 squares), which read as
     // six slots and hid the round order. Serves both mid-match, match-end, and the in-round HUD
@@ -1692,7 +1668,7 @@ public sealed class RoundController : MonoBehaviour
     private void DrawRoundStartBanner()
     {
         if (!MatchActive || _roundOver || IsPastStartGrace) return;
-        if (_isMenuOpen != null && _isMenuOpen()) return; // don't draw over the main/pause menu (user screenshot)
+        if (_isMenuOpen != null && _isMenuOpen()) return; // don't draw over the main/pause menu
 
         float elapsed = Time.time - _roundStartTime;
         float t = 1f - Mathf.Clamp01(elapsed / _config.roundStartGraceDuration); // 1 -> 0 over the grace window
@@ -1776,7 +1752,7 @@ public sealed class RoundController : MonoBehaviour
     private void DrawCountdown()
     {
         if (_roundOver) return;
-        if (_isMenuOpen != null && _isMenuOpen()) return; // don't draw over the main/pause menu (user screenshot)
+        if (_isMenuOpen != null && _isMenuOpen()) return; // don't draw over the main/pause menu
 
         float sinceEnd = Time.time - _countdownEndTime;
         // Also covers the never-armed case: _countdownEndTime starts at float.NegativeInfinity, so
@@ -1805,7 +1781,7 @@ public sealed class RoundController : MonoBehaviour
         }
 
         // Rect must be comfortably taller than the biggest font (140) or MiddleCenter clips the
-        // glyph's ascender/descender top-and-bottom (user report) — 200 leaves margin both sides.
+        // glyph's ascender/descender top-and-bottom — 200 leaves margin both sides.
         var rect = new Rect(0f, GameUIStyle.DesignHeight * 0.5f - 160f - beatT * 6f, GameUIStyle.DesignWidth, 200f);
         DrawBanner(rect, text, color, Mathf.Lerp(72f, 140f, beatT), beatT);
     }
@@ -1829,7 +1805,7 @@ public sealed class RoundController : MonoBehaviour
     // view centered on nothing would be a pure leak with no teardown between matches — this hook
     // means self-play skips minimap setup entirely for free.
 
-    private const int MinimapSize = 280; // 210 -> 280 (user: minimap too small)
+    private const int MinimapSize = 280;
     private const int MinimapMargin = 12;
     private const int MinimapTextureSize = 256;
     private const float MinimapOrthographicSize = 25f;
@@ -1870,16 +1846,15 @@ public sealed class RoundController : MonoBehaviour
         camGo.transform.rotation = Quaternion.Euler(90f, 0f, 0f); // straight down; yaw is re-set every frame in Update() to match the local player's facing
 
         // Exclude presentation-only dressing (clouds, street haze, far-skyline silhouettes — see
-        // SceneStyler) from the minimap render. Root cause of the reported "no minimap": this
-        // camera sits at the local player's Y + MinimapCameraHeight (~40), which lands squarely
-        // inside cloudHeightMin/Max (35-55, VisualThemeConfig), and a default (everything)
-        // cullingMask let those huge semi-transparent cloud slabs (and, below roof level, the
-        // street-haze planes) render straight across the whole minimap, washing it out to a hazy
-        // blur instead of a usable top-down map. PlaygroundBuilder.EnsureLayer("Dressing") reserves
-        // the layer at scene-build time and SceneStyler assigns dressing objects to it; when the
-        // layer doesn't exist (e.g. self-play, which never builds a minimap or runs SceneStyler in
-        // the first place, or an older scene built before this fix) NameToLayer returns -1 and this
-        // falls back to ~0 (everything) — unchanged prior behavior.
+        // SceneStyler) from the minimap render: this camera sits at the local player's Y +
+        // MinimapCameraHeight (~40), which lands squarely inside cloudHeightMin/Max (35-55,
+        // VisualThemeConfig), so a default (everything) cullingMask would let those huge
+        // semi-transparent cloud slabs (and, below roof level, the street-haze planes) render straight
+        // across the whole minimap, washing it out to a hazy blur instead of a usable top-down map.
+        // PlaygroundBuilder.EnsureLayer("Dressing") reserves the layer at scene-build time and
+        // SceneStyler assigns dressing objects to it; when the layer doesn't exist (e.g. self-play,
+        // which never builds a minimap or runs SceneStyler in the first place) NameToLayer returns -1
+        // and this falls back to ~0 (everything).
         int dressingLayer = LayerMask.NameToLayer("Dressing");
         _minimapCamera.cullingMask = dressingLayer >= 0 ? ~(1 << dressingLayer) : ~0;
 
@@ -1906,10 +1881,9 @@ public sealed class RoundController : MonoBehaviour
 
     // The circular-crop composite MUST NOT run inside OnGUI: Graphics.Blit reassigns
     // RenderTexture.active to its destination and never restores it, and OnGUI fires several times
-    // per frame (Layout, Repaint, input events) — so blitting there left the active render target
-    // pointing at this little offscreen texture and every subsequent IMGUI draw (timer, role label,
-    // win banner, the minimap itself) rendered into IT instead of the screen. That blanked the
-    // entire HUD with zero exceptions or console errors. Compositing once per frame here, with
+    // per frame (Layout, Repaint, input events) — blitting there would leave every subsequent IMGUI
+    // draw (timer, role label, win banner, the minimap itself) rendering into this little offscreen
+    // texture instead of the screen, blanking the entire HUD. Compositing once per frame here, with
     // active saved/restored, keeps OnGUI a pure draw path.
     private void LateUpdate()
     {
@@ -2142,8 +2116,8 @@ public sealed class RoundController : MonoBehaviour
     private const int SpinnerFrameCount = 65; // frame i sweeps (i / 64) * 360° clockwise — 5.6° steps read as a smooth wipe
     private const int SpinnerTextureSize = 64;
     private const float SpinnerOuterRadius = 30f;
-    private const float SpinnerInnerRadius = 26f; // thin hairline ring (was 22 — an 8-unit solid band); behavior unchanged, just thinner
-    private const float SpinnerOnScreenSize = 34f; // sized down per feel-test — subtle, not a crosshair takeover
+    private const float SpinnerInnerRadius = 26f; // thin hairline ring, not a solid band
+    private const float SpinnerOnScreenSize = 34f; // subtle corner-of-eye size, not a crosshair takeover
     private const float SpinnerDeniedWindow = 0.75f; // how long a single denied press stays visible
     private const float SpinnerFadeWindow = 0.25f;   // trailing portion of the window that eases out
 
@@ -2199,7 +2173,7 @@ public sealed class RoundController : MonoBehaviour
 
         // "Ready" flourish: cooldown finished inside the still-open denied window — full ring pops
         // to GameUIStyle.AccentBright as the "go" cue; the progress wipe itself is the calmer
-        // GameUIStyle.Accent (feel-test: full white/amber read as too loud against the palette).
+        // GameUIStyle.Accent — full white/amber reads too loud against the palette.
         Color readyTint = GameUIStyle.AccentBright;
         Color tint = ready
             ? new Color(readyTint.r, readyTint.g, readyTint.b, alphaFade)

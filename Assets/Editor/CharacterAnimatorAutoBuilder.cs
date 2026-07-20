@@ -13,10 +13,10 @@ using UnityEditor;
 ///
 /// STALE-CODE GUARD: when one import batch delivers BOTH an FBX and an edit to the builder script
 /// itself (a git pull), the postprocessor callback runs on the OLD compiled assemblies — rebuilding
-/// immediately would bake the controller with outdated builder code (exactly how a pulled DivingCatch
-/// state went missing). So the rebuild request is persisted in SessionState and only executed when no
-/// compile is pending; the InitializeOnLoad hook re-checks after every domain reload, so a rebuild
-/// deferred across a recompile still runs — now with the fresh code.
+/// immediately would bake the controller with outdated builder code. So the rebuild request is
+/// persisted in SessionState and only executed when no compile is pending; the InitializeOnLoad hook
+/// re-checks after every domain reload, so a rebuild deferred across a recompile still runs — now
+/// with the fresh code.
 /// </summary>
 public sealed class CharacterAnimatorAutoBuilder : AssetPostprocessor
 {

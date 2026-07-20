@@ -11,21 +11,12 @@ using UnityEngine.TestTools;
 namespace RooftopTag.Tests.PlayMode;
 
 /// <summary>
-/// Regression test for the manual-play report: swing on a ChainSwingInteractable's chain, release, and
-/// land on top of the CRANE structure — untouchable, since bots have no route up there. BuildCrane's
-/// pieces used to be flat-topped BoxColliders (Mast top, Jib, Brace, CounterJib, Counterweight all had
-/// a face within ground.maxSlopeAngleDegrees of vertical); they are now all tilted (see VertexUpTilt in
-/// ChainSwingInteractable) so no face is standable, while every piece stays solid, non-trigger, and on
-/// the normal groundMask.
-///
-/// This empirically proves it by dropping a real CharacterMotor capsule from just above each hardened
-/// PAD and letting real physics (gravity via ApplyGravity, no scripted input) run for ~2s of fixed
-/// steps. A camp-able flat top would leave the capsule resting at (approximately) that piece's own
-/// height; a vertex-up face at 54.7 deg needs friction tan(54.7) ~= 1.41 to hold, far past Unity's
-/// default ~0.6, so PhysX genuinely slides the capsule off rather than this being a state-machine check.
-///
-/// Scope: the two flat pads only. The horizontal arms are provably un-fixable by rotation and are
-/// deliberately left standable — see ChainSwingInteractable.VertexUpTilt for the geometry argument.
+/// Verifies no crane piece near a ChainSwingInteractable's chain is standable: every BuildCrane
+/// piece (Mast top, Jib, Brace, CounterJib, Counterweight) is tilted (see VertexUpTilt in
+/// ChainSwingInteractable) so no face is standable, while staying solid, non-trigger, and on the
+/// normal groundMask. Proves it by dropping a real CharacterMotor capsule above each hardened pad
+/// and letting real physics run — a vertex-up face at 54.7 deg needs friction tan(54.7) ~= 1.41 to
+/// hold, far past Unity's default ~0.6, so PhysX genuinely slides the capsule off.
 /// </summary>
 public sealed class SwingCraneCampTests
 {
@@ -61,7 +52,7 @@ public sealed class SwingCraneCampTests
 
         // Let the freshly-built crane transforms reach the physics scene before any collider.bounds is
         // read — bounds come from PhysX, so reading them the same frame they're created returns stale
-        // values (this test originally reported a MastCap top of 0.50 for a crane built at y~5.6).
+        // values.
         Physics.SyncTransforms();
         yield return new WaitForFixedUpdate();
 
@@ -71,8 +62,8 @@ public sealed class SwingCraneCampTests
         // Only the flat PADS are covered. The Jib/CounterJib/Brace are horizontal arms, and a box with a
         // horizontal length axis provably cannot be made non-standable by any rotation (its other two
         // axes span a vertical plane, so one is always within 45 deg of up) — asserting they shed would
-        // be asserting something impossible. They're 0.18-0.35m rods you'd have to balance on; the pads
-        // are what got reported. See ChainSwingInteractable.VertexUpTilt.
+        // be asserting something impossible. They're 0.18-0.35m rods you'd have to balance on. See
+        // ChainSwingInteractable.VertexUpTilt.
         string[] padNames = { "MastCap", "Counterweight" };
         BoxCollider[] pieces = crane!.GetComponentsInChildren<BoxCollider>()
             .Where(c => padNames.Contains(c.name)).ToArray();

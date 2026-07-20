@@ -31,10 +31,8 @@ namespace Game.EditorTools;
 public static class PlaygroundBuilder
 {
     private const string RooftopScenePath = "Assets/Scenes/RooftopArena.unity";
-    // "Chase me" mode, scaled up: 1 human Runner + 10 bot Taggers hunting them (forcePlayerAsRunner
-    // below). This is the main game scene. Built on the branching RooftopArena topology (the old
-    // linear corridor had no branching, so a Runner could only go forward or get caught — self-play
-    // measured 0% Runner survival on it).
+    // "Chase me" mode: 1 human Runner + 10 bot Taggers hunting them (forcePlayerAsRunner below).
+    // Main game scene, built on RooftopArena's branching topology.
     private const int RooftopAgentCount = 11;
 
     [MenuItem("RooftopTag/Build Rooftop Arena")]
@@ -117,10 +115,9 @@ public static class PlaygroundBuilder
         var center = new Vector3((minX + maxX) * 0.5f, 0f, (minZ + maxZ) * 0.5f);
         int dressing = LayerMask.NameToLayer("Dressing");
         var root = new GameObject("KenneyCity");
-        // Round 8 (user: "buildings in rooftop arena aren't inside blocks"): the playable cluster's
-        // footprint is carved OUT of the road lattice — streets flow around it as one super-block
-        // instead of running under the towers. Same rect the building keep-out uses, tighter margin
-        // (roads may hug the site fence).
+        // The playable cluster's footprint is carved OUT of the road lattice — streets flow around it
+        // as one super-block instead of running under the towers. Same rect the building keep-out
+        // uses, tighter margin (roads may hug the site fence).
         var roadKeepOut = new System.Collections.Generic.List<Rect>
         {
             Rect.MinMaxRect(minX - 2.5f, minZ - 2.5f, maxX + 2.5f, maxZ + 2.5f),
@@ -147,11 +144,11 @@ public static class PlaygroundBuilder
             root.transform, grid.Blocks, keepOut, roadKeepOut, theme.buildingBaseY + 0.2f, dressing);
 
         // Kenney vehicles driving the grid: stop at red lights, turn at intersections, keep a street-death
-        // impact trigger (same TrafficNetwork/CarDrifter/CarImpact logic proven on the old ring).
+        // impact trigger (same TrafficNetwork/CarDrifter/CarImpact logic).
         KenneyTrafficBuilder.BuildTraffic(root.transform, grid, theme.buildingBaseY, cityGridSeed ^ 5555, dressing);
 
         // Solid dark building rows ringing the whole grid — the horizon: the map edge is hidden by
-        // geometry instead of fog, replacing the legacy GLB skyline (that generator has been removed).
+        // geometry instead of fog.
         float gMinX = float.MaxValue, gMaxX = float.MinValue, gMinZ = float.MaxValue, gMaxZ = float.MinValue;
         foreach (Vector3 n in grid.Intersections)
         {
@@ -161,7 +158,7 @@ public static class PlaygroundBuilder
         var gridBounds = Rect.MinMaxRect(gMinX - 4f, gMinZ - 4f, gMaxX + 4f, gMaxZ + 4f);
         KenneyBuildingPlacer.PlacePerimeterWall(root.transform, gridBounds, theme.buildingBaseY, 777, dressing);
         // Behind the wall: cheap unlit "shadow" skyline rows so even the gaps between wall towers show
-        // more city, never empty sky-to-slab (user round 3). Fog fades them toward the sky for depth.
+        // more city, never empty sky-to-slab. Fog fades them toward the sky for depth.
         KenneyBuildingPlacer.PlaceSilhouetteSkyline(root.transform, gridBounds, theme.buildingBaseY, 4711, dressing);
     }
 
@@ -170,8 +167,8 @@ public static class PlaygroundBuilder
     // visualBottomY/visualTopY (default: the climb ends themselves) only stretch the collider-free
     // pipe VISUAL — void pipes draw street-slab-to-roof-lip while their climb anchors/trigger stop at
     // the safe foot (VoidPipeFootY) and below the deck (LadderTopDrop).
-    // internal: round 11 — SceneStyler/ConstructionDressing attach mast ladders to the yellow cranes
-    // through this same marker pattern (player-only, never a bot graph edge).
+    // internal: SceneStyler/ConstructionDressing attach mast ladders to the yellow cranes through this
+    // same marker pattern (player-only, never a bot graph edge).
     internal static void BuildRoofLadder(Vector3 bottom, Vector3 top, Vector3 outward, float? visualBottomY = null, float? visualTopY = null)
     {
         var root = new GameObject("RoofLadderSection");
@@ -179,10 +176,9 @@ public static class PlaygroundBuilder
         Vector3 midXZ = new(bottom.x, (bottom.y + top.y) * 0.5f, bottom.z);
 
         // No backing wall box here: the climb line already runs right in front of the building's own
-        // solid facade (RooftopArena.Build's roof box), so a separate WallBody box only duplicated it
-        // as a floating grey rectangle proud of the real wall (user report). Climbing itself never
-        // reads this collider (TickLadder drives position off the ladder's own bottom/top transforms),
-        // so removing it changes no movement behavior.
+        // solid facade (RooftopArena.Build's roof box) — a separate box would duplicate it. Climbing
+        // itself never reads this collider (TickLadder drives position off the ladder's own bottom/top
+        // transforms), so removing it changes no movement behavior.
         //
         // Climb pipe (collider-free dressing) along the VISUAL line (ends at visualBottomY/visualTopY,
         // not the climbable ends) — shared helper, so this matches the runtime/self-play climb pipe
@@ -252,19 +248,9 @@ public static class PlaygroundBuilder
     // RooftopArena.Roofs (26 roofs). Player-only: no graph edge, like ExtraRooftopSwings.
     private static readonly (Vector3 bottom, Vector3 top, Vector3 outward)[] ExtraRooftopLadders =
     {
-        // ponytail: SIX of these pipes were removed because each sat directly under an existing Ramp
-        // (W1 east under 0->3, N1WW south under 15->16, N2EE west under 9->10, Con_Gate west under
-        // 17->18, N1EE south under 2->6, N1E south under 1->5). A short climb pipe under a walkable ramp
-        // is useless AND ugly — its RoofLadderWall grey box pokes up through the ramp lip reading as a
-        // detached slab (user report). They back no parkour-graph edge (player-only, like the swings), so
-        // removing them touches no bot pathing — the parallel ramp already provides the route. The two
-        // kept below are on faces with NO ramp, so they stay as genuine non-jump vertical routes.
-
-        // ...and the LAST TWO (Con_ScafHi north off Con_Deck, 1.8m; Roof_S2E west off Roof_S2, 0.8m)
-        // are gone as well: as stubby roof-to-roof pipes they read as tiny and useless (user report),
-        // and both rises sit inside climb.climbMaxHeight (3.0), so the automatic wall-scramble already
-        // covers those hops without any dressing. The 20 street-to-roof void pipes in
-        // RooftopArena.VoidPipes are now the only wall pipes, and every one runs a full facade.
+        // ponytail: deliberately empty — every candidate route here is already covered either by a
+        // parallel ramp/void pipe, or by climb.climbMaxHeight (3.0) letting the automatic wall-scramble
+        // clear it without dressing. RooftopArena.VoidPipes remains the only set of wall climb pipes.
     };
 
     private static void BuildRoofSwing(Vector3 pivot, float length, Vector3 exitDir)

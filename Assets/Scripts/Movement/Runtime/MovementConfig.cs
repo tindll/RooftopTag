@@ -130,14 +130,14 @@ public sealed class MovementConfig : ScriptableObject
     public struct SwingSettings
     {
         // Tangential force (m/s^2) a full WASD input applies to the swing, camera-relative for the
-        // player. This replaces the old bottom-window angular "pump": now holding a direction just
-        // tilts the effective gravity, so building momentum is easy and works in any direction.
+        // player: holding a direction tilts the effective gravity, so building momentum is easy and
+        // works in any direction.
         public float inputAcceleration;
 
         // Exponential velocity decay expressed PER SECOND (applied as Mathf.Exp(-dampingPerSecond*dt)),
-        // deliberately NOT per-tick. The old model used a per-tick factor (~2%/tick), which at the 50Hz
-        // fixed step compounds to ~64%/s of velocity lost — the root cause the swing could never build
-        // speed. A per-second rate is framerate-independent and honest about the actual decay.
+        // deliberately NOT per-tick: a per-tick factor would compound with the fixed-timestep rate
+        // (50Hz), making the effective per-second decay depend on the physics tick rate rather than
+        // this value. A per-second rate is framerate-independent and honest about the actual decay.
         public float dampingPerSecond;
 
         // Speed budget AT THE LOWEST POINT of the arc — i.e. a total energy-per-mass budget of
@@ -245,10 +245,10 @@ public sealed class MovementConfig : ScriptableObject
 
     public SlideSettings slide = new()
     {
-        // 3 -> 4: walkSpeed is 3.5, so at 3 a plain walking shuffle (no Sprint) half-triggered a
-        // slide off CTRL alone. Bumped just above walkSpeed so sliding on flat ground needs Sprint
-        // (or downhill momentum) — the slope-standstill entry below is an OR condition on IsOnSlope
-        // and is untouched, so holding CTRL on a ramp from a standstill still slides.
+        // minEntrySpeed sits just above walkSpeed (3.5) so sliding on flat ground needs Sprint (or
+        // downhill momentum) rather than triggering off a plain walking shuffle — the slope-standstill
+        // entry below is an OR condition on IsOnSlope and is unaffected, so holding CTRL on a ramp
+        // from a standstill still slides.
         minEntrySpeed = 4f,
         entryBoostImpulse = 2.5f,
         slideFriction = 2f,
@@ -268,7 +268,7 @@ public sealed class MovementConfig : ScriptableObject
 
     public WallHookSettings wallHook = new()
     {
-        detectionDistance = 1.0f, // was 0.8; paired with the SphereCast probe so a falling grab reaches the wall
+        detectionDistance = 1.0f, // paired with the SphereCast probe so a falling grab reaches the wall
         maxHoldDuration = 1.6f,
         jumpOutSpeed = 6f,
         jumpUpSpeed = 7.5f,
@@ -283,17 +283,16 @@ public sealed class MovementConfig : ScriptableObject
         vaultMaxHeight = 1.1f,
         vaultMinApproachSpeed = 3f,
         vaultMinExplicitSpeed = 0.5f,  // deliberate E-press vaults from near-standstill
-        // Near-zero floor (was 0.3): with feet a hair below a ledge top, a 0.3 floor made EVERY get-up
-        // gate fail and the E fell through to a wall-hang AT the lip (user: "pressed E too late backing
-        // off a ledge → hang where a vault was obviously right"). An explicit E onto a barely-higher
-        // top is just a small hop-up — harmless.
+        // Near-zero floor: a higher floor would fail the get-up gate whenever feet sit just below a
+        // ledge top, falling through to a wall-hang at the lip instead of a vault. An explicit E onto
+        // a barely-higher top is just a small hop-up — harmless.
         vaultMinExplicitHeight = 0.05f,
-        forwardCheckDistance = 0.7f,   // tightened from 1.0 (user: vault zone a bit smaller) — E still doesn't need wall contact
+        forwardCheckDistance = 0.7f,   // keeps the vault zone tight — E still doesn't need wall contact
         lowProbeHeight = 0.25f,        // second forward ray height; catches low walls the chest ray passes over
 
-        mantleDuration = 0.45f,  // slower, weightier pull-up (was 0.3, felt too fast — user) — also slows the
-                                 // mantle a wall-climb flows into at its top (TickClimbing → StartMantle)
-        vaultDuration = 0.18f,  // cap for the now speed-scaled vault (was 0.22) — see StartVault
+        mantleDuration = 0.45f,  // slower, weightier pull-up — also slows the mantle a wall-climb flows
+                                 // into at its top (TickClimbing → StartMantle)
+        vaultDuration = 0.18f,  // cap for the speed-scaled vault — see StartVault
     };
 
     public ClimbSettings climb = new()
@@ -306,18 +305,17 @@ public sealed class MovementConfig : ScriptableObject
 
     public LadderSettings ladder = new()
     {
-        // Pipe climb rate. 6 m/s: slower than the old 9 (user wanted it eased off) but still clearly
-        // faster than the wall-grab + double-jump loop (wall-climb tops out at climb.climbSpeed = 4 and
-        // the regrab/double-jump combo nets well under that), so the pipe stays the premium vertical.
+        // Pipe climb rate: kept clearly faster than the wall-grab + double-jump loop (wall-climb tops
+        // out at climb.climbSpeed = 4 and the regrab/double-jump combo nets well under that), so the
+        // pipe stays the premium vertical option.
         climbSpeed = 6f,
         detachPushSpeed = 3f,
         entryMomentumRetention = 0.5f,
-        // Off-the-top launch, tuned down from 5 / 5.5: it read as "flying off like a big jump".
-        // The forward fling is the main culprit, so it's cut hardest (5 -> 3) — 3 m/s still carries
-        // the climber clear of the wall lip and a metre onto the platform. Up is only trimmed
-        // (5.5 -> 5): the playground ladder tops out ~1 m below its landing surface, and ascent
-        // gravity is 9.81, so up=5 gives a ~1.27 m apex that reliably clears that ledge; halving it
-        // would drop the apex below 1 m and reintroduce the old "climber falls back down" bug.
+        // Off-the-top launch: forward=3 m/s carries the climber clear of the wall lip and a metre onto
+        // the platform without reading as a big jump. up=5 m/s is sized to the playground ladder's
+        // geometry — it tops out ~1 m below its landing surface, and at ascent gravity 9.81 an up
+        // speed of 5 gives a ~1.27 m apex, comfortably clearing that ledge; much lower and the apex
+        // would drop below 1 m and the climber would fall back down instead of landing.
         topDismountForwardSpeed = 3f,
         topDismountUpSpeed = 5f,
         // 0.4s comfortably outlasts the ~0.2-0.3s the dismount arc spends still inside the ladder's
@@ -328,10 +326,8 @@ public sealed class MovementConfig : ScriptableObject
 
     public SwingSettings swing = new()
     {
-        // Defaults derived from pendulum math, not guesses (playground swing L=4). History: originally
-        // 20/12, trimmed to 16/10 ("rope moved too much"), restored to 20/12 after a later feel-test
-        // landed the trim as "a little too slow" — the restored values are the well-measured ones
-        // (11.93 m/s release, Swing_MeasuresApexReleaseSpeed):
+        // Defaults derived from pendulum math, not guesses (playground swing L=4). Verified at
+        // 11.93 m/s release (see Swing_MeasuresApexReleaseSpeed):
         //   Holding one direction adds inputAcceleration (20 m/s^2) tangentially, which tilts the
         //   effective gravity by atan(20/9.81) ~= 64 degrees, g_eff = sqrt(9.81^2 + 20^2) ~= 22.3 m/s^2.
         //   Peak speed at the new equilibrium is sqrt(2 * g_eff * L * (1 - cos 64deg)) ~= 10 m/s,
@@ -343,7 +339,7 @@ public sealed class MovementConfig : ScriptableObject
         //   maxTangentialSpeed^2/(2g) = 144/19.62 ~= 7.3 m above the arc's lowest point. That is under
         //   the 2L=8 m (~12.5 m/s) needed to swing over the pivot at L=4, so the taut rope never goes
         //   slack — pump harder within the budget to reach higher, no felt wall.
-        //   dampingPerSecond=0.15 is ~14%/s decay, vs the old model's ~64%/s that killed all momentum.
+        //   dampingPerSecond=0.15 is ~14%/s decay, applied framerate-independently per second.
         inputAcceleration = 20f,
         dampingPerSecond = 0.15f,
         maxTangentialSpeed = 12f,

@@ -9,28 +9,13 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 
 /// <summary>
-/// IMGUI settings + pause overlay. F1 toggles a rebind/sensitivity window: rebind Jump/Slide/
-/// Sprint/Interact and adjust mouse/keyboard camera sensitivity, persisted to PlayerPrefs. Escape
-/// toggles a pause menu (Resume / Restart round / Settings / Quit) that freezes gameplay via
-/// <c>Time.timeScale = 0</c> and frees the cursor so the buttons are clickable. F1 was chosen for
-/// the settings window because it's untouched by every other binding in this project (WASD/mouse/
-/// space/left-ctrl/left-shift/E in <see cref="PlayerInputProvider"/>, arrow-keys in
-/// <see cref="ThirdPersonCameraRig"/>, R for playground/round reset), so it can never shadow an
-/// existing control. Escape is owned exclusively here now — <see cref="ThirdPersonCameraRig"/>
-/// used to read Escape directly to free the cursor; it now exposes
-/// <see cref="ThirdPersonCameraRig.CursorUnlocked"/> and
-/// <see cref="ThirdPersonCameraRig.SuppressAutoRelock"/> for this class to drive instead, so
-/// Escape is read in exactly one place.
-///
-/// Deliberately has no namespace and lives outside any custom asmdef (compiles into
-/// Assembly-CSharp), same as <see cref="PlaygroundBootstrap"/>/<see cref="TagArenaBootstrap"/>
-/// which attach it live at runtime — see their remarks for why (this environment's headless Unity
-/// cannot reliably resolve custom-asmdef script types when deserializing a saved scene).
-///
-/// Only ever attached to the local player's input/camera pair by the bootstraps, so it's naturally
-/// absent from the headless self-play harness (<c>SelfPlayTests.cs</c> builds bot agents directly
-/// in code and never calls into either bootstrap), matching how <c>RoundController</c>'s minimap
-/// is gated behind <c>isLocalPlayer</c> for the same reason.
+/// IMGUI settings + pause overlay. F1 toggles a rebind/sensitivity window (persisted to
+/// PlayerPrefs); Escape toggles a pause menu (Resume / Restart round / Settings / Quit) that
+/// freezes gameplay via <c>Time.timeScale = 0</c> and frees the cursor. Escape is owned
+/// exclusively here — <see cref="ThirdPersonCameraRig"/> exposes
+/// <see cref="ThirdPersonCameraRig.CursorUnlocked"/>/<see cref="ThirdPersonCameraRig.SuppressAutoRelock"/>
+/// for this class to drive instead of reading Escape itself. Deliberately has no namespace and
+/// lives outside any custom asmdef (compiles into Assembly-CSharp).
 /// </summary>
 public sealed class SettingsMenu : MonoBehaviour
 {

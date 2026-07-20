@@ -6,13 +6,12 @@ using UnityEngine;
 namespace Game.MapGeometry;
 
 /// <summary>
-/// Deterministic rooftop prop dressing (AC units, vents, antennas, pipe runs). AC units and
-/// vents are PHYSICAL (colliders on, vault-scale) so they must exist identically in saved
-/// scenes and headless self-play — the dresser is therefore called from RooftopArena's shared
-/// build path, and every physical prop position must pass the clearance rule: nothing near a
-/// parkour-graph anchor, a link corridor between anchors, or a spawn point. Placement is
-/// seeded per roof name (stable FNV hash), so rebuilds are identical and self-play batches
-/// comparable. Antennas and pipe runs are visual-only (no colliders — thin/low snag hazards).
+/// Deterministic rooftop prop dressing (AC units, vents, pipe runs). AC units and vents are
+/// PHYSICAL (colliders on, vault-scale) so they must exist identically in saved scenes and
+/// headless self-play — the dresser is called from RooftopArena's shared build path, and every
+/// physical prop position must pass the clearance rule: nothing near a parkour-graph anchor, a
+/// link corridor between anchors, or a spawn point. Placement is seeded per roof name (stable
+/// FNV hash), so rebuilds are identical. Pipe runs are visual-only (no colliders — snag hazard).
 /// </summary>
 public static class RoofPropDresser
 {
@@ -97,8 +96,8 @@ public static class RoofPropDresser
                 TagArenaMapGeometry.CreateBox("Prop_Vent", parent, basePos + Vector3.up * 0.25f,
                     new Vector3(0.6f, 0.5f, 0.6f), TagArenaMapGeometry.SurfaceRole.WallBody, seed: 7);
                 break;
-            // ponytail: antenna poles removed — they read as ugly thin poles poking out of the GLB
-            // roof shells (user report). AC/vent/pipe cover the roof-clutter role without the snag look.
+            // ponytail: no antenna prop kind — thin poles poking out of the GLB roof shells read badly.
+            // AC/vent/pipe cover the roof-clutter role without the snag look.
             default: // pipe run — ankle-height, visual only (lip-stutter hazard if collidable)
             {
                 GameObject pipe = GameObject.CreatePrimitive(PrimitiveType.Cube);

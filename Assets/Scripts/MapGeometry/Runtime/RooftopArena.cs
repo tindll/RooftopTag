@@ -8,13 +8,11 @@ namespace Game.MapGeometry;
 
 /// <summary>
 /// A rooftop-chase playground: a cluster of building rooftops at varied heights, linked by jumpable
-/// gaps, a ramp, and a ladder. No objective — just open space for bots to chase the player across.
-///
-/// Single source of truth (like <see cref="TagArenaLayout"/>): it holds the roof/link data, renders
-/// the physical boxes/ramps here, and exposes walk-surface anchors + the link list so
-/// <c>Game.AI.RooftopGraphBuilder</c> can drop parkour-graph nodes on the exact same roofs. Ladders
-/// carry an InteractableMarker (namespace-free) so they're appended by PlaygroundBuilder, not here —
-/// their anchors are still computed here so geometry and graph stay in lockstep.
+/// gaps, ramps, and ladders. No objective — just open space for bots to chase the player across.
+/// Single source of truth (like <see cref="TagArenaLayout"/>): holds the roof/link data, renders the
+/// physical boxes/ramps, and exposes walk-surface anchors + the link list so
+/// <c>Game.AI.RooftopGraphBuilder</c> can drop parkour-graph nodes on the same roofs. Ladders carry
+/// an InteractableMarker appended by PlaygroundBuilder, not here; anchors are computed here so geometry and graph stay in lockstep.
 /// </summary>
 public static class RooftopArena
 {
@@ -52,7 +50,7 @@ public static class RooftopArena
         // the climbable bottom/top ends:
         //  - bottom: void pipes must STOP climbing at VoidPipeFootY (-14, above the fall-reset line)
         //    yet still LOOK like they reach the street slab at buildingBaseY (-25); a pipe visibly
-        //    ending 11m up the wall reads as broken (user report). Roof-to-roof ladders keep
+        //    ending 11m up the wall reads as broken. Roof-to-roof ladders keep
         //    visualBottomY == bottom.y so they never pierce the lower roof they stand on.
         //  - top: the climb stops LadderTopDrop below the deck (see that constant) but the pipe still
         //    LOOKS like it runs to the roof lip.
@@ -104,10 +102,10 @@ public static class RooftopArena
         new("Con_Alley", -37f, -24f, 2f,   8f,  20f), // 23 — long alley
         new("Con_ScafHi",-30f, -32f, 4f,   10f, 8f),  // 24 — SW corner
 
-        // --- Urban south, cont'd: placed last to keep array order == index order (see plan). ---
+        // --- Urban south, cont'd: placed last to keep array order == index order. ---
         new("Roof_S2E",   13f, -26f, 4f,   8f,  8f),  // 25
 
-        // --- East pier zone (26-30): a new cluster off the E2/N1EE east edge, on the 13m grid. ---
+        // --- East pier zone (26-30): a cluster off the E2/N1EE east edge, on the 13m grid. ---
         new("East_Pier",  39f,   0f, 4f, 8f, 8f),  // 26 — 4-way hub, 13E of E2
         new("East_PierN", 39f,  13f, 5f, 8f, 8f),  // 27 — 13N of 26, also 13E of N1EE(6)
         new("East_PierS", 39f, -13f, 3f, 8f, 8f),  // 28 — 13S of 26
@@ -139,8 +137,7 @@ public static class RooftopArena
         new(9, 10, LinkKind.Jump),
         new(7, 11, LinkKind.Ladder),
 
-        // Map-expansion Jump/Ramp links (new roofs 13-25). Swing/ClimbWall links
-        // land in later tasks alongside their geometry.
+        // Jump/Ramp links for roofs 13-25; Swing/ClimbWall links for this range appear further below.
         new(1, 13, LinkKind.Jump),
         new(12, 13, LinkKind.Jump),
         new(13, 25, LinkKind.Jump),
@@ -159,15 +156,14 @@ public static class RooftopArena
         new(23, 24, LinkKind.Jump),
         new(17, 18, LinkKind.Ramp),  // Gate h4 -> Yard h1.5
         new(18, 21, LinkKind.Ramp),  // Yard h1.5 -> Crane h4.8, crane-access
-        new(20, 21, LinkKind.Ramp),  // Ramps h2.5 -> Crane h4.8: brand-new route, Ramps/Crane had
-                                     // no direct link before (only via Yard); 3.5m margin past the gap
+        new(20, 21, LinkKind.Ramp),  // Ramps h2.5 -> Crane h4.8: direct route (Yard is the only other
+                                     // path to Crane); 3.5m margin past the gap
         new(23, 24, LinkKind.Ramp),  // Alley h2 -> ScafHi h4, parallel to the existing 23<->24 Jump —
                                      // the 8x20 Alley gives the ramp foot 4.2m of margin past the gap
 
-        // Jump across the ~4m E-W gap between W2 (x[-30,-22]) and Con_West (x[-42,-34]) at z0. Con_West
-        // was pulled east (x-44 -> x-38) so this crossing is a plain sprint jump (rise -0.5, edge gap 4m)
-        // now that wall-run is gone; roof 22's outbound Swing to 23 is one-way, so this Jump is 22's
-        // two-way link back into the rest of the map.
+        // Jump across the ~4m E-W gap between W2 (x[-30,-22]) and Con_West (x[-42,-34]) at z0: a plain
+        // sprint jump (rise -0.5, edge gap 4m). Roof 22's outbound Swing to 23 is one-way, so this
+        // Jump is 22's two-way link back into the rest of the map.
         new(15, 22, LinkKind.Jump),
 
         // Swing across the ~10m N-S chasm between Con_West (south edge z-4) and Con_Alley (north edge
@@ -182,38 +178,34 @@ public static class RooftopArena
         // to Crane top h4.8 = 2.8m, inside the 2.2-3.0 climb band. See the ClimbWall build case.
         new(19, 21, LinkKind.ClimbWall),
 
-        // Con_Yard (18, h1.5) and Con_Alley (23, h2) share a walkable seam (x=-33, z-overlap [-18,-14]).
-        // The vault wall that used to sit on it was removed (user report) — the seam is a clean 0.5m step
-        // between touching roofs, so it's a plain walkable crossing now. A Jump models it (the graph wires
-        // the lip-to-lip pair; JumpMakeable trivially passes the ~0-gap 0.5m step, so bots just walk across).
+        // Con_Yard (18, h1.5) and Con_Alley (23, h2) share a walkable seam (x=-33, z-overlap [-18,-14]):
+        // a clean 0.5m step between touching roofs, so it's a plain walkable crossing. A Jump models it
+        // (the graph wires the lip-to-lip pair; JumpMakeable trivially passes the ~0-gap 0.5m step, so
+        // bots just walk across).
         new(18, 23, LinkKind.Jump),
 
-        // WP3 map-route fix: Tower (11) had exactly one route in/out — the 7<->11 Ladder on its
-        // south face — a dead end for a cornered runner. Every OTHER neighbour is too tall to
-        // jump back up onto Tower (h9; JumpMakeable's rise<=2.5m cap rules out all of them), so a
-        // plain bidirectional Jump can't give Tower a second route. Descent is legal though: Drop
-        // is a one-way (From->To only) gap-crossing edge — exactly ParkourEdgeType.Drop, already
-        // wired into the motor/bot-input's generic "gap crossing" paths (ApplySteeringSafety,
-        // Commit's committed-kind gate) but never emitted by any LinkKind until now. Tower's EAST
-        // face (closest node pair ~9.6m, comfortably under the 11m descent range) drops down to
-        // Roof_N2 (h5, 4m lower) — a genuinely different face from the south ladder, giving a
-        // cornered runner a second way OFF the tower. No geometry needed: like Jump, the gap
-        // between the roofs IS the drop. See RooftopGraphBuilder's Drop case for the one-way edge.
+        // Tower (11)'s only OTHER route in/out is the 7<->11 Ladder on its south face — every other
+        // neighbour is too tall to jump back up onto Tower (h9; JumpMakeable's rise<=2.5m cap rules
+        // them out), so a plain bidirectional Jump can't give Tower a second route. Descent is legal
+        // via Drop: a one-way (From->To only) gap-crossing edge (ParkourEdgeType.Drop), wired into the
+        // motor/bot-input's generic "gap crossing" paths (ApplySteeringSafety, Commit's committed-kind
+        // gate). Tower's EAST face (closest node pair ~9.6m, under the 11m descent range) drops down to
+        // Roof_N2 (h5, 4m lower) — a different face from the south ladder, giving a cornered runner a
+        // second way off the tower. No geometry needed: like Jump, the gap between the roofs IS the
+        // drop. See RooftopGraphBuilder's Drop case for the one-way edge.
         new(11, 8, LinkKind.Drop),
 
-        // WP3 map-route fix: Con_West (22) had only one INBOUND route (the 15<->22 Jump) — its
-        // outbound was already covered twice (Jump back to 15, plus the Swing to 23). Con_Yard
-        // (18) sits ~1m/4m (x/z) from Con_West at a gentle 2m rise (h1.5->h3.5) — small enough for
-        // a plain 22° Ramp (unlike Con_Alley, whose ~10m N-S chasm is why THAT crossing needed a
-        // Swing instead). Bidirectional, so it also gives Con_West a genuinely different second
-        // inbound face (west, vs the existing south-facing Jump to W2).
+        // Con_West (22)'s only other INBOUND route is the 15<->22 Jump (its outbound is already
+        // covered twice: Jump back to 15, plus the Swing to 23). Con_Yard (18) sits ~1m/4m (x/z) from
+        // Con_West at a gentle 2m rise (h1.5->h3.5) — small enough for a plain 22° Ramp (unlike
+        // Con_Alley, whose ~10m N-S chasm needs a Swing instead). Bidirectional, so it also gives
+        // Con_West a second inbound face (west, vs the south-facing Jump to W2).
         new(18, 22, LinkKind.Ramp),
 
-        // More walkable ramp connections between buildings (user: "add more ramps connecting the
-        // buildings"). Each is parallel to an existing Jump but gives a no-jump walking route, and
-        // all rises are gentle (<=2m) so BuildRamp lays a ~22° grade (the tighter 5m-gap pairs hit
-        // its run clamp and get a touch steeper, still walkable). Spawn (0) already had a west ramp
-        // to W1 (0<->3); these add its east/north/south spokes, making Spawn a 4-way ramp hub, plus
+        // Walkable ramp connections between buildings. Each is parallel to an existing Jump but gives
+        // a no-jump walking route, and all rises are gentle (<=2m) so BuildRamp lays a ~22° grade (the
+        // tighter 5m-gap pairs hit its run clamp and get a touch steeper, still walkable). Spawn (0)'s
+        // west ramp to W1 (0<->3) plus these east/north/south spokes make Spawn a 4-way ramp hub, plus
         // two ramps up onto the tall NE/NW corner roofs and a central north spine.
         new(0, 1, LinkKind.Ramp),    // Spawn h3 -> E1 h4   (east spoke)
         new(0, 4, LinkKind.Ramp),    // Spawn h3 -> N1 h4   (north spoke)
@@ -238,9 +230,9 @@ public static class RooftopArena
                                       // vs 4.95m run at +2m rise is borderline — nudge annex toward N2EE
                                       // if the headless build floats the foot or warns ROOFTOP_RAMP_STEEP).
 
-        // More walkable ramps parallel to existing jumps (small rises only, full 22-degree grade).
-        // NOTE: the plan's (8,9) "level ramp" was dropped — rise 0 makes BuildRamp degenerate
-        // (run=0, LookRotation(zero), zero-length box); 8<->9 already has a flat Jump.
+        // Walkable ramps parallel to existing jumps (small rises only, full 22-degree grade). No
+        // (8,9) "level ramp": rise 0 makes BuildRamp degenerate (run=0, LookRotation(zero),
+        // zero-length box); 8<->9 already has a flat Jump.
         new(1, 5, LinkKind.Ramp),    // E1 h4  -> N1E h5   (+1)
         new(5, 6, LinkKind.Ramp),    // N1E h5 -> N1EE h6  (+1)
         new(13, 25, LinkKind.Ramp),  // E1S h3 -> S2E h4   (+1)
@@ -280,8 +272,8 @@ public static class RooftopArena
     //
     // Face = outward unit direction into the void (which building face the pipe runs down). BottomY =
     // how deep the pipe reaches; every building bottoms at y=-3 (BuildingSkirt), so a BottomY below
-    // that literally hangs into the void. Kept long (>=10m) on purpose — the old 1m "accent" pipes
-    // read as useless.
+    // that literally hangs into the void. Kept long (>=10m) so it reads as a real escape route, not
+    // a decorative accent.
     // Shared foot height for every void pipe. NOT the street slab (-25): RoundController.FallResetY is
     // -15 — the moment ANY agent's position crosses below it, the map "tags" you (Runner→Tagger) and
     // respawns you, whether or not you're on a ladder (the check is pure position.y, it doesn't exempt
@@ -294,7 +286,7 @@ public static class RooftopArena
     // How far below the deck/anchor a ladder's CLIMB top stops (the visual still reaches the lip via
     // visualTopY). The character's origin is its FEET (capsule center = height/2), so a climb top AT
     // deck height rides the feet all the way up there — the whole body ends up hovering above the pipe
-    // while still attached (user report). One metre matches the movement playground's ladder convention
+    // while still attached. One metre matches the movement playground's ladder convention
     // ("tops out ~1m below its landing surface"), which is exactly what the top-dismount launch tuning
     // (topDismountUpSpeed = 5 -> ~1.27m apex) is calibrated against; a bigger drop would undershoot
     // the deck and reintroduce the "climber falls back down" bug.
@@ -313,14 +305,14 @@ public static class RooftopArena
 
     public static readonly VoidPipe[] VoidPipes =
     {
-        // All feet at the shared VoidPipeFootY (-14) now — full-wall pipes stopping just above the
+        // All feet sit at the shared VoidPipeFootY (-14) — full-wall pipes stopping just above the
         // fall-reset line (see VoidPipeFootY). Faces verified >=2m clear of every ramp centre-line
         // (the ROOFTOP_VOIDPIPE_RAMP_CLIP threshold); computed min clearances noted where tight.
         new(11, new Vector3(-1f, 0f,  0f)), // Roof_Tower  west  face (h9) — longest pipe on the map
         new(11, new Vector3( 0f, 0f,  1f)), // Roof_Tower  north face — Tower's second exposed void face
-        new(10, new Vector3( 0f, 0f,  1f)), // Roof_N2EE   north face (h7) — NE corner. (East face
-                                            // pipe removed: the 10->30 ramp to East_Annex now runs
-                                            // down that edge; north face keeps N2EE's void escape.)
+        new(10, new Vector3( 0f, 0f,  1f)), // Roof_N2EE   north face (h7) — NE corner. (East face is
+                                            // occupied by the 10->30 ramp to East_Annex; north face
+                                            // is N2EE's void escape.)
         new( 6, new Vector3( 1f, 0f,  0f)), // Roof_N1EE   east  face (h6) — 5.9m clear of the E2/N1E ramps
         new(16, new Vector3(-1f, 0f,  0f)), // Roof_N1WW   west  face (h6)
         new( 8, new Vector3( 0f, 0f,  1f)), // Roof_N2     north face (h5)
@@ -333,8 +325,8 @@ public static class RooftopArena
         new(28, new Vector3( 0f, 0f, -1f)), // East_PierS  south face (h3) — 5.5m clear of the PierS->High ramp
         new(30, new Vector3( 0f, 0f,  1f)), // East_Annex  north face (h5) — escape off the swing annex
 
-        // --- New street-access pipes: every zone now has >=2 street<->roof routes on ramp-clear faces,
-        // heights spread h2..h5. (East_Pier's EAST face was rejected — its foot lands 1.9m from the
+        // --- Street-access pipes: every zone has >=2 street<->roof routes on ramp-clear faces, heights
+        // spread h2..h5. (East_Pier's EAST face is unusable — its foot lands 1.9m from the
         // Pier->East_High ramp foot, under the 2m bar; PierN's north face covers the pier zone instead.)
         new( 1, new Vector3( 0f, 0f, -1f)), // Roof_E1     south face (h4) — spawn-cluster access
         new(12, new Vector3( 0f, 0f, -1f)), // Roof_S1     south face (h4) — spawn-cluster / south access
@@ -420,8 +412,8 @@ public static class RooftopArena
 
         ValidateLadderRampClearance(ladders, ramps);
 
-        // Void pipes that run down a roof face a ramp also occupies clip visibly through the ramp
-        // (user report). The generic ladder/ramp check above loses which roof a pipe belongs to, so
+        // Void pipes that run down a roof face a ramp also occupies clip visibly through the ramp.
+        // The generic ladder/ramp check above loses which roof a pipe belongs to, so
         // report it by roof + face here (2.0m catches edge-of-ramp clips the 1.5m half-width check
         // misses) — each hit names a VoidPipes[] entry to relocate to a clear face or drop.
         foreach (VoidPipe pipe in VoidPipes)
@@ -440,9 +432,8 @@ public static class RooftopArena
         // nav-clearance rule so link corridors, graph anchors and spawn points stay free (see
         // RoofPropDresser). Lives here, not SceneStyler, because physical props must exist
         // identically in saved scenes AND headless self-play.
-        // Round 13 (user: "remove all the little cubes and rectangular boxes on the rooftops, they
-        // just add clutter" — the AC/vent/pipe deck props are exactly those): pass disabled in BOTH
-        // build paths, so scene and headless physics stay identical. Re-enable by uncommenting.
+        // Disabled in BOTH build paths (the AC/vent/pipe deck props read as rooftop clutter), so
+        // scene and headless physics stay identical. Re-enable by uncommenting.
         // RoofPropDresser.DressRoofs(root.transform);
 
         // Trash-can objective anchors (see the Bins feature): one shared list both build paths
@@ -480,7 +471,7 @@ public static class RooftopArena
         // pivot, including solid structural colliders. The overhead beam stub is redundant — its collider
         // overlaps exactly where the crane's jib sits, creating a phantom-ledge risk with no benefit:
         // anti-camping is owned by the crane's tilted pads (see SwingCraneCampTests), not a second
-        // collider. Deleted to match the live interactable's physics model headlessly.
+        // collider. No stub is built here, matching the live interactable's physics model headlessly.
 
         // The chain itself is drawn at runtime by ChainSwingInteractable (UpdateChainLinks repositions
         // a pool of small box link GameObjects every frame, with alternating links rolled 90° so they
@@ -494,7 +485,6 @@ public static class RooftopArena
     /// coordinates). The grab point (pivot.y - length) is hung at the taller roof's surface height so a
     /// runner leaping the chasm at roof height meets the chain; the pivot sits over the midpoint of the
     /// gap on the crossing axis and over the midpoint of the roofs' footprint overlap on the other axis.
-    /// Verified to reproduce the original hand-tuned Con_West->Con_Alley pivot (-37.5, 9, -9) exactly.
     /// </summary>
     public static Vector3 SwingPivot(Roof from, Roof to, float length)
     {
@@ -537,12 +527,11 @@ public static class RooftopArena
     {
         // The ramp's top face lands FLUSH at the upper roof's edge and starts FLUSH on the lower
         // roof's surface, extending back over the lower roof as far as a fixed comfortable slope
-        // requires. The old version ran centre-to-centre, which laid half the slab ON TOP of each
-        // roof with the inclined top poking ~0.1m proud at the ends — a felt "bump" at every ramp
-        // seam (user feel-test). Ending flush at the upper lip and starting flush on the lower
-        // surface removes both bumps: walking on/off transitions at exact surface height, only the
-        // slope changes. (Pure edge-to-edge is NOT viable instead: the Yard→Crane gap is ~1.3m for
-        // a 3.3m rise — a 68° wall — so the ramp must borrow run length over the lower roof.)
+        // requires. Flush at both ends keeps walking on/off transitions at exact surface height, only
+        // the slope changes — a centre-to-centre run would lay half the slab on top of each roof with
+        // the inclined top poking proud at the ends. (Pure edge-to-edge is NOT viable instead: the
+        // Yard→Crane gap is ~1.3m for a 3.3m rise — a 68° wall — so the ramp must borrow run length
+        // over the lower roof.)
         Roof lower = from.Center.y <= to.Center.y ? from : to;
         Roof upper = from.Center.y <= to.Center.y ? to : from;
 
@@ -559,7 +548,7 @@ public static class RooftopArena
         //   1. Grade: run = rise / tan(22°) ≈ rise * 2.475 for the comfortable ~22° design grade.
         //   2. Bridging: the ramp must physically REACH the lower roof. The top sits at the upper
         //      roof's lip; if the gap to the lower roof is wider than the grade run, the foot lands
-        //      in the void short of the lower building — "ramps that just don't connect" (user). So
+        //      in the void short of the lower building instead of reaching it. So
         //      the run must span the inter-building gap plus ~1m onto the lower roof.
         // Taking the max means bridging can only make a ramp SHALLOWER (longer), never steeper, and
         // it always touches both buildings.
@@ -574,8 +563,8 @@ public static class RooftopArena
         Vector3 foot = new(footFlat.x, lower.Center.y, footFlat.z);
 
         // "All ramps connect" guardrail: the clamp above keeps the foot on the lower roof, but a lower
-        // roof too small to host the full 22-degree run yields a steeper ramp. Warn so it's caught here,
-        // not in a feel-test. gradeDeg = atan(rise / run); 22deg is the design target, 34deg is the
+        // roof too small to host the full 22-degree run yields a steeper ramp. Warn here so it's caught
+        // at build time. gradeDeg = atan(rise / run); 22deg is the design target, 34deg is the
         // steepest we consider comfortably sprint-able.
         float gradeDeg = Mathf.Atan2(rise, run) * Mathf.Rad2Deg;
         if (gradeDeg > 34f)
@@ -597,7 +586,7 @@ public static class RooftopArena
         box.transform.localScale = rampSize;
         // Wood plank deck instead of a flat concrete slab: swap the primitive's MESH only (same
         // technique as TagArenaMapGeometry.CreateBuildingBox) — the BoxCollider the primitive already
-        // added above is untouched, so bot/player physics on this ramp is bit-identical to before.
+        // added above is untouched, so bot/player physics on this ramp is unaffected by the visual.
         box.GetComponent<MeshFilter>().sharedMesh = TagArenaMapGeometry.BuildPlankRampMesh("RampSurface", rampSize);
         box.GetComponent<Renderer>().sharedMaterial = TagArenaMapGeometry.GetMaterial(TagArenaMapGeometry.SurfaceRole.Ramp);
 
@@ -687,11 +676,9 @@ public static class RooftopArena
         return (bottom, top, outward);
     }
 
-    // Spawn, E1, W1, N1, N2, S1, E1S — the central roof and 6 neighbours. Cycling agents across
-    // all 7 (self-play regression found via a 12-agent measurement: crowding all 12 onto the
-    // single 12x12 spawn roof caused near-instant tag cascades — every match ended within a few
-    // seconds of round-start grace lifting, before any real fleeing/pathing happened, matching
-    // 0.00 speed_p50 and empty edge usage) gives real physical separation using the branching
+    // Spawn, E1, W1, N1, N2, S1, E1S — the central roof and 6 neighbours. Crowding all agents onto
+    // the single 12x12 spawn roof causes near-instant tag cascades (Tagger and Runner start almost
+    // adjacent), so cycling agents across all 7 gives real physical separation using the branching
     // topology itself, rather than trying to out-tune one small platform. The construction zone is
     // deliberately spawn-free — it's a destination one hop away via Con_Gate, not a start point.
     private static readonly int[] SpawnRoofIndices = { 0, 1, 3, 4, 8, 12, 13, 26 };

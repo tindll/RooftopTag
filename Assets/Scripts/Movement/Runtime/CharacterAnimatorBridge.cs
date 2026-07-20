@@ -31,8 +31,8 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     // How long to hold the Flipping bool once a double-jump fires (a touch under the clip length so
     // it clears before landing). The flip now means exactly "double-jumped", not a random roll.
     private const float FlipHoldSeconds = 1.0f;
-    // Only front-flip on SOME double-jumps — with the lunge roll and landing roll, flipping every
-    // double-jump was too much rolling (user). Feel knob.
+    // Only front-flip on SOME double-jumps — flipping every double-jump would be too much rolling on
+    // top of the lunge roll and landing roll. Feel knob.
     private const float FlipChance = 0.25f;
     // How long to hold the Diving bool after a lunge, so the dive-roll clip plays through. Must match
     // TagRulesConfig.diveDuration (the motor's committed-dive window) so the roll and the lock end together.
@@ -80,7 +80,7 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     // exactly to "double-jumped" instead of a random roll on every jump.
     private void OnDoubleJumped()
     {
-        if (Random.value > FlipChance) return; // flip only sometimes — avoid roll overload (user)
+        if (Random.value > FlipChance) return; // flip only sometimes — avoid roll overload
         _flipping = true;
         _flipTimer = FlipHoldSeconds;
     }

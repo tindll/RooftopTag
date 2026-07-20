@@ -9,15 +9,10 @@ namespace Game.Rules;
 /// <summary>
 /// "Animal Crossing style" bug-net visual. <see cref="BuildNet"/> produces the handheld tool a
 /// tagger carries — preferring the imported <c>net_model.glb</c> (Resources) when present and
-/// falling back to a fully procedural build; <see cref="BuildTrapDome"/> always uses the
-/// procedural pieces to build the dome-shaped trap that gets dropped over a caught raccoon
-/// (the imported asset is a handheld net, not a dome).
-/// <para>
-/// Every mesh is hand-triangulated (vertices + triangles, then <c>RecalculateNormals</c>) rather
-/// than built from primitives, so winding is derived once and reused via small shared helpers
-/// (<see cref="AddBand"/> for any surface-of-revolution band, <see cref="UnitBoxMesh"/> for the
-/// stitch blocks) instead of re-deriving triangle order per shape.
-/// </para>
+/// falling back to a fully procedural build; <see cref="BuildTrapDome"/> always uses the procedural
+/// pieces to build the dome-shaped trap dropped over a caught raccoon (the imported asset is a
+/// handheld net, not a dome). Every procedural mesh is hand-triangulated rather than built from
+/// primitives, reusing small shared helpers (<see cref="AddBand"/>, <see cref="UnitBoxMesh"/>).
 /// </summary>
 public static class NetVisual
 {
@@ -28,7 +23,7 @@ public static class NetVisual
     // bottom lands at PoleBottomY below the pivot.
     private const string NetModelResource = "net_model";
     private const float NetModelYawDeg = 90f;
-    private const float NetModelScale = 0.85f; // judged in-hand at 1.74x character-bone scale; 1.2 read comically oversized
+    private const float NetModelScale = 0.85f; // judged in-hand at 1.74x character-bone scale
     private const float NetModelNativeHalfHeight = 0.5f;
 
     private static GameObject? _netModelPrefab;

@@ -40,15 +40,14 @@ public static class ConstructionShells
     private const float LitOpenChance = 0.12f;  // share of OPEN bays with a warm interior light on
 
     private static readonly Color32 NearWhite = new(0xF0, 0xF0, 0xF0, 0xFF);   // base concrete albedo
-    // ROUND-5 FIX (user: "the buildings look awful"): 0xC8 bands read as no bands at all under the
-    // brighter indigo ambient — 0x96 makes each floor slab visibly step, which is most of what sells
-    // "under construction" at a glance in the concept.
+    // Kept dark enough that each floor slab visibly steps under the scene's ambient light — a
+    // lighter tint reads as no band at all, which is most of what sells "under construction".
     private static readonly Color32 FloorBandTint = new(0x96, 0x96, 0x9C, 0xFF);
     private static readonly Color32 TarpTeal = new(0x59, 0x80, 0x80, 0xFF);     // ~(0.35, 0.5, 0.5)
     private static readonly Color32 DarkHole = new(0x1F, 0x1F, 0x1F, 0xFF);     // ~0.12 multiply, bare open punch
 
-    // Darker, bluer concrete (was 0.55,0.58,0.68 — washed near-white under the new ambient; the
-    // concept's towers are a clear mid-blue).
+    // Kept dark and blue so towers read as a clear mid-blue instead of washing near-white under
+    // the scene ambient.
     private static readonly Color ConcreteBaseColor = new(0.42f, 0.46f, 0.58f);
 
     /// <summary>2-3 slight _BaseColor variants so neighbouring shells don't read as clones — the
@@ -166,9 +165,8 @@ public static class ConstructionShells
             BuildPillars(r, rng, topperRoot.transform, segments, dressingLayer, ref pillars, ref skipped);
             BuildRebar(r, rng, topperRoot.transform, segments, dressingLayer, ref rebarClusters, ref skipped);
             BuildHalfWalls(r, rng, topperRoot.transform, segments, dressingLayer, ref halfWalls, ref skipped);
-            // ROUND-6 (user: buildings "boring bland and flat" vs the concept): the reference towers
-            // are 3-D — protruding floor slabs, ragged unfinished parapets, corner columns past the
-            // roofline. Paint can't fake that; these three passes add the actual geometry.
+            // These three passes add real geometry — protruding floor slabs, ragged parapets, corner
+            // columns past the roofline — since flat paint alone can't sell a 3-D under-construction look.
             BuildSlabLips(r, theme, topperRoot.transform, dressingLayer, ref slabLips);
             BuildParapet(r, rng, topperRoot.transform, segments, dressingLayer, ref parapetSegs, ref skipped);
             BuildCornerColumns(r, rng, topperRoot.transform, segments, dressingLayer, ref cornerCols, ref skipped);
@@ -281,10 +279,9 @@ public static class ConstructionShells
     private static void BuildPillars(RooftopArena.Roof r, System.Random rng, Transform parent,
         List<(Vector3 a, Vector3 b)> segments, int dressingLayer, ref int placedCount, ref int skippedCount)
     {
-        // ROUND-5 FIX (user: lone scattered poles read as mistakes, not construction): pillars now
-        // form STRUCTURED ROWS along 1-2 edges — evenly spaced columns of one unfinished next storey,
-        // with a horizontal BEAM box laid across each complete row's tops, exactly the "next floor
-        // going up" read the concept sells. A row is only built if EVERY column spot passes the
+        // Pillars form structured rows (not scattered poles) along 1-2 edges — evenly spaced columns
+        // of one unfinished next storey, with a horizontal BEAM box across each complete row's tops
+        // for the "next floor going up" read. A row is only built if EVERY column spot passes the
         // clearance rule (a broken row reads worse than no row).
         const float inset = 0.8f;
         int rows = rng.Next(1, 3); // 1-2 edges
@@ -510,10 +507,9 @@ public static class ConstructionShells
 
                 if (!open && !tarp) continue; // remaining ~25%: blank concrete bay, nothing to paint
 
-                // ROUND-6 (user: buildings "boring bland and flat"): openings get baked fake DEPTH —
-                // a near-black shadow band across the top quarter (the lintel's shadow) and a pale
-                // sill line along the bottom edge. Two rows of pixels that make a painted rectangle
-                // read as a punched hole with a thick wall around it, like the concept's reveals.
+                // Openings get baked fake DEPTH — a near-black shadow band across the top quarter
+                // (the lintel's shadow) and a pale sill line along the bottom edge — so a painted
+                // rectangle reads as a punched hole with a thick wall around it, not a flat decal.
                 Color32 fill = open ? DarkHole : TarpTeal;
                 var lintelShadow = new Color32(0x0C, 0x0C, 0x10, 0xFF);
                 var sill = new Color32(0xB4, 0xB4, 0xBC, 0xFF);

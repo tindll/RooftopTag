@@ -1,12 +1,10 @@
 #nullable enable
 
-// Graph-only coverage for the map-expansion link kinds (Swing/ClimbWall/VaultWall — see
-// woolly-soaring-teapot.md). These tests build RooftopGraphBuilder's output directly and assert on
-// edge types/paths; they need no scene, geometry, or physics. A full physics traversal test that
-// drives a bot through an actual Swing to the far roof is DELIBERATELY skipped this
-// pass: bot execution through those edges is already measured by self-play
-// (Tools/selfplay.sh -> total_edge_usage), and a scripted single-agent traversal harness would be
-// a bigger investment than this task scopes.
+// Graph-only coverage for the map-expansion link kinds (Swing/ClimbWall/VaultWall). These tests
+// build RooftopGraphBuilder's output directly and assert on edge types/paths; they need no scene,
+// geometry, or physics. A full physics traversal test that drives a bot through an actual Swing to
+// the far roof is deliberately out of scope here: bot execution through those edges is already
+// measured by self-play (Tools/selfplay.sh -> total_edge_usage).
 
 using System.Collections.Generic;
 using System.Linq;
@@ -59,9 +57,8 @@ public class RooftopGraphTests
     {
         ParkourGraph graph = RooftopGraphBuilder.Build(ScriptableObject.CreateInstance<MovementConfig>());
 
-        // Two points ~4m apart on the 12x12 spawn roof (idx 0) must snap to DIFFERENT nodes — the
-        // exact failure the one-node-per-roof graph had (both resolved to the single centre node, so
-        // FindPath got start==goal and returned empty, collapsing bots to raw beeline steering).
+        // Two points ~4m apart on the 12x12 spawn roof (idx 0) must snap to DIFFERENT nodes, or
+        // FindPath gets start==goal and returns empty, collapsing bots to raw beeline steering.
         Vector3 walk = RooftopArena.Roofs[0].Walk;
         Vector3 pA = walk + new Vector3(3.5f, 0f, 0.5f); // near the +X lip
         Vector3 pB = walk + new Vector3(0.5f, 0f, 3.5f); // near the +Z lip (~4.2m from pA)
@@ -69,8 +66,7 @@ public class RooftopGraphTests
         int nB = graph.NearestNode(pB);
         Assert.That(nA, Is.Not.EqualTo(nB), "off-centre positions on the same roof must resolve to distinct nodes");
 
-        // And an off-centre spawn-roof node to an adjacent roof (E1, idx 1) must yield a non-empty
-        // path — previously this produced the empty path that stranded bots on beeline steering.
+        // And an off-centre spawn-roof node to an adjacent roof (E1, idx 1) must yield a non-empty path.
         int goal = graph.NearestNode(RooftopArena.Roofs[1].Walk);
         Assert.That(nA, Is.Not.EqualTo(goal));
         IReadOnlyList<ParkourEdge>? path = graph.FindPath(nA, goal);
@@ -98,11 +94,8 @@ public class RooftopGraphTests
         }
     }
 
-    // WP3 map-route fixes: Roof_Tower (11) was ladder-only (single route in/out via 7<->11); Con_West
-    // (22) had only one INBOUND route (15<->22 Jump), despite already having 2 outbound (Jump + the
-    // 22->23 Swing). Counted directly off RooftopArena.Links rather than the built graph, matching how
-    // the violations were originally specced (route = a Links entry, direction resolved by whether its
-    // LinkKind is one-way).
+    // Route counts are taken directly off RooftopArena.Links rather than the built graph (route = a
+    // Links entry, direction resolved by whether its LinkKind is one-way).
 
     private static bool IsOneWayKind(RooftopArena.LinkKind kind) =>
         kind is RooftopArena.LinkKind.Swing or RooftopArena.LinkKind.Drop;
@@ -116,16 +109,16 @@ public class RooftopGraphTests
     [Test]
     public void Links_TowerHasSecondExit()
     {
-        // Was exactly 1 (the 7<->11 Ladder) — a cornered runner had no second way down. The new
-        // one-way Drop (11->8) adds a second outbound route on a different face.
+        // Roof_Tower (11) needs a second outbound route on a different face from the 7<->11 Ladder
+        // (the one-way Drop 11->8), so a cornered runner has a second way down.
         Assert.That(OutboundRouteCount(11), Is.GreaterThanOrEqualTo(2));
     }
 
     [Test]
     public void Links_ConWestHasSecondInbound()
     {
-        // Was exactly 1 (15->22 Jump). The new Ramp (18<->22) is bidirectional, adding a second
-        // inbound route from a different neighbour (Con_Yard, not W2).
+        // Con_West (22) needs a second inbound route from a different neighbour than the 15->22
+        // Jump — the bidirectional Ramp (18<->22) from Con_Yard.
         Assert.That(InboundRouteCount(22), Is.GreaterThanOrEqualTo(2));
     }
 
@@ -152,8 +145,8 @@ public class RooftopGraphTests
     [Test]
     public void SwingPivot_ReproducesHandTunedPivot_For22To23()
     {
-        // The old hardcoded pivot for the Con_West(22)->Con_Alley(23) swing was (-37.5, 9, -9).
-        // The generic derivation must reproduce it exactly (chain length 5.5 as declared in Links[]).
+        // The generic derivation must reproduce the hand-tuned Con_West(22)->Con_Alley(23) pivot
+        // exactly (chain length 5.5 as declared in Links[]).
         Vector3 p = RooftopArena.SwingPivot(RooftopArena.Roofs[22], RooftopArena.Roofs[23], 5.5f);
         Assert.AreEqual(-37.5f, p.x, 0.001f, "pivot.x = midpoint of the roofs' X-overlap");
         Assert.AreEqual(9f,     p.y, 0.001f, "pivot.y = max(roof heights) + chain length");
@@ -175,9 +168,9 @@ public class RooftopGraphTests
     [Test]
     public void Links_EveryEastZoneRoofHasTwoRoutesEachWay()
     {
-        // New roofs 26-30 must each have >=2 inbound and >=2 outbound routes (one-way Swing/Drop
-        // counted only in their declared direction, via the same InboundRouteCount/OutboundRouteCount
-        // helpers WP3 already established above), so none is a soft dead-end.
+        // Roofs 26-30 must each have >=2 inbound and >=2 outbound routes (one-way Swing/Drop counted
+        // only in their declared direction, via the InboundRouteCount/OutboundRouteCount helpers
+        // above), so none is a soft dead-end.
         for (int roof = 26; roof <= 30; roof++)
         {
             Assert.That(OutboundRouteCount(roof), Is.GreaterThanOrEqualTo(2),

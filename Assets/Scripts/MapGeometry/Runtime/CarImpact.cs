@@ -7,17 +7,11 @@ namespace Game.MapGeometry;
 
 /// <summary>
 /// The one thing on a street car that touches an agent: a trigger volume that ragdolls whoever walks
-/// into it. Attached by SceneStyler.CreateCars to a child of each car (never headless — the styler is
-/// Editor-only), alongside the <see cref="CarDrifter"/> that moves the parent.
-///
-/// <para>This knows nothing about roles, rounds or taggers, and it must not: RoundController has
-/// ALREADY decided that anyone down here has lost the round (they crossed FallResetY on the way past).
-/// The ragdoll is presentation of that outcome, so the car only needs to see a
-/// <see cref="CharacterRagdoll"/> — which is also the only thing Game.MapGeometry is allowed to see
-/// (Game.Rules depends on this assembly, never the reverse).</para>
-///
-/// <para>Nothing is allowed to DEPEND on this firing: RoundController's streetSequenceTimeout resolves
-/// the street sequence whether a car ever arrives or not. This only makes it funnier and faster.</para>
+/// into it. Attached by <see cref="Game.EditorTools.KenneyTrafficBuilder"/> to a child of each car
+/// (never headless), alongside the <see cref="CarDrifter"/> that moves the parent. Knows nothing about
+/// roles or rounds — RoundController already decided anyone down here lost, so this only needs to see
+/// <see cref="CharacterRagdoll"/> (Game.Rules depends on this assembly, never the reverse). Nothing
+/// depends on this firing: RoundController's streetSequenceTimeout resolves the sequence regardless.
 /// </summary>
 public sealed class CarImpact : MonoBehaviour
 {

@@ -9,13 +9,11 @@ using UnityEngine.TestTools;
 namespace RooftopTag.Tests.PlayMode;
 
 /// <summary>
-/// PlayMode replacement for the edit-mode "Controller-driven dive contact sheets" removed from
-/// CharacterPreviewShot.cs: edit mode drives Animator.Update by hand, but GPU skinning never
-/// refreshes off the editor loop, so every rendered cell showed one frozen baked pose even though
-/// bone transforms were genuinely animating. Here the real player loop runs (Time.captureFramerate
-/// pins each `yield return null` to exactly 1/60s of animator time), so skinning updates for real.
-/// This asmdef can't reference Assembly-CSharp-Editor, so the grid-composition helpers below are a
-/// deliberate duplicate of CharacterPreviewShot's, not shared code.
+/// PlayMode replacement for edit-mode dive contact sheets: edit mode drives Animator.Update by
+/// hand, but GPU skinning never refreshes off the editor loop, so every rendered cell showed one
+/// frozen pose. Here the real player loop runs (Time.captureFramerate pins each `yield return
+/// null` to 1/60s), so skinning updates for real. This asmdef can't reference
+/// Assembly-CSharp-Editor, so the grid-composition helpers below duplicate CharacterPreviewShot's.
 /// Run: Unity.exe -batchmode -runTests -testPlatform PlayMode -projectPath . -logFile Tools/divesheettests.log
 /// </summary>
 public class DiveSheetTests

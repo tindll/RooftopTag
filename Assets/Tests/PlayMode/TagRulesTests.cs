@@ -38,9 +38,8 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator Tag_OnContact_ConvertsRunnerToTaggerWithGrace()
     {
-        // Contact-tagging is no longer passive (bumping/landing on someone used to tag them with no
-        // input) — it's now only live for a brief window right after a lunge (the "dive" tackle),
-        // and only for the first runner touched. So the tagger must lunge to open that window.
+        // Contact-tagging is only live for a brief window right after a lunge (the "dive" tackle),
+        // and only for the first runner touched — the tagger must lunge to open that window.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
 
@@ -69,12 +68,11 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator Runner_CanLunge_ButOpensNoTagWindowAndTagsNobody()
     {
-        // The lunge is now available to Runners too, as a pure movement/escape dash — a committed
-        // dive (CharacterMotor.BeginDive) that redirects momentum forward. A Runner's dive must never
-        // be able to tag: it redirects speed (proving the dash works for a Runner, here from a
-        // standstill the burst goes to diveSpeed) while leaving the contact-tag window closed, so
-        // colliding with another Runner mid-dive tags nobody. It also locks the character in — a
-        // second lunge while already diving is a no-op (the dive-lock is the rate limiter now).
+        // The lunge is available to Runners too, as a pure movement/escape dash — a committed dive
+        // (CharacterMotor.BeginDive) that redirects momentum forward. A Runner's dive must never be
+        // able to tag: it redirects speed while leaving the contact-tag window closed, so colliding
+        // with another Runner mid-dive tags nobody. It also locks the character in — a second lunge
+        // while already diving is a no-op (the dive-lock is the rate limiter).
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
 
@@ -144,10 +142,9 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator TryLunge_DuringRoundStartGrace_IsNoOp()
     {
-        // Regression (Bug B): a lunge fired on the round's first frame — the main-menu PLAY leftButton
-        // click leaks into the local player's lunge action. TryLunge is now gated on
-        // RoundController.IsPastStartGrace (matching tags), so a lunge during the start-grace window is
-        // a full no-op: no impulse, no cooldown spent.
+        // TryLunge is gated on RoundController.IsPastStartGrace (matching tags), so a lunge during
+        // the start-grace window is a full no-op: no impulse, no cooldown spent. Guards against the
+        // main-menu PLAY click leaking into the local player's lunge action on the round's first frame.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
 
@@ -243,13 +240,12 @@ public sealed class TagRulesTests
 
         Debug.Log($"METRIC runner_fall_result='{controller.ResultMessage}' role={runner.Role} " +
                   $"active={runner.gameObject.activeSelf} respawn_dist={Vector3.Distance(runner.transform.position, spawnPos):0.00}");
-        // New behavior (replaces elimination): a Runner who falls off the map is converted to a Tagger
-        // and respawned at its start — NOT deactivated.
+        // A Runner who falls off the map is converted to a Tagger and respawned at its start — NOT
+        // deactivated.
         Assert.AreEqual(Role.Tagger, runner.Role, "A Runner that falls off the map should be converted to a Tagger.");
         Assert.IsTrue(runner.gameObject.activeSelf, "A converted Runner should stay active (respawned, not deactivated).");
         Assert.Less(Vector3.Distance(runner.transform.position, spawnPos), 2f, "A converted Runner should respawn back near its spawn point.");
-        // Same win-condition mechanism as before, now reached via role-conversion: converting the last
-        // Runner leaves zero Runners, so the round still ends "Taggers win" this same frame.
+        // Converting the last Runner leaves zero Runners, so the round ends "Taggers win" this same frame.
         Assert.IsTrue(controller.IsRoundOver, "Converting the last Runner to a Tagger should end the round.");
         StringAssert.Contains("Taggers win", controller.ResultMessage);
     }
@@ -257,9 +253,8 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator RoundController_TaggerFallsOffMap_RespawnsAndKeepsRole()
     {
-        // Regression (user report): "when I'm a tagger and fall off the map, I just keep falling, I
-        // don't respawn or anything". A Tagger who drops below the fall threshold must be respawned at
-        // its start (keeping its role), not left falling.
+        // A Tagger who drops below the fall threshold must be respawned at its start (keeping its
+        // role), not left falling.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(40f, 1f, 40f));
 
@@ -360,12 +355,10 @@ public sealed class TagRulesTests
         int agentCount = controller.Agents.Count;
 
         // Single-mode scene loads leak forward: Unity's physics simulation and Update loop run
-        // across ALL loaded scenes regardless of which is "active", so the 12 live agents and
-        // real map geometry this test just loaded would otherwise keep ticking and colliding
-        // with every later test's ad-hoc GameObjects (this is exactly what broke
-        // ParkourBotInput_AvoidsRunningOffCliff — its isolated 10x10 test platform ended up
-        // sharing a physics world with a full leftover Tag Arena). Swap to a blank scene and
-        // unload this one so later tests get a clean physics world.
+        // across ALL loaded scenes regardless of which is "active", so the 12 live agents and real
+        // map geometry this test just loaded would otherwise keep ticking and colliding with every
+        // later test's ad-hoc GameObjects. Swap to a blank scene and unload this one so later tests
+        // get a clean physics world.
         // IMPORTANT: this cleanup runs BEFORE the asserts — a failing assert would otherwise skip
         // it, leak the live arena, and (via EndRound freezing Time.timeScale to 0) hang every later
         // test on its first WaitForFixedUpdate.
@@ -382,18 +375,12 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator TagAgent_RootRotationStaysYawOnlyDuringLungeDive()
     {
-        // Regression test: the slide-lean/lunge-dive visual pitch used to be applied directly to
-        // the root transform.rotation — the same transform CharacterMotor's Rigidbody drives every
-        // FixedUpdate via MoveRotation. Physics.autoSyncTransforms (default true) synced that
-        // manual write back into the Rigidbody's authoritative pose, so CharacterMotor's own
-        // RotateTowards had to fight/unwind a pitch that kept getting reintroduced every LateUpdate
-        // — surfaced directly as "the player model bugs out and doesn't face the right direction
-        // anymore" from a manual feel-test. Exercises the fix via the lunge dive rather than a
-        // slide-on-a-ramp — same shared pitch-application code path in TagAgent.LateUpdate, but
-        // triggered with a single TryLunge() call on flat ground instead of needing slope geometry
-        // tuned just right to reliably trigger and sustain a slide. Needs a real body-renderer
-        // child (TagAgent no-ops the pitch effect without one), unlike the bare GameObject
-        // CreateTagAgent normally builds — so this test constructs the agent via
+        // Root rotation must stay yaw-only (no pitch/roll drift) even while the pitch-application
+        // code path in TagAgent.LateUpdate is active. Exercised via the lunge dive rather than a
+        // slide-on-a-ramp — same shared code path, but triggered with a single TryLunge() call on
+        // flat ground instead of needing slope geometry tuned to reliably sustain a slide. Needs a
+        // real body-renderer child (TagAgent no-ops the pitch effect without one), unlike the bare
+        // GameObject CreateTagAgent normally builds — so this test constructs the agent via
         // TagArenaMapGeometry.BuildAgentCapsule (root + child "Body"), matching the real game.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
@@ -432,10 +419,9 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator ParkourBotInput_AvoidsRunningOffCliff()
     {
-        // Regression test: a blind chase/flee vector with zero terrain awareness reliably drove
-        // bots straight off rooftop edges — reported directly from a manual feel-test. Still
-        // relevant for ParkourBotInput's fallback direct-chase mode (no graph supplied here),
-        // which reuses the same cliff-avoidance raycast logic the original dumb bots used.
+        // A blind chase/flee vector with zero terrain awareness must not drive bots off rooftop
+        // edges. Exercises ParkourBotInput's fallback direct-chase mode (no graph supplied here),
+        // which relies on cliff-avoidance raycasting.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(10f, 1f, 10f)); // platform spans z -5..5, nothing beyond
 
@@ -471,16 +457,11 @@ public sealed class TagRulesTests
     {
         // Companion to ParkourBotInput_AvoidsRunningOffCliff, which only covers the graph-less
         // direct-chase path. This covers the ROUTED path end to end: cross a narrow approach while
-        // carrying a Jump edge, reach the takeoff, commit, and land on the far pad.
-        //
-        // Honest scope note — this does NOT discriminate the takeoff-cone change in
-        // ApplySteeringSafety: it was measured passing identically (max_x 18.83 vs 18.84) against the
-        // old edge-wide suppression. That's because steering jitter is re-rolled every tick, so it's
-        // zero-mean noise rather than a persistent bias — it wobbles the bot but never accumulates
-        // into walking off a side lip, which is also why self-play measures zero falls. The cone is
-        // defensive hardening for a fall that has not been reproduced, not a fix for an observed one.
-        // What this test genuinely guards is routed traversal: that safety steering on the approach
-        // never stalls the bot short of its takeoff, and that the jump still completes.
+        // carrying a Jump edge, reach the takeoff, commit, and land on the far pad. What this test
+        // guards is routed traversal: that safety steering on the approach never stalls the bot
+        // short of its takeoff, and that the jump still completes — it does not discriminate
+        // takeoff-cone precision, since steering jitter is zero-mean noise that wobbles the bot but
+        // never accumulates into walking off a side lip.
         //
         // Casual is deliberate: loosest execution precision (0.4 -> ~18 deg jitter), the worst case
         // for the approach. The narrow catwalk is deliberate too: a 12x12 roof absorbs drift a 4m
@@ -507,8 +488,8 @@ public sealed class TagRulesTests
         controller.Configure(config);
 
         // Both graph nodes sit at the far end, so NearestNode resolves the bot straight onto the Jump
-        // edge while it's still 17m from the takeoff — exactly the "carrying a Jump edge across open
-        // ground" state that used to run unguarded.
+        // edge while it's still 17m from the takeoff — the "carrying a Jump edge across open ground"
+        // state this test exercises.
         (GameObject botGo, _, TagAgent botAgent, _) = CreateBotAgent(new Vector3(-8f, 1.1f, 0f), controller, graph, BotDifficulty.Casual);
         (_, _, TagAgent targetAgent, _) = CreateTagAgent(new Vector3(16f, 1.1f, 0f)); // stands on the far pad
         controller.RegisterAgent(targetAgent, isLocalPlayer: false);
@@ -537,9 +518,9 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator ParkourBotInput_BaitedToLipByTargetAtEdge_RefusesTheVoidLunge()
     {
-        // THE bait regression test — the void-fall reported from manual play, which bot-vs-bot
-        // self-play structurally cannot reproduce (bot runners juke AWAY from a closing tagger rather
-        // than baiting from a lip, so a batch reports zero falls no matter how broken this is).
+        // Bot-vs-bot self-play structurally cannot reproduce this: bot runners juke AWAY from a
+        // closing tagger rather than baiting from a lip, so a batch reports zero falls no matter
+        // how broken this is — hence this dedicated test.
         //
         // The lunge is the only committed decision a bot makes: BeginDive locks the motor for
         // diveDuration and drops steering authority to diveSteeringScale (0.15), and cliff-avoidance
@@ -594,15 +575,14 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator ParkourBotInput_FallingIntoChasm_GrabsWallAndClimbsOut()
     {
-        // Fall recovery: a bot that drops into a gap must grab a facade and chimney back up, instead of
-        // riding to FallResetY (-15) and being teleported to spawn. Reported from manual play as "some
-        // still die, which shouldn't really ever happen".
+        // Fall recovery: a bot that drops into a gap must grab a facade and chimney back up, instead
+        // of riding to FallResetY (-15) and being teleported to spawn.
         //
         // Geometry mirrors a real rooftop chasm: two facades 5m apart running well below the roofs, so
         // the launch (jumpOutSpeed 6 along the wall normal) carries the bot across to the FACING wall —
         // that's the chimney climb, and it's why the gap has to be narrow enough to cross. Runner role
         // on purpose: CanDoubleJump is role-gated to Runners (RoundController), so this exercises the
-        // full grab -> launch -> air-jump -> re-grab chain the user described.
+        // full grab -> launch -> air-jump -> re-grab chain.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(-4.5f, -5f, 0f), new Vector3(4f, 30f, 12f)); // west facade, inner face at x=-2.5
         CreateGround(_sceneRoot.transform, new Vector3(4.5f, -5f, 0f), new Vector3(4f, 30f, 12f));  // east facade, inner face at x=+2.5
@@ -650,12 +630,9 @@ public sealed class TagRulesTests
     [UnityTest]
     public IEnumerator ParkourBotInput_RunnerCampingPipeTop_GetsDivedOn()
     {
-        // Pipe-camping regression (reported with a screenshot: the whole pack huddled metres from the
-        // lip while the player hung on a pipe, untouchable). Two mechanisms made the camp safe:
-        // cliff-avoidance fanned the below-lip steer direction into sideways milling, so no tagger ever
-        // stood where the ranged tag's chest-to-chest linecast clears the roof corner; and the pre-lunge
-        // landing check vetoed every dive at a hanging target, because a hanger is by definition over
-        // void. Edge-stalk + the hanging-target lunge exception exist to close exactly this.
+        // Cliff-avoidance and the pre-lunge landing check must not let a runner hang untouchable near
+        // a lip: the edge-stalk behavior and the hanging-target lunge exception exist so a tagger
+        // can creep to the edge and dive a hanging target.
         //
         // The runner hangs on a ladder (the same interactable a VoidPipe is) just below the lip; the
         // tagger must creep to the edge and dive. The tag lands via the dive's contact window — the

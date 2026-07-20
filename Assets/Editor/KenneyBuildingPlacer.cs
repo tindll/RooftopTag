@@ -22,8 +22,8 @@ namespace Game.EditorTools
         private const string DevRootName = "DevKenneyCity2";
 
         // -- Model family weights --------------------------------------------
-        // Weighted toward the dark mid-rise / glass-tower silhouettes the user checkmarked as the target
-        // look; the cream low-detail shops stay as occasional street-level variety.
+        // Weighted toward dark mid-rise / glass-tower silhouettes; the cream low-detail shops stay as
+        // occasional street-level variety.
         private const double MidRiseWeight = 0.62;
         private const double SkyscraperWeight = 0.24;
         // Remaining weight (0.14) goes to low-detail buildings.
@@ -35,17 +35,15 @@ namespace Game.EditorTools
         // large: at scale 11 a ~6-unit skyscraper is ~66m (a believable landmark) and a ~2.5-unit mid-rise
         // ~28m, while shorter shops still fill their block footprint.
         private const float MaxScaleMeters = 11f;
-        // Round 3: lit windows are BACK, done properly this time. The window-glass texels were pinned
-        // down empirically (readable colormap + UV audit of the building meshes + a lit test rig): the
-        // meshes only ever sample the palette's GRADIENT strips, and glass is exactly the light-blue
-        // strip at x 352-383 / y 256-383 (bottom-up). Region-exact masking lights window panes and
-        // nothing else — every earlier color-heuristic failed because wall strips are also blue-gray.
+        // Building meshes only ever sample the palette's GRADIENT strips, and glass is exactly the
+        // light-blue strip at x 352-383 / y 256-383 (bottom-up). Masking must be region-exact — a
+        // color-heuristic also lights wall strips, since those are also blue-gray.
         private const float LitBuildingFraction = 0.45f;
         // The perimeter wall is the visible horizon, so a share of it glows too (fewer than the blocks —
         // distant towers read better mostly-dark).
         private const float WallLitFraction = 0.35f;
-        // 1.3, was 1.8: at street level the shopfront-sized glass panes bloomed to clipped white; 1.3
-        // still glows warm through bloom without blowing out up close.
+        // At street level the shopfront-sized glass panes bloom to clipped white above ~1.3; keep at or
+        // below that to glow warm through bloom without blowing out up close.
         private const float WindowEmissionIntensity = 1.3f;
         private static readonly Color WarmWindow = new(1.0f, 0.72f, 0.32f);
         private static readonly int BaseMapId = Shader.PropertyToID("_BaseMap");
@@ -58,9 +56,9 @@ namespace Game.EditorTools
 
         private static readonly float[] YawChoices = { 0f, 90f, 180f, 270f };
 
-        // Deep slate/blue multipliers over the cream Kenney colormap — UNIFORMLY dark (round 2 of user
-        // feedback: even 0.38-0.50 multipliers left cream-texel buildings reading "light"; the target is
-        // an all-dark city where only the warm windows glow).
+        // Deep slate/blue multipliers over the cream Kenney colormap, kept uniformly dark — multipliers
+        // in the 0.38-0.50 range still let cream-texel buildings read as "light"; the target is an
+        // all-dark city where only the warm windows glow.
         private static readonly Color[] NightTints =
         {
             new(0.28f, 0.31f, 0.42f),
@@ -110,7 +108,6 @@ namespace Game.EditorTools
                     continue;
                 }
 
-                // MULTIPLE buildings per block (user feedback: one building left the plinths half-empty).
                 // Subdivide the block into a plot grid ~10m per plot: a 16m block gets 2×2 small plots, a
                 // 24-32m block 2×2..3×3 — Manhattan-dense, with per-plot model/tint variety.
                 int plotsX = Mathf.Max(1, Mathf.RoundToInt(block.width / 10f));
@@ -161,10 +158,9 @@ namespace Game.EditorTools
         }
 
         /// <summary>Solid rows of dark buildings ringing the road grid, so the map never shows its edge —
-        /// the horizon is a wall of skyline instead of fog over an empty slab (user request; replaces the
-        /// legacy GLB silhouette skyline). Two staggered rows: the outer row is taller and offset half a
-        /// step so it plugs the gaps in the inner row. Uniform dark palette, no low-rise models — this is
-        /// a backdrop wall, not a neighbourhood.</summary>
+        /// the horizon is a wall of skyline instead of fog over an empty slab. Two staggered rows: the
+        /// outer row is taller and offset half a step so it plugs the gaps in the inner row. Uniform dark
+        /// palette, no low-rise models — this is a backdrop wall, not a neighbourhood.</summary>
         public static int PlacePerimeterWall(Transform parent, Rect gridBounds, float streetY, int seed, int dressingLayer)
         {
             Transform? existing = parent.Find("KenneyWall");
@@ -230,7 +226,7 @@ namespace Game.EditorTools
             return placed;
         }
 
-        /// <summary>Far-distance "shadow skyline" behind the perimeter wall (user request): rows of flat,
+        /// <summary>Far-distance "shadow skyline" behind the perimeter wall: rows of flat,
         /// unlit near-black boxes that read as buildings-behind-buildings without costing real models,
         /// lighting or texture work. URP Unlit still receives fog, so the scene fog fades each row toward
         /// the sky colour for free atmospheric depth — near silhouette row darkest, far row haziest.
@@ -475,13 +471,12 @@ namespace Game.EditorTools
         private static float Lerp(System.Random rand, float min, float max) =>
             min + (float)rand.NextDouble() * (max - min);
 
-        // Windows-only emission mask for the Kenney commercial colormap. The glass region was verified
-        // empirically (round 3, MCP UV audit + lit test rig): building meshes sample ONLY the palette's
-        // gradient strips, and window glass is exactly the light-blue strip at x 352-383 / y 256-383 in
-        // bottom-up pixel coords. Region-exact — every color-heuristic variant lit walls (their strips
-        // are also blue-gray). Saved as a reusable asset so scene materials reference an asset instead
-        // of a scene-embedded texture. Cached with a Unity null check, not ??= (see
-        // project_dynamic_material_domain_reload).
+        // Windows-only emission mask for the Kenney commercial colormap. Building meshes sample ONLY the
+        // palette's gradient strips, and window glass is exactly the light-blue strip at x 352-383 /
+        // y 256-383 in bottom-up pixel coords. Masking must be region-exact — a color-heuristic also
+        // lights walls (their strips are also blue-gray). Saved as a reusable asset so scene materials
+        // reference an asset instead of a scene-embedded texture. Cached with a Unity null check, not
+        // ??= (see project_dynamic_material_domain_reload).
         private const string WindowMaskAssetPath = "Assets/Art/Generated/KenneyWindowMask.asset";
         private static Texture2D? _windowMask;
 

@@ -8,9 +8,8 @@ namespace Game.Rules;
 public sealed class TagRulesConfig : ScriptableObject
 {
     [Header("Round")]
-    // 120s (was 300s): a 5-minute ceiling on an 11-agent 1v10 chase-me round left "survive to the
-    // timer" as a near-impossible win condition in practice (self-play sweeps land well under 30s
-    // once a tag cascade starts) — 2 minutes keeps timer-survival a real, reachable win state.
+    // 2 minutes keeps timer-survival a real, reachable win state for an 11-agent 1v10 chase-me round
+    // (self-play sweeps land well under 30s once a tag cascade starts).
     public float roundDuration = 120f;
 
     /// <summary>When true the round timer never counts down or expires — a free-roam mode for testing
@@ -20,9 +19,9 @@ public sealed class TagRulesConfig : ScriptableObject
 
     /// <summary>Chase-me mode: the local player is the SOLE Runner and every bot is a Tagger. For the
     /// 11-agent RooftopArena that's 10 chasers (1v10, matching roundDuration's design note). AssignRoles
-    /// clamps this to roster-1 on smaller scenes; the main menu's Chasers row can lower it (fewer
-    /// chasers leaves the surplus bots as fellow runners). Was briefly 1 during free-roam work, which
-    /// left 9 stray bot-runners — the "there are other runners" bug. Free-roam is 0 chasers via the menu.</summary>
+    /// clamps this to roster-1 on smaller scenes; the main menu's Chasers row can lower it, but every
+    /// bot beyond the tagger count is benched rather than left as a fellow runner (see AssignRoles).
+    /// Free-roam is 0 chasers via the menu.</summary>
     public int taggerCount = 10;
     public int runnerCount = 1;
 
@@ -33,11 +32,9 @@ public sealed class TagRulesConfig : ScriptableObject
     public bool forcePlayerAsRunner = true;
 
     /// <summary>
-    /// No tag can land for this many seconds after the round starts. Found via the first
-    /// self-play batch: 12 agents on a tight spawn grid with taggers assigned at t=0 produced
-    /// matches ending in under 3 seconds, tags landing before anyone could react — not bot
-    /// intelligence, just an unfair starting configuration. Mirrors the existing per-agent
-    /// conversion grace, but applies to the whole round at once.
+    /// No tag can land for this many seconds after the round starts, so a tight spawn grid with
+    /// taggers assigned at t=0 can't end a match before anyone has a real chance to react. Mirrors
+    /// the existing per-agent conversion grace, but applies to the whole round at once.
     /// </summary>
     public float roundStartGraceDuration = 3f;
 
@@ -58,16 +55,16 @@ public sealed class TagRulesConfig : ScriptableObject
     // The "clutch dodge" mechanic — a LOCAL-PLAYER-ONLY (raccoon runner) assist layer sitting on top
     // of the shared lunge. Bots never see any of it; it's a deliberate 1-vs-10 assist asymmetry, not a
     // rule both sides play by. See TagAgent.PerformTag / RoundController's Dodge region for the wiring.
-    public float runnerDiveSpeed = 10.5f;   // A: a Runner's lunge redirects to THIS (vs the Tagger's diveSpeed=9) — a real net forward escape burst. BeginDive still preserves a faster entry speed and the global 12 m/s cap still applies.
-    public float runnerRollCooldown = 2f;   // B: Runners get a real 2s cooldown on the lunge/roll (Taggers keep the dive-lock as their only limiter). Reuses the existing _lungeCooldownRemaining plumbing + HUD spinner.
-    public float dodgeIFrames = 0.3f;        // C: for this long at the START of the Runner's own committed dive, any tag on them is auto-dodged for free (no window budget) — they're already rolling clear.
-    // D: per-use reactive dodge window duration (unscaled seconds), indexed by dodges already pulled
+    public float runnerDiveSpeed = 10.5f;   // a Runner's lunge redirects to THIS (vs the Tagger's diveSpeed=9) — a real net forward escape burst. BeginDive still preserves a faster entry speed and the global 12 m/s cap still applies.
+    public float runnerRollCooldown = 2f;   // Runners get a real 2s cooldown on the lunge/roll (Taggers keep the dive-lock as their only limiter). Reuses the existing _lungeCooldownRemaining plumbing + HUD spinner.
+    public float dodgeIFrames = 0.3f;        // for this long at the START of the Runner's own committed dive, any tag on them is auto-dodged for free (no window budget) — they're already rolling clear.
+    // Per-use reactive dodge window duration (unscaled seconds), indexed by dodges already pulled
     // off THIS round — first dodge is generous and consistent, second still comfortably doable, third
     // genuinely hard. Past the array's end dodgeWindowFloor is all that's left: miracle-tier only.
     public float[] dodgeWindowDurations = { 0.45f, 0.35f, 0.15f };
-    public float dodgeWindowFloor = 0.08f;   // D: window duration once dodgeWindowDurations runs out — never shrinks below this, so "miracle" dodges stay possible no matter how many you've already pulled off this round.
-    public float dodgeSlowMoScale = 0.3f;    // D: Time.timeScale during an open dodge window (a heavier dip than the 0.35 tag slow-mo — this is a reaction test, not just juice).
-    public float taggerWhiffLockout = 1f;    // E: on a successful dodge the Tagger who whiffed can't lunge again for this long (gated in TryLunge via the same _lungeCooldownRemaining as the runner cooldown).
+    public float dodgeWindowFloor = 0.08f;   // window duration once dodgeWindowDurations runs out — never shrinks below this, so "miracle" dodges stay possible no matter how many you've already pulled off this round.
+    public float dodgeSlowMoScale = 0.3f;    // Time.timeScale during an open dodge window (a heavier dip than the 0.35 tag slow-mo — this is a reaction test, not just juice).
+    public float taggerWhiffLockout = 1f;    // on a successful dodge the Tagger who whiffed can't lunge again for this long (gated in TryLunge via the same _lungeCooldownRemaining as the runner cooldown).
 
     /// <summary>Tag reach radius is a binary still-vs-moving check, not a continuous function of speed — sprinting or jumping shouldn't extend it beyond the same "moving" value.</summary>
     [Header("Net throw")]
@@ -77,16 +74,16 @@ public sealed class TagRulesConfig : ScriptableObject
     // reaction window (see RoundController's Dodge region / NetThrower).
     public float netThrowRange = 6f;       // max horizontal distance to acquire a target (a touch past catchRange)
     public float netThrowCooldown = 2.0f;  // seconds between throws (the net's own rate limiter, independent of the lunge)
-    public float netWindupSeconds = 0.45f; // wind-up before release: the net is raised, then hurled (0.3 -> 0.45: the overhead-load telegraph was too fast to read at sprint speed)
+    public float netWindupSeconds = 0.45f; // wind-up before release: the net is raised, then hurled — long enough for the overhead-load telegraph to read at sprint speed
     public float netFlightTime = 0.45f;    // ballistic flight from hand to landing point; also the local-player dodge-window length
-    public float netHitRadius = 1.1f;      // a target still within this of the landing point is caught (0.9 -> 1.1: bumped catch rate, taggers were whiffing at close range). Purely a gameplay radius — the trap-dome VISUAL uses NetThrower.TrapDomeVisualRadius instead.
+    public float netHitRadius = 1.1f;      // a target still within this of the landing point is caught. Purely a gameplay radius — the trap-dome VISUAL uses NetThrower.TrapDomeVisualRadius instead.
     public float netTrapDuration = 1.2f;   // struggle-under-the-dome time before the tag actually lands
     public bool netCarryVisible = true;    // show the handheld net in a Tagger's hand between throws
 
     [Header("Tag reach")]
-    // Tightened (2.0/1.2 -> 1.6/1.0): the old center-to-center 2.0 landed tags with ~1.2m of visible
-    // daylight between two 0.4-radius bodies (user: bots "catch" from really far away). Reach is now
-    // measured HORIZONTALLY, with the vertical band below as a separate gate (see TryTagInRange).
+    // These values must stay tight enough that a tag needs genuine proximity — center-to-center reach
+    // leaves only a small margin of daylight between two 0.4-radius bodies. Reach is measured
+    // HORIZONTALLY, with the vertical band below as a separate gate (see TryTagInRange).
     public float tagReachStill = 1.0f;
     public float tagReachMoving = 1.6f;
     // Max height difference for a ranged tag — stops tags landing on someone on a different roof
@@ -115,12 +112,12 @@ public sealed class TagRulesConfig : ScriptableObject
     public float eatDurationLarge = 5f;   // tier-2 dumpster eat time (+2 pts)
 
     [Header("Street fall")]
-    /// <summary>Falling off the rooftops now lands you on a real street (SceneStyler.CreateRoads'
-    /// ground slab) instead of the void, so the round consequence waits for that little sequence to
-    /// play out rather than firing the instant you cross RoundController.FallResetY mid-air. This is
-    /// the hard backstop: however the sequence goes (or doesn't — the cars that make it interesting
-    /// are a later phase), the consequence lands this long after the fall. Long enough for a car to
-    /// arrive and matter, short enough that a bot standing in the road doesn't stall the round.</summary>
+    /// <summary>Falling off the rooftops lands you on a real street (SceneStyler.CreateRoads' ground
+    /// slab) instead of the void, so the round consequence waits for that little sequence to play out
+    /// rather than firing the instant you cross RoundController.FallResetY mid-air. This is the hard
+    /// backstop: however the sequence goes, the consequence lands this long after the fall — long
+    /// enough for a car to arrive and matter, short enough that a bot standing in the road doesn't
+    /// stall the round.</summary>
     public float streetSequenceTimeout = 4f;
     /// <summary>How long a ragdolled body is left lying in the street before the consequence lands —
     /// the sequence is over the moment something hits you, so this replaces the full

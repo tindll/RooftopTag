@@ -8,12 +8,10 @@ namespace Game.Movement;
 /// <summary>
 /// Builds a physics ragdoll out of a Humanoid rig's bones at model-attach time and keeps it FULLY
 /// INERT (every bone Rigidbody kinematic, every bone collider disabled) until <see cref="Activate"/>
-/// flips it. Inert matters: <see cref="CharacterMotor"/> probes ground/walls with broad masks, so a
-/// live bone collider is probeable geometry the instant it is enabled — before activation the agent
-/// must behave exactly as it did with no ragdoll at all.
-/// Added live by <see cref="CharacterModelAttacher"/> (real-model path only, never headless), like
-/// every other custom-asmdef agent component. Rebuilt from scratch on every model swap — TagAgent's
-/// role conversion destroys the whole CharacterModel child, so the previous build's bones are gone.
+/// flips it — <see cref="CharacterMotor"/> probes ground/walls with broad masks, so a live bone
+/// collider would be probeable geometry the instant it is enabled. Added live by
+/// <see cref="CharacterModelAttacher"/> (real-model path only, never headless). Rebuilt from scratch
+/// on every model swap, since a role conversion destroys the whole CharacterModel child.
 /// </summary>
 public sealed class CharacterRagdoll : MonoBehaviour
 {
@@ -162,14 +160,6 @@ public sealed class CharacterRagdoll : MonoBehaviour
     }
 
     /// <summary>
-    /// Flips the ragdoll live: hands the body over to physics, seeded with the motor's current
-    /// velocity so it inherits the fall instead of appearing to teleport to a standstill.
-    /// <paramref name="impulse"/> is a velocity delta (m/s) applied to the Hips only — same units as
-    /// <see cref="CharacterMotor.AddImpulse"/>, and hips-only because dragging the limbs along through
-    /// the joints is what makes the tumble read as a body rather than a shove on a statue.
-    /// A second call no-ops; <see cref="Deactivate"/> is the way back.
-    /// </summary>
-    /// <summary>
     /// Resets to the never-built state without needing an Animator — the counterpart of
     /// <see cref="Build"/> for model swaps onto a rig-less model (the static quadruped), where the
     /// old model's bones are destroyed with it but this component survives on the agent root. Left
@@ -197,6 +187,14 @@ public sealed class CharacterRagdoll : MonoBehaviour
         _bridge = null;
     }
 
+    /// <summary>
+    /// Flips the ragdoll live: hands the body over to physics, seeded with the motor's current
+    /// velocity so it inherits the fall instead of appearing to teleport to a standstill.
+    /// <paramref name="impulse"/> is a velocity delta (m/s) applied to the Hips only — same units as
+    /// <see cref="CharacterMotor.AddImpulse"/>, and hips-only because dragging the limbs along through
+    /// the joints is what makes the tumble read as a body rather than a shove on a statue.
+    /// A second call no-ops; <see cref="Deactivate"/> is the way back.
+    /// </summary>
     public void Activate(Vector3 impulse)
     {
         if (!_built || IsActive) return;
@@ -205,8 +203,8 @@ public sealed class CharacterRagdoll : MonoBehaviour
         // domain reload can restore the _built bool while dropping the List<Rigidbody> of scene references).
         // Activating with no bones is the worst outcome: the caller (RoundController's street sequence) treats
         // the agent as ragdolled and disables its motor/capsule, yet nothing physical happens, so the body
-        // just freezes and sinks — the "goes through the floor, can't see the raccoon" fall-death report.
-        // Bail with _built/IsActive untouched so the normal death handling still runs, and warn to surface it.
+        // just freezes and sinks instead of tumbling. Bail with _built/IsActive untouched so the normal
+        // death handling still runs, and warn to surface it.
         // (Deliberately NOT a rebuild here: Build uses DestroyImmediate, which is illegal inside the physics
         // trigger callback that CarImpact.Activate arrives through — re-attach time is the only safe place to build.)
         if (_boneBodies.Count == 0)
@@ -246,11 +244,10 @@ public sealed class CharacterRagdoll : MonoBehaviour
             _boneColliders[i].enabled = true;
             _boneBodies[i].isKinematic = false;
             // Continuous collision, not the default Discrete: a street-fall ragdoll activates
-            // MID-FALL at 20+ m/s, and small bone colliders at that speed tunnel straight through
-            // the street slab in one physics step — the body vanished below the map instead of
-            // crumpling onto the road (user). ContinuousDynamic sweeps the bones against static
-            // geometry so the road always catches them; the cost is fine for ~11 bodies that live
-            // a couple of seconds.
+            // MID-FALL at 20+ m/s, and small bone colliders at that speed would tunnel straight
+            // through the street slab in one physics step instead of crumpling onto the road.
+            // ContinuousDynamic sweeps the bones against static geometry so the road always catches
+            // them; the cost is fine for ~11 bodies that live a couple of seconds.
             _boneBodies[i].collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
             _boneBodies[i].linearVelocity = inherited;
         }
@@ -335,16 +332,13 @@ public sealed class CharacterRagdoll : MonoBehaviour
         // no renderer, so nothing visible changes layer with it.
         if (Layer >= 0) bone.gameObject.layer = Layer;
 
-        // REUSE any component a previous build already put on this bone rather than blindly AddComponent-ing.
-        // This is the ONE thing that silently bricked every ragdoll: Build must survive running a second time
-        // over the same bones (a re-attach onto an un-swapped model, a mid-play domain reload). AddComponent
-        // <Rigidbody> on a bone that already has a Rigidbody does NOT return the existing one — it returns null
-        // and warns, so the next line (rb.mass = …) threw, aborting Build AFTER _boneBodies.Clear() had run and
-        // leaving an agent that reports _built but has an EMPTY bone list. Activate() then iterates nothing, so
-        // the "ragdoll" never leaves kinematic and the body freezes/sinks instead of tumbling onto the street
-        // (the fall-death "goes through the floor, can't see the raccoon" report). GetComponent-or-add can't
-        // return null and re-initialises every field below, so a repeat build is now a clean no-op. Uses
-        // GetComponent (not GetComponents) — reuse never manufactures a duplicate, so at most one ever exists.
+        // REUSE any component a previous build already put on this bone rather than blindly AddComponent-ing:
+        // Build must survive running a second time over the same bones (a re-attach onto an un-swapped model,
+        // a mid-play domain reload). AddComponent<Rigidbody> on a bone that already has a Rigidbody does NOT
+        // return the existing one — it returns null and warns, which would abort Build partway through and
+        // leave an agent that reports _built with an EMPTY bone list. GetComponent-or-add can't return null
+        // and re-initialises every field below, so a repeat build is a clean no-op. Uses GetComponent (not
+        // GetComponents) — reuse never manufactures a duplicate, so at most one ever exists.
         var col = bone.GetComponent<CapsuleCollider>();
         if (col == null) col = bone.gameObject.AddComponent<CapsuleCollider>();
         col.direction = axis;

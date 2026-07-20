@@ -9,10 +9,11 @@ using UnityEngine.Rendering;
 namespace Game.EditorTools;
 
 /// <summary>
-/// Dresses the playable RooftopArena cluster as an under-construction site (matching the concept
-/// art: wooden plank bridges over the existing ramps, facade scaffolding, two yellow lattice tower
-/// cranes flanking the cluster, cargo containers, striped barriers/cones, material stacks, draped
-/// tarps, safety nets, and warm-orange worklight poles) over the theme's deep-blue night.
+/// Dresses the playable RooftopArena cluster and its surrounding ground lots as an under-construction
+/// site over the theme's deep-blue night: wooden plank bridges over the existing ramps, cargo
+/// containers, two yellow lattice tower cranes flanking the cluster, a street-level site fence, and
+/// warm worklights on the rooftops; ground lots additionally scatter barriers, cones, crates and
+/// unfinished buildings.
 ///
 /// Everything here is pure set dressing layered ON TOP of the geometry <see cref="RooftopArena"/>
 /// and <see cref="RoofPropDresser"/> already built: no collider survives on anything this class
@@ -63,10 +64,8 @@ public static class ConstructionDressing
         List<(Vector3 a, Vector3 b)> segments = RoofPropDresser.ClearanceSegments();
 
         int ramps = BuildPlankBridges(root.transform);
-        // Round 11/12 (user): rooftop keep-list is containers + the light.glb worklights + plank
-        // ramps only — scaffolds, barriers/cones, material stacks, safety nets, girders, tarps and
-        // the Quaternius decor props are all removed. WORKLIGHTS are deliberately KEPT — they're the
-        // night lighting (the warm pools), not deck clutter.
+        // Rooftop dressing keeps only containers, light.glb worklights, and plank ramps. Worklights
+        // stay deliberately — they're the night lighting (the warm pools), not deck clutter.
         int cont = BuildContainers(root.transform, segments);
         (int lights, int pointLights) = BuildWorklights(root.transform, segments);
         int cranes = BuildCranes(root.transform, theme);
@@ -80,10 +79,10 @@ public static class ConstructionDressing
     }
 
     // ======================================================================================
-    // 1. PLANK BRIDGES — round 9: every RooftopArena ramp is dressed with the USER'S plank.glb
-    // (decimated 1.97M -> ~3k tris via the ModularBuildings prop pipeline): 2-4 real planks laid
-    // side by side along the slope, seeded jitter, occasional missing slot or crossing plank for
-    // variety. The generated RampSurface RENDERER is stripped; its walkable collider is untouched.
+    // 1. PLANK BRIDGES — every RooftopArena ramp is dressed with plank.glb (decimated to ~3k tris via
+    // the ModularBuildings prop pipeline): 2-4 real planks laid side by side along the slope, seeded
+    // jitter, occasional missing slot or crossing plank for variety. The generated RampSurface
+    // RENDERER is stripped; its walkable collider is untouched.
     // ======================================================================================
 
     private static int BuildPlankBridges(Transform parent)
@@ -104,7 +103,8 @@ public static class ConstructionDressing
 
         if (plankProp == null)
         {
-            // Fallback: plank.glb missing — keep the old re-material look rather than invisible ramps.
+            // Fallback if plank.glb is missing: re-material the RampSurface renderers directly,
+            // rather than leaving ramps invisible.
             Material plankMat = GetPlankMaterial();
             foreach (Transform rs in surfaces)
             {
@@ -126,7 +126,7 @@ public static class ConstructionDressing
 
             float width = rs.localScale.x;
             float length = rs.localScale.z;
-            int slots = width < 1.6f ? 2 : width < 2.6f ? 3 : 4; // user: some ramps 2 planks, some 3-4
+            int slots = width < 1.6f ? 2 : width < 2.6f ? 3 : 4;
             int skipSlot = slots >= 3 && rng.NextDouble() < 0.2 ? rng.Next(slots) : -1; // a gap, sometimes
 
             float sz = (length + 0.5f) / pb.size.z;            // slight overhang past both lips
@@ -189,10 +189,9 @@ public static class ConstructionDressing
         Material teal = GetOrBuildUrpLitMaterial("Container_Teal", new Color(0.30f, 0.48f, 0.50f), null);
         Material rust = GetOrBuildUrpLitMaterial("Container_Rust", new Color(0.55f, 0.30f, 0.20f), null);
 
-        // ROUND-5 FIX: DefaultClearRadius (2.2m) starved 8x8 decks criss-crossed by link corridors —
-        // ONE container placed across the whole map. A container is decor the player brushes past,
-        // not a corridor blocker: 1.2m keeps it off route centrelines while actually placing. Count
-        // up + two tries per roof (the concept stacks them liberally).
+        // A container is decor the player brushes past, not a corridor blocker: 1.2m clearance keeps
+        // it off route centrelines while still actually placing. Count is high because the concept
+        // stacks them liberally.
         int count = 9 + rng.Next(4); // 9-12
         List<int> roofIdx = PickRoofIndices(rng, count);
         int placed = 0;
@@ -206,10 +205,10 @@ public static class ConstructionDressing
 
             GameObject instance = InstantiateAsset(asset, group, Vector3.zero, Quaternion.identity, 1f);
             StripColliders(instance);
-            // Round 10: containers are PHYSICAL parkour elements now — 2.1m tall (inside the 2.2m
-            // mantle ceiling, so you can always climb onto one) with one clean BoxCollider fitted to
-            // the visual. Clearance placement already keeps them off link corridors, so bots never
-            // path through where one stands.
+            // Containers are physical parkour elements: 2.1m tall (inside the 2.2m mantle ceiling, so
+            // you can always climb onto one) with one clean BoxCollider fitted to the visual.
+            // Clearance placement already keeps them off link corridors, so bots never path through
+            // where one stands.
             PlaceGroundedScaled(instance, new Vector3(spot.x, 0f, spot.z), roof.Center.y, 2.1f, Quaternion.Euler(0f, yaw, 0f));
             RebuildRenderersUrpLit(instance, rng.Next(2) == 0 ? teal : rust);
             // BoxCollider on the mesh child: Unity auto-fits it to the mesh's own local bounds,
@@ -234,14 +233,13 @@ public static class ConstructionDressing
         Color warmOrange = new(1.0f, 0.55f, 0.22f);
         Material headMat = GetOrBuildUrpLitMaterial("WorklightHead", warmOrange, null, smoothness: 0.3f, emission: warmOrange * 3.5f);
 
-        // ROUND-5 FIX: 0.9m clearance (the 2.2m default placed 4 of 12) and more attempts — the
-        // concept's night is CARRIED by warm worklight pools, they can't be rare.
-        // ROUND 11 (user): the pole+cube primitives are replaced by the user's light.glb (already at
-        // budget: 4.8k tris) — the model IS the worklight, a real point light sits at its HEAD (top
-        // of the scaled bounds), and it's a solid physics element like the containers.
+        // 0.9m clearance with extra attempts: the concept's night is carried by warm worklight pools,
+        // they can't be rare. light.glb is the worklight model itself (4.8k tris) — a real point
+        // light sits at its head (top of the scaled bounds), and it's a solid physics element like
+        // the containers.
         (Mesh mesh, Material material)? lightProp =
             ModularBuildings.ProcessProp("Assets/Art/Construction/Props/light.glb", "worklight", 5000, new Color(0.92f, 0.92f, 1.0f));
-        const float lightHeight = 2.2f; // real site-floodlight height; still vaultable at 1.1? no — solid obstacle, mantleable
+        const float lightHeight = 2.2f; // real site-floodlight height; solid obstacle, mantleable (not vaultable)
         int desired = 16 + rng.Next(3); // 16-18
         int placed = 0, pointLights = 0;
         for (int i = 0; i < desired; i++)
@@ -270,7 +268,7 @@ public static class ConstructionDressing
             }
             else
             {
-                // Fallback: old primitives if light.glb goes missing.
+                // Fallback: pole+head primitives if light.glb goes missing.
                 const float poleHeight = 2.6f;
                 CreateOrientedBox("WorklightPole", group, new Vector3(spot.x, roof.Center.y + poleHeight * 0.5f, spot.z),
                     Quaternion.identity, new Vector3(0.08f, poleHeight, 0.08f), poleMat);
@@ -319,10 +317,8 @@ public static class ConstructionDressing
         }
         Vector3 clusterCenter = new((minX + maxX) * 0.5f, 0f, (minZ + maxZ) * 0.5f);
 
-        // ROUND-5 FIX (user: "the cranes aren't on top of the building"): the first pass stood the
-        // cranes at STREET level scaled to 26-30m — topping out BELOW the decks, invisible from any
-        // rooftop. Like the concept image, cranes now stand ON roofs: the two largest decks that are
-        // far enough apart, mast base at the deck corner, mast rising well above the skyline.
+        // Cranes stand ON roofs, like the concept image: the two largest decks that are far enough
+        // apart, mast base at the deck corner, mast rising well above the skyline.
         var rng = new System.Random(SeedCranes);
         int firstIdx = 0, secondIdx = -1;
         float bestArea = 0f;
@@ -341,8 +337,7 @@ public static class ConstructionDressing
             if (area > bestSecond) { bestSecond = area; secondIdx = i; }
         }
 
-        // Round 12 fix (user's screenshot = the BASE-PLATE crane, which is Crane-On-GROUND — the
-        // first read of "this base" picked the wrong model): every crane is now Crane-On-Ground.
+        // Every crane uses the Crane-On-Ground model (the base-plate crane).
         var mounts = new List<(string path, int roofIdx)> { (CraneGroundPath, firstIdx) };
         if (secondIdx >= 0) mounts.Add((CraneGroundPath, secondIdx));
 
@@ -378,14 +373,14 @@ public static class ConstructionDressing
             PlaceGroundedScaled(instance, new Vector3(craneXZ.x, 0f, craneXZ.z), roof.Center.y, desiredHeight, yaw);
             RebuildRenderersUrpLit(instance, craneMat);
 
-            // Round 11 ("make the cranes climbable too for fun"): same climb kit as the swing cranes —
-            // solid mast, walkable jib, mast ladder. Foot mapped through the mesh child's transform so
-            // the vertex-scanned local foot lands exactly regardless of the FBX pivot. Kit's foot/jib
-            // constants are vertex-scanned from Crane-On-Ground.fbx, the only crane model placed now.
+            // Same climb kit as the swing cranes: solid mast, walkable jib, mast ladder. Foot mapped
+            // through the mesh child's transform so the vertex-scanned local foot lands exactly
+            // regardless of the FBX pivot. Kit's foot/jib constants are vertex-scanned from
+            // Crane-On-Ground.fbx, the only crane model placed.
             MeshFilter? craneMesh = instance.GetComponentInChildren<MeshFilter>(true);
             if (craneMesh != null && path == CraneGroundPath)
             {
-                // On-Ground base-plate centroid (vertex scan) — kit constants match this model now.
+                // On-Ground base-plate centroid (vertex scan); kit constants match this model.
                 Vector3 footWorld = craneMesh.transform.TransformPoint(new Vector3(-0.15f, 0.0f, 0.16f));
                 float sWorld = craneMesh.transform.lossyScale.x;
                 SceneStyler.AttachCraneClimbKit(group, new Vector3(footWorld.x, roof.Center.y, footWorld.z),
@@ -399,10 +394,10 @@ public static class ConstructionDressing
     // ======================================================================================
     // GROUND LOTS — dress the EMPTY street-level blocks ringing the play cluster as construction
     // sites. Those lots are the blocks KenneyBuildingPlacer skips (they overlap the building
-    // keep-out around the cluster), so they read as bare paved plinths right next to the playable
-    // towers (user: "blocks... that have nothing in them"). The player never reaches the street, so
-    // NOTHING here gets a collider — pure decor scattered on the pavement, off the carved cluster
-    // core (points inside playFootprint are skipped: that ground is void/slab, not paved).
+    // keep-out around the cluster), so they'd otherwise read as bare paved plinths right next to the
+    // playable towers. The player never reaches the street, so NOTHING here gets a collider — pure
+    // decor scattered on the pavement, off the carved cluster core (points inside playFootprint are
+    // skipped: that ground is void/slab, not paved).
     // ======================================================================================
 
     /// <summary>Scatters construction props (cargo containers, cranes, barriers, cones, worklights,
@@ -574,9 +569,9 @@ public static class ConstructionDressing
     }
 
     // ======================================================================================
-    // 11. SITE FENCE — round 10: a hoarding ring at street level around the carved super-block,
-    // selling WHY the streets flow around the site. Posts + corrugated panels, two gate gaps.
-    // Pure decor (no colliders) so street-level movement/car impacts are untouched.
+    // 11. SITE FENCE — a hoarding ring at street level around the carved super-block, selling WHY
+    // the streets flow around the site. Posts + corrugated panels, two gate gaps. Pure decor (no
+    // colliders) so street-level movement/car impacts are untouched.
     // ======================================================================================
 
     private static int BuildSiteFence(Transform parent, VisualThemeConfig theme)
@@ -645,8 +640,8 @@ public static class ConstructionDressing
         if (_plankMaterial != null) return _plankMaterial;
 
         const int size = 64;
-        // ROUND-5 FIX: brighter warm wood (was 0.45,0.30,0.18 — under the night rig the plank
-        // bridges rendered near-black; the concept's planks are its warmest, most readable element).
+        // Warm wood tint tuned bright deliberately — under the night rig, darker tones read
+        // near-black; the planks are meant to be the warmest, most readable element.
         var baseColor = new Color(0.72f, 0.52f, 0.30f);
         var seamColor = baseColor * 0.55f;
         var px = new Color32[size * size];

@@ -518,12 +518,11 @@ public static class GlbCityKit
         var lit = new bool[cls.ComponentCount];
         for (int c = 0; c < lit.Length; c++) lit[c] = rng.NextDouble() < theme.windowLitChance;
 
-        // CAPPED-RESOLUTION mask, SAVED AS AN ASSET — both halves are load-bearing for the repo.
-        // The first version built this at the GLB albedo's full resolution (4096²+) and left the
-        // texture scene-embedded: every (model, seed) variant serialized ~179MB of raw pixels into
-        // RooftopArena.unity, ballooning it to 3.6GB and past GitHub's hard 100MB limit. A binary
-        // window mask has no use for albedo resolution — 1024 max reads identically at gameplay
-        // distance — and CreateAsset makes the scene store a GUID reference instead of the pixels.
+        // CAPPED-RESOLUTION mask, SAVED AS AN ASSET — both halves are load-bearing. Embedding a
+        // full-resolution (4096²+) mask per (model, seed) variant would serialize ~179MB of raw
+        // pixels into RooftopArena.unity, past GitHub's hard 100MB limit. A binary window mask has
+        // no use for albedo resolution — 1024 max reads identically at gameplay distance — and
+        // CreateAsset makes the scene store a GUID reference instead of the pixels.
         float maskScale = Mathf.Min(1f, 1024f / Mathf.Max(cls.Width, cls.Height));
         int tw = Mathf.Max(1, Mathf.RoundToInt(cls.Width * maskScale));
         int th = Mathf.Max(1, Mathf.RoundToInt(cls.Height * maskScale));

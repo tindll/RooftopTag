@@ -5,20 +5,12 @@ using UnityEngine;
 namespace Game.Movement;
 
 /// <summary>
-/// Procedural presentation for an unrigged (static-mesh) quadruped model: gallop bob and body
-/// rock scaled by ground speed, airborne pitch from vertical velocity, a nose-down superman pose
-/// while diving, a belly-drop while sliding, a nose-up scramble on climbs/ladders, and a lean
-/// into turns. Stands in for skeletal animation until the model gets a real quadruped rig, at
-/// which point this component and the static branch in <see cref="CharacterModelAttacher"/> are
-/// replaced by an Animator path.
-/// <para>
-/// Animates ONLY the body child's local position/rotation, composed around the base pose captured
-/// at <see cref="Configure"/> time (the attach-time fit: scale/yaw/ground offset). Scale is left
-/// alone on purpose — TagAgent's landing squash already animates the renderer transform's
-/// localScale, and two writers on one field would flicker. The body child is also distinct from
-/// the "CharacterModel" wrapper this component sits on, because TagAgent's net-trap wiggle owns
-/// THAT transform; the two never write the same values.
-/// </para>
+/// Procedural presentation for an unrigged (static-mesh) quadruped model: gallop bob and body rock
+/// scaled by ground speed, airborne pitch from vertical velocity, dive/slide/climb poses, and a lean
+/// into turns. Stands in for skeletal animation until the model gets a real quadruped rig. Animates
+/// ONLY the body child's local position/rotation around the base pose captured at
+/// <see cref="Configure"/> time — never touches localScale (TagAgent's landing squash owns that) or
+/// the "CharacterModel" wrapper transform (TagAgent's net-trap wiggle owns that).
 /// </summary>
 public sealed class QuadrupedPresenter : MonoBehaviour
 {
@@ -173,9 +165,9 @@ public sealed class QuadrupedPresenter : MonoBehaviour
 
         _body.localPosition = _basePos + Vector3.up * _lift;
         // PREmultiply: the pitch/roll offset must live in the wrapper's frame (X = the agent's
-        // lateral axis). Postmultiplying (_baseRot * offset) puts it in the model's own frame,
+        // lateral axis). Postmultiplying (_baseRot * offset) would put it in the model's own frame,
         // where the facing yaw baked into _baseRot re-aims Euler X — with the rigged glb's 90° yaw
-        // that turned every gallop nose-dip into a sideways ROLL (the "sways while running" bug).
+        // that would turn every gallop nose-dip into a sideways roll instead of a nose-dip.
         _body.localRotation = Quaternion.Euler(_pitch, 0f, _roll) * _baseRot;
 
         _gaitWeight = Mathf.Lerp(_gaitWeight, targetGait, dt / (PoseSmoothing + dt));

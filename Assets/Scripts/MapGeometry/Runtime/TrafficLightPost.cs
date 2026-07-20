@@ -8,15 +8,16 @@ namespace Game.MapGeometry;
 /// Presentation-only: drives the emissive bulb of one traffic-signal post, reading the same
 /// <see cref="TrafficNetwork"/> state the cars obey so the light and the traffic can never disagree.
 /// Three states: GREEN while this post's axis is green, RED while the cross axis is green, and YELLOW
-/// during the all-red clearance gap between them (which is exactly when a real signal shows amber).
-/// The HDR emission is what bloom turns into a glowing dot from the rooftops above.
+/// during the all-red clearance gap between them. The HDR emission is what bloom turns into a glowing
+/// dot from the rooftops above. Attached only by <see cref="Game.EditorTools.KenneyTrafficBuilder"/> at
+/// scene-build time, never by the headless self-play harness.
 ///
 /// <para>Load-safety (see <c>project_asmdef_sceneref_null</c> / CarDrifter.Initialise): only VALUE fields
 /// are serialized. The network is recovered structurally in Awake (<c>GetComponentInParent</c> — posts
 /// are children of the root that owns the <see cref="TrafficNetwork"/>), and the bulb material is taken
 /// from the child renderer named "Bulb" via <c>renderer.material</c>, which clones a per-post instance at
 /// runtime — so the editor can bake ONE shared bulb material across every post without their animations
-/// fighting. Attached only at editor scene-build time, never in the headless harness.</para>
+/// fighting.</para>
 /// </summary>
 public sealed class TrafficLightPost : MonoBehaviour
 {

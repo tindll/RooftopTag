@@ -87,9 +87,9 @@ public static class BuildCharacterAnimator
         // The clip is import-trimmed to the tight low-glide plateau (frames 10-22) and LOOPS with
         // loop-pose on (CharacterImportPostprocessor), so no state cycleOffset is needed — the state
         // plays the deep-crouch glide and, if the slide outlasts the clip, seamlessly cycles that low
-        // pose instead of freezing on a stood-up recovery frame (Bug A fix).
-        // Wall-run was removed from CharacterMotor on this line, so MotorState has no WallRunning value
-        // and everything from Mantling on shifted down by one — the Any() indices below match the live enum.
+        // pose instead of freezing on a stood-up recovery frame.
+        // MotorState has no WallRunning value; the Any() indices below match the live enum order
+        // starting at Mantling.
         // Mantle/vault clip playback is SYNCED to the motor's transition durations. At 1x the clip's
         // "pull up" beat landed long after CharacterMotor had already placed the body on the ledge
         // (motor mantle = 0.3s, vault 0.08-0.18s speed-scaled; the clip is seconds long), so the model
@@ -116,12 +116,12 @@ public static class BuildCharacterAnimator
         // Front flip: replaces the normal jump/fall pose while airborne. Driven by CharacterAnimatorBridge,
         // which sets the Flipping bool the moment a runner double-jumps (and holds it for the clip length).
         var frontFlip = Simple(sm, "FrontFlip", Clip("X Bot@Front Flip", "Front Flip"));
-        frontFlip.speed = 1.6f; // sped up so the flip snaps to the double-jump, but eased back a touch from 2x per feel-test
+        frontFlip.speed = 1.6f; // sped up so the flip snaps to the double-jump timing
 
         // Dive roll: a tagger's committed lunge. Driven by the bridge's Diving bool (held for the clip
         // length) so the grounded/airborne AnyState transitions can't yank it back mid-roll.
-        // Prefer the dedicated "X Bot@Dive Roll" clip (a real forward dive) over the old
-        // Stand-To-Roll stopgap; the stopgaps stay as fallbacks so Clip() self-heals if it's removed.
+        // Prefer the dedicated "X Bot@Dive Roll" clip (a real forward dive); the Stand-To-Roll
+        // stopgap stays as a fallback so Clip() self-heals if it's removed.
         var diveRoll = Simple(sm, "DiveRoll", Clip("X Bot@Dive Roll", "X Bot@Stand To Roll", "Dive Roll"));
         // Dive Roll is import-trimmed (CharacterImportPostprocessor: DiveFirstFrame=41, DiveLastFrame=108,
         // 67 frames @30fps = 2.233s) to the launch-coil-bottom through upright-recovery window, cutting
@@ -139,7 +139,7 @@ public static class BuildCharacterAnimator
         // committed-dive window as the roll (diveDuration / CharacterAnimatorBridge.DiveHoldSeconds), so
         // it is played back at trimmedSeconds/0.8 to land the whole catch inside that window:
         // 2.000s / 0.8s = 2.5x. (Recompute from the frame range / window if either changes — NOT a fixed constant.)
-        // STOPGAP (user): the DivingCatch clip doesn't read right on the pest_control model, so the
+        // STOPGAP: the DivingCatch clip doesn't read right on the pest_control model, so the
         // catch state plays the FIRST HALF of the proven trimmed Dive Roll instead — launch coil into
         // the airborne forward dive, which reads as "diving after you". speed covers half the trimmed
         // clip (2.233s / 2) across the 0.8s dive window, so the state exits mid-clip right at the
@@ -157,7 +157,7 @@ public static class BuildCharacterAnimator
         var eatEnter = Simple(sm, "EatEnter", Clip("Standing To Crouched"));
         var eatLoop  = Simple(sm, "EatLoop", Clip("Crouching Idle"));
         var eatExit  = Simple(sm, "EatExit", Clip("Crouched To Standing"));
-        eatEnter.speed = 1.5f; // snappy crouch-down (user: "fast standing to crouched")
+        eatEnter.speed = 1.5f; // snappy crouch-down
 
         sm.defaultState = grounded;
 
@@ -241,7 +241,7 @@ public static class BuildCharacterAnimator
         t.duration = 0.08f;
         t.canTransitionToSelf = false;
         t.AddCondition(AnimatorConditionMode.Equals, stateValue, "MotorState");
-        // Never interrupt a committed dive roll — same guard as groundT (Bug C).
+        // Never interrupt a committed dive roll — same guard as groundT.
         t.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
     }
 
@@ -255,7 +255,7 @@ public static class BuildCharacterAnimator
         t.canTransitionToSelf = false;
         t.AddCondition(AnimatorConditionMode.Equals, 2, "MotorState");
         t.AddCondition(flipping ? AnimatorConditionMode.If : AnimatorConditionMode.IfNot, 0, "Flipping");
-        // Never interrupt a committed dive roll — same guard as groundT (Bug C). A dive that goes
+        // Never interrupt a committed dive roll — same guard as groundT. A dive that goes
         // airborne (e.g. off a ledge) must finish its roll pose, not snap to the jump/fall blend.
         t.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
         t.AddCondition(AnimatorConditionMode.IfNot, 0, "Eating"); // eating owns the pose (defensive; ground-probe flicker)

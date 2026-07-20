@@ -9,39 +9,27 @@ namespace Game.MapGeometry;
 /// <summary>
 /// Single source of truth for the Tag Arena corridor's layout. It walks the section sequence once
 /// (spawn → ramp valley → gap gauntlet → wall-run alley → ledge row) and records every walk-surface
-/// anchor. Both consumers read from here:
-///   • <see cref="TagArenaMapGeometry.BuildMainCorridor"/> renders the physical boxes/ramps at these
-///     anchors.
-/// Previously each kept its own copy of the layout math and the graph's node coordinates were
-/// hand-duplicated from the geometry — they drifted, and the M4 self-play loop spent several
-/// iterations chasing "jumps land 9m off" that was really the graph pointing at stale positions.
-/// With one walk, changing a gap distance (or any section length) moves the boxes AND the nodes
-/// together, so they can no longer desync.
-///
+/// anchor. <see cref="TagArenaMapGeometry.BuildMainCorridor"/> renders the physical boxes/ramps at
+/// these anchors, and the parkour graph reads the same anchors for its node coordinates, so changing
+/// a gap distance (or any section length) moves the boxes AND the nodes together and they cannot desync.
 /// Anchors are walk-surface positions (what a standing agent occupies / what a graph node wants):
-/// floor tops sit at y=0.1, the valley floor at y=-3.9, ledge landings at y=height+1.05 — matching
-/// the box construction in <see cref="TagArenaMapGeometry"/>.
+/// floor tops sit at y=0.1, the valley floor at y=-3.9, ledge landings at y=height+1.05.
 /// </summary>
 public sealed class TagArenaLayout
 {
-    // ---- Shared section constants (were duplicated as literals across geometry + graph) ----
+    // ---- Shared section constants ----
     // One edit here moves both the physical boxes and the graph nodes (that's the whole point of
     // TagArenaLayout) — tune freely without desync, but re-run RooftopTag/Build Rooftop Arena afterwards
-    // so the saved scene geometry matches. NOTE (M4 loop): narrowing gaps to ≤7m made falls *worse*
-    // (bots jump at fixed ~8.5m power, so smaller gaps overshoot into the next pit). The old 3m
-    // opening gap was below the bots' controllable range — a fixed-power sprint jump flew clean over
-    // it and a walk-approach couldn't decelerate in time — so bots almost never made the first jump.
-    // Widened to 6m: comfortably inside a sprint jump's landing window, no fragile speed modulation
-    // needed. Still an easy intro gap for a human (well under the ~9.6m max).
+    // so the saved scene geometry matches. Bots jump at a fixed ~8.5m power, so gaps must stay inside
+    // a sprint jump's landing window (comfortably above ~3m, well under the ~9.6m max) or bots either
+    // overshoot into the next pit or clean-fly over the opening gap without ever attempting it.
     public static readonly float[] Gaps = { 6f, 5f, 7f, 9f, 8f, 7f };
     public const float PlatformLength = 4f;
     public const float PlatformWidth = 5f;
 
-    // Was 8f. Found via self-play diagnostics: every tag in a batch landed within ~8m of spawn,
-    // all within seconds of the round-start grace ending — the platform was too small for a
-    // Tagger and Runner to ever NOT be almost adjacent, regardless of spawn-grid spacing tricks.
-    // Widened 3x so Taggers can be placed meaningfully behind the Runner cluster (see
-    // RoundController.TaggerSpawnBackOffset) and the spawn grid can spread agents out further.
+    // Large enough that Taggers can be placed meaningfully behind the Runner cluster (see
+    // RoundController.TaggerSpawnBackOffset) and the spawn grid can spread agents out; a small
+    // platform leaves Tagger and Runner almost adjacent regardless of spawn-grid spacing.
     public const float SpawnSize = 24f;
     public const float RampLength = 10f;
     public const float ValleyDrop = 4f;
@@ -145,9 +133,6 @@ public sealed class TagArenaLayout
         float mantleMid = (config.mantleVault.mantleMinHeight + config.mantleVault.mantleMaxHeight) * 0.5f;
         float mantleHigh = config.mantleVault.mantleMaxHeight * 0.95f;
         float climbMid = (config.mantleVault.mantleMaxHeight + config.climb.climbMaxHeight) * 0.5f;
-        // The old "TooTall_Control" wall (deliberately unclimbable) used to sit here and blocked the
-        // whole corridor past the ledge row — the ladder/swing beyond it were unreachable. Removed so
-        // the route continues into the ladder section.
         (string label, float height)[] ledgeDefs =
         {
             ("Vault_Low", vaultLow),

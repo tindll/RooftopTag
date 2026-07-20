@@ -5,20 +5,11 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 
 /// <summary>
-/// Shared interactive-rebind state machine used by both <see cref="SettingsMenu"/> and
-/// <see cref="MainMenuOverlay"/> (extracted from SettingsMenu so the main menu's CONTROLS dropdown
-/// doesn't copy-paste the listen/complete/cancel flow). Static because at most one listen can ever
-/// be active at a time — starting a new one cancels the old — and both menus must see the same
-/// "someone is listening" state to grey out their own Rebind buttons.
-///
-/// Escape cancels the active listen (via WithCancelingThrough). Callers that ALSO act on Escape
-/// (SettingsMenu's pause toggle) must check <see cref="EscapeConsumedThisFrame"/> first so the same
-/// press doesn't both cancel the listen and toggle their menu — the cancel callback fires during
-/// the input update, before MonoBehaviour.Update sees wasPressedThisFrame.
-///
-/// Persistence: completion saves through <see cref="PlayerInputProvider.SaveBindingOverride"/>, the
-/// same PlayerPrefs pattern every rebindable action (PlayerInputProvider's four and TagAgent's
-/// Lunge/Tag) loads from at creation time.
+/// Shared interactive-rebind state machine used by <see cref="SettingsMenu"/> and
+/// <see cref="MainMenuOverlay"/>. Static: only one listen can be active at a time, and both menus
+/// observe the same state to grey out their own Rebind buttons. Completion persists via
+/// <see cref="PlayerInputProvider.SaveBindingOverride"/>, the same PlayerPrefs pattern every
+/// rebindable action loads from at creation.
 /// </summary>
 public static class KeyRebinder
 {

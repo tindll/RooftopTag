@@ -8,23 +8,20 @@ using UnityEngine;
 namespace Game.EditorTools;
 
 /// <summary>
-/// Round 7: the playable towers are assembled from the USER'S modular building GLBs
-/// (Assets/buildings/{bottom,middle,top}/{bot,mid,top}_type{A-D}.glb — AI-generated kit pieces
-/// matching the construction concept). Two jobs:
+/// Playable towers are assembled from modular building GLBs
+/// (Assets/buildings/{bottom,middle}/{bot,mid}_type{A-D}.glb). Two jobs:
 ///
-///  1. PROCESSING (one-time, cached as assets under Assets/Art/Generated/Modular): four of the
-///     twelve modules arrived at ~1.9M triangles — they get decimated to a game budget with
-///     UnityMeshSimplifier (quadric error metrics, border edges preserved). Every module's 4-8K
-///     painted texture is downscaled to 1024 and posterized to flat color steps, which kills the
-///     AI paint smudge while matching the low-poly flat-facet art style.
+///  1. PROCESSING (one-time, cached as assets under Assets/Art/Generated/Modular): meshes over
+///     HeavyTriThreshold are decimated to TargetTris with UnityMeshSimplifier (quadric error
+///     metrics, border edges preserved). Each module's painted texture is downscaled to
+///     ProcessedTexSize (posterize is off by default; PosterizeLevels > 1 re-enables it).
 ///
-///  2. STACKING (every scene build): per roof column, bottom + N middles + top of ONE type,
-///     footprint-normalized — every tier is scaled to the roof's exact SizeX/SizeZ (this is what
-///     makes "each floor of the same type share the same ratio" true by construction, per the
-///     user's request, regardless of each GLB's own aspect) — and storey-solved so the TOP
-///     module's walkable deck plane lands exactly on r.Center.y. The roof body/mass renderers are
-///     stripped (the modules are the facade now); their COLLIDERS are untouched, so movement,
-///     wall-climbs and bots are byte-for-byte unchanged. Shells are bare MeshFilter+MeshRenderer
+///  2. STACKING (every scene build): per roof column, bottom + N middles of ONE type,
+///     footprint-normalized — every tier is scaled to the roof's exact SizeX/SizeZ so all floors
+///     of a type share the same ratio regardless of the source GLB's own aspect — capped by a
+///     flat deck slab whose top face lands exactly on r.Center.y. The roof body/mass renderers
+///     are stripped (the modules are the facade now); their COLLIDERS are untouched, so
+///     movement, wall-climbs and bots are unaffected. Shells are bare MeshFilter+MeshRenderer
 ///     GameObjects — structurally incapable of carrying a collider.
 /// </summary>
 public static class ModularBuildings
@@ -33,10 +30,9 @@ public static class ModularBuildings
     private const string GeneratedDir = "Assets/Art/Generated/Modular";
     private const int HeavyTriThreshold = 20_000;
     private const int TargetTris = 6_000;
-    // Round 10 ("smoothen the textures... they're a bit glitchy"): the 16-level posterize created
-    // banding that read as glitch on the big module facades — now 2048px, NO posterize, and
-    // anisotropic filtering so facades stay clean at grazing angles. (plank.glb was processed under
-    // the old settings and looks right — its cached asset is deliberately left untouched.)
+    // Texture processing: downscale to 2048px, posterize off (posterize bands on large facades),
+    // anisotropic filtering keeps facades clean at grazing angles. plank.glb's cached asset was
+    // processed under different settings and is deliberately left untouched — do not reprocess it.
     private const int ProcessedTexSize = 2048;
     private const int PosterizeLevels = 0; // 0 = posterize disabled
 
@@ -126,8 +122,7 @@ public static class ModularBuildings
         var mat = new Material(shader) { name = $"Modular_{key}" };
         if (processedTex != null) mat.SetTexture("_BaseMap", processedTex);
         // Slightly cool-dimmed so the painted concrete sits in the night palette instead of
-        // rendering daylight-bright next to the tinted Kenney city. (0.80 read too dark against
-        // the concept — the modules' own paint is already mid-grey.)
+        // rendering daylight-bright next to the tinted Kenney city.
         var tint = new Color(0.94f, 0.96f, 1.05f);
         mat.SetColor("_BaseColor", tint);
         mat.color = tint;
@@ -144,7 +139,7 @@ public static class ModularBuildings
         return module;
     }
 
-    /// <summary>Round 9: the same decimate+posterize pipeline, exposed for one-off prop GLBs
+    /// <summary>Same decimate+posterize pipeline, exposed for one-off prop GLBs
     /// (e.g. Assets/Art/Construction/Props/plank.glb). Cached in-memory and on disk like the building modules.</summary>
     public static (Mesh mesh, Material material)? ProcessProp(string assetPath, string cacheKey, int targetTris, Color tint)
     {
@@ -266,9 +261,8 @@ public static class ModularBuildings
         if (existing != null) Object.DestroyImmediate(existing.gameObject);
         var root = new GameObject("ModularTowers");
 
-        // Round 8 (user: the module tops are "waaay too much visual clutter"): towers are capped by
-        // a FLAT grey deck slab instead of the ragged top modules — so a type only needs its bottom
-        // and middle tiers now. The top GLBs are gone (see git history for a later comeback).
+        // Towers are capped by a flat grey deck slab instead of top modules — a complete type only
+        // needs its bottom and middle tiers.
         var completeTypes = new List<string>();
         foreach (string t in Types)
         {
@@ -300,10 +294,8 @@ public static class ModularBuildings
             Module mid = GetModule("mid", type, false)!;
 
             float column = r.Center.y - theme.buildingBaseY;
-            // Round 8: middles run up to the deck; a flat grey slab caps the tower flush with the
-            // walkable collider top. Round 10: middles stop 6cm SHORT of the deck — their top faces
-            // were exactly coplanar with the slab's top face, which is what made "the floors flicker
-            // with shadows" (z-fighting). The 0.22m slab fully hides the gap.
+            // Middles stop deckClearance short of the deck slab to avoid z-fighting between
+            // coplanar top/slab faces; the slab is thick enough to hide the gap.
             const float deckClearance = 0.06f;
             float remaining = column - BottomStorey - deckClearance;
             int midCount = Mathf.Max(0, Mathf.RoundToInt(remaining / MiddleStorey));
@@ -336,8 +328,8 @@ public static class ModularBuildings
             deck.transform.localScale = new Vector3(r.SizeX + 0.14f, 0.22f, r.SizeZ + 0.14f);
             var deckRend = deck.GetComponent<Renderer>();
             deckRend.sharedMaterial = DeckMaterial();
-            // Round 10: decks don't cast — a huge flat slab self-shadowing under the low moon was the
-            // other half of the flicker (shadow acne at grazing angles). They still receive.
+            // Decks don't cast shadows — a large flat slab self-shadows under grazing light
+            // (shadow acne); they still receive.
             deckRend.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             floors++;
 

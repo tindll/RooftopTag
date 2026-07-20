@@ -8,11 +8,10 @@ namespace Game.Rules;
 
 /// <summary>Position/rotation + animator snapshot of one agent at one sample tick.
 /// <para>
-/// LANDMINE (past review flagged this pair desyncing): every field added here needs a matching
-/// nearest-snap (bools) or lerp (floats) entry in <see cref="KillCamRecorder.LerpFrame"/> below, and,
-/// if it also drives an Animator param during replay, matching hash-id fields + read/write code in
-/// BOTH <see cref="KillCamRecorder.SampleNow"/> and KillCamPlayback.DriveAgents. Keep every add in
-/// lockstep across all touched spots.
+/// LANDMINE: every field added here needs a matching nearest-snap (bools) or lerp (floats) entry in
+/// <see cref="KillCamRecorder.LerpFrame"/> below, and, if it also drives an Animator param during
+/// replay, matching hash-id fields + read/write code in BOTH <see cref="KillCamRecorder.SampleNow"/>
+/// and KillCamPlayback.DriveAgents. Keep every add in lockstep across all touched spots.
 /// </para></summary>
 public struct KillCamFrame
 {
@@ -31,19 +30,14 @@ public struct KillCamFrame
 }
 
 /// <summary>
-/// PHASE 1 of kill-cam: an always-on, allocation-free ring-buffer recorder. Every registered agent
-/// gets sampled at ~25Hz into a fixed 90-frame (~3.5s) ring buffer of <see cref="KillCamFrame"/> +
-/// timestamps. Nothing reads this data yet — a later phase scrubs it to replay the moment of a tag.
-/// Purely additive: no gameplay system calls into this, so it cannot change gameplay behaviour.
+/// Always-on, allocation-free ring-buffer recorder for the kill cam. Every registered agent gets
+/// sampled at ~25Hz into a fixed 90-frame (~3.5s) ring buffer of <see cref="KillCamFrame"/> +
+/// timestamps; KillCamPlayback scrubs this data to replay the moment of a tag.
 ///
 /// Headless (the self-play harness's -nographics batch runs): Awake disables the component so
-/// Update never fires, which is the entire per-frame cost this class could add — zero recurring
-/// work, zero GC, in the one place that actually runs thousands of iterations. Register() itself
-/// stays unguarded: it is a one-time, round-start-sized allocation (two small arrays per agent),
-/// the same tier as the other unguarded per-round setup already in RoundController.RegisterAgent
-/// (spawn-state dictionary entries, tag counts, etc.), and this project's own PlayMode tests run
-/// under that same -nographics mode (see RoundController's SetupMinimap comment) — gating Register
-/// too would make the ring-buffer math untestable in this repo's actual test environment.
+/// Update never fires — zero recurring per-frame cost. Register() itself stays unguarded (a
+/// one-time, round-start-sized allocation), since this project's own PlayMode tests also run under
+/// -nographics and need it to work there.
 /// </summary>
 public sealed class KillCamRecorder : MonoBehaviour
 {

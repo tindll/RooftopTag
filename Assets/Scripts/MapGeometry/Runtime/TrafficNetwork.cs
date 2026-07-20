@@ -6,22 +6,12 @@ using UnityEngine;
 namespace Game.MapGeometry;
 
 /// <summary>
-/// Presentation-only road graph for the backdrop city's traffic, baked at editor time by
-/// SceneStyler.CreateCars from the same <c>StreetSegments</c> the roads are drawn from, then serialized
-/// into the scene. Holds the directed lane network (both sides of every street), which nodes are
-/// signalized intersections, and the shared traffic tuning (light cycle, stop line, accel/decel). The
-/// per-car <see cref="CarDrifter"/> reads this to follow lanes, stop at red lights and turn at
-/// intersections.
-///
-/// <para>Like <see cref="CarDrifter"/>/<see cref="CarImpact"/> this component is attached ONLY by the
-/// editor-time styler, never by the headless self-play harness — it is pure decor seen from the
-/// rooftops far above and touches no gameplay. Lives in the runtime assembly only so the runtime
-/// <see cref="CarDrifter"/> can reference it.</para>
-///
-/// <para>Light state is a pure function of <c>Time.time</c> (no per-frame mutation, no per-light
-/// GameObjects) so any number of cars can query it for free: X-travelling lanes get green in the first
-/// half of each node's cycle, Z-travelling lanes in the second half, with a per-node phase offset so
-/// the whole city doesn't blink in unison.</para>
+/// Presentation-only road graph for the Kenney street grid's traffic, built by
+/// <see cref="Game.EditorTools.KenneyTrafficBuilder"/> and serialized into the scene: the directed lane
+/// network, which nodes are signalized, and the shared traffic tuning (light cycle, stop line,
+/// accel/decel) that <see cref="CarDrifter"/> reads to follow lanes, stop at red lights, and turn.
+/// Light state is a pure function of <c>Time.time</c> (no per-light GameObjects), with a per-node phase
+/// offset so the city's lights don't all switch in unison.
 /// </summary>
 public sealed class TrafficNetwork : MonoBehaviour
 {
@@ -69,8 +59,8 @@ public sealed class TrafficNetwork : MonoBehaviour
     public float Accel => _accel;
     public float Decel => _decel;
 
-    /// <summary>Editor-time population (SceneStyler.CreateCars). Values land in the serialized fields and
-    /// bake into the saved scene alongside the cars.</summary>
+    /// <summary>Editor-time population (<see cref="Game.EditorTools.KenneyTrafficBuilder"/>). Values land
+    /// in the serialized fields and bake into the saved scene alongside the cars.</summary>
     public void SetData(Node[] nodes, Lane[] lanes, float lightCycle, float lightClearance,
         float stopMargin, float accel, float decel)
     {

@@ -92,18 +92,14 @@ public sealed class CharacterMotor : MonoBehaviour
     private float _lastLadderDetachTime = float.NegativeInfinity;
 
     // Approach direction captured when a climb-to-ledge starts, handed to StartMantle at the top.
-    // (Formerly overloaded onto the now-removed _swingPlaneAxis field; the swing no longer needs it.)
     private Vector3 _climbApproachDir;
-    // When the current climb started — drives TickClimbing's stuck-climb timeout. The old abort
-    // check compared two positions one tick apart (always ~climbSpeed*dt, never > climbMaxHeight),
-    // so a climb whose ledge could never be reached (overhang, depenetration pushing the body back
-    // down each step) climbed in place forever — THE "stuck on the wall like he's trying to vault,
-    // but I'm at the bottom" bug.
+    // When the current climb started — drives TickClimbing's stuck-climb timeout, which bails to
+    // Airborne if a climb runs far longer than a normal ascent should take (an unreachable ledge,
+    // e.g. an overhang or depenetration pushing the body back down each step).
     private float _climbStartTime;
 
     private ChainSwingInteractable? _currentSwing;
-    // World-space velocity of the bob on the swing (the full simulation state — see TickSwing). The
-    // old planar angle-state (_swingTheta/_swingOmega/_swingPlaneAxis) only swung in one frozen plane.
+    // World-space velocity of the bob on the swing — the full simulation state (see TickSwing).
     private Vector3 _swingVelocity;
     // Effective per-attachment rope length: distance from the pivot to where the swinger actually
     // grabbed (their hands). Grabbing high up the rope makes a SHORTER, faster pendulum; grabbing near
@@ -242,11 +238,11 @@ public sealed class CharacterMotor : MonoBehaviour
         if (_diveActiveRemaining > 0f)
         {
             _diveActiveRemaining -= dt;
-            // Diving/rolling down a ramp should build speed like sliding down it (user). The downhill
-            // slope assist added in ApplyGroundedAcceleration would otherwise be clamped straight back
-            // to the entry burst — ratchet the cap up to whatever the slope grants so the gain sticks.
-            // Only a genuine downhill gain raises CurrentSpeed past the burst; flat/uphill can't, so
-            // this is a no-op anywhere but a downslope.
+            // Diving/rolling down a ramp builds speed like sliding down it: the downhill slope assist
+            // in ApplyGroundedAcceleration would otherwise be clamped straight back to the entry burst
+            // — ratchet the cap up to whatever the slope grants so the gain sticks. Only a genuine
+            // downhill gain raises CurrentSpeed past the burst; flat/uphill can't, so this is a no-op
+            // anywhere but a downslope.
             if (_ground.grounded && IsOnSlope())
                 _diveBurstSpeed = Mathf.Max(_diveBurstSpeed, CurrentSpeed);
             CapHorizontalSpeed(_diveBurstSpeed);
@@ -438,10 +434,9 @@ public sealed class CharacterMotor : MonoBehaviour
         Vector3 dir = horizontal.sqrMagnitude > 0.0001f ? horizontal.normalized : transform.forward;
 
         // A small flat-ground boost (FlatSlideBoostFraction of the full impulse) so sliding on the
-        // level gives a little forward pop, scaling up to the full boost downhill. The old code gave
-        // zero on the flat to stop slide-hop chains stacking speed unbounded — safe to add a little
-        // back now that ground.maxHorizontalSpeed caps the total, and flat friction still stops the
-        // slide far sooner than a ramp does (so you slide less on the flat, as intended).
+        // level gives a little forward pop, scaling up to the full boost downhill. Safe because
+        // ground.maxHorizontalSpeed caps the total, and flat friction still stops the slide far sooner
+        // than a ramp does, so you slide less on the flat than downhill.
         Vector3 downhill = Vector3.ProjectOnPlane(Vector3.down, _ground.normal).normalized;
         float downhillFactor = Mathf.Clamp01(Vector3.Dot(downhill, dir));
         float boostFactor = FlatSlideBoostFraction + (1f - FlatSlideBoostFraction) * downhillFactor;
@@ -505,8 +500,8 @@ public sealed class CharacterMotor : MonoBehaviour
 
     // Reference slope steepness (sin of ~22 degrees, the grade of the movement test suite's slide
     // ramps) that downhillAccelMultiplier is tuned against. TickSliding's steepness scaling divides
-    // by this so a ramp at roughly this grade gets the same accel as before the scaling was added —
-    // only shallower slopes lose boost, steeper ones gain it, instead of uniformly crushing everyone.
+    // by this, so a ramp at roughly this grade gets full accel while shallower slopes lose boost and
+    // steeper ones gain it, instead of every non-flat slope getting the same full-strength accel.
     private const float ReferenceSlopeSteepness = 0.3746f;
 
     /// <summary>On real (non-flat) ground the current ground probe is resting on.</summary>
@@ -575,24 +570,22 @@ public sealed class CharacterMotor : MonoBehaviour
         Vector3 horizontal = HorizontalVelocity;
 
         // Un-normalized: magnitude is sin(slope angle) — 0 on flat ground, growing with actual
-        // steepness. Normalizing this (the old code) threw that away, so a barely-tilted floor
-        // (anything past IsOnSlope's ~8-degree gate) gave the exact same full-strength downhill
-        // accel as a real ramp — see the steepness scaling on `accel` below for why that mattered.
+        // steepness. Kept un-normalized so a barely-tilted floor (anything past IsOnSlope's ~8-degree
+        // gate) does NOT get the same full-strength downhill accel as a real ramp — see the steepness
+        // scaling on `accel` below, which depends on this magnitude staying informative.
         Vector3 downhillRaw = Vector3.ProjectOnPlane(Vector3.down, _ground.normal);
         float slopeSteepness = downhillRaw.magnitude;
         Vector3 downhill = slopeSteepness > 0.0001f ? downhillRaw / slopeSteepness : Vector3.zero;
         Vector3 flatDownhill = new Vector3(downhill.x, 0f, downhill.z);
         float strafe = 0f;
 
-        // Decay any across-slope (lateral) velocity component toward zero, converging travel
-        // onto the slope's true fall-line. This is what stops a slide from preserving
-        // camera-influenced drift from the run-up (hold W while turning the camera during normal
-        // running curves your velocity to follow it, and sliding used to just lock onto and hold
-        // whatever heading resulted). The decay rate must comfortably outpace the per-tick growth
-        // from the downhill acceleration below (~1.13x/tick at these tuning values) or the
-        // absolute lateral speed still creeps up even while its *ratio* to total speed shrinks —
-        // a low rate here looked like it was working over a couple of ticks and then wasn't.
-        // No-op on flat ground (flatDownhill is ~zero there, nothing to align to).
+        // Decay any across-slope (lateral) velocity component toward zero, converging travel onto
+        // the slope's true fall-line, so a slide doesn't just lock onto and hold whatever heading the
+        // run-up left it with (e.g. camera-influenced drift from turning while holding W). The decay
+        // rate must comfortably outpace the per-tick growth from the downhill acceleration below
+        // (~1.13x/tick at these tuning values), or the absolute lateral speed keeps creeping up even
+        // while its *ratio* to total speed shrinks. No-op on flat ground (flatDownhill is ~zero
+        // there, nothing to align to).
         if (flatDownhill.sqrMagnitude > 0.0001f)
         {
             Vector3 downhillNorm = flatDownhill.normalized;
@@ -602,9 +595,10 @@ public sealed class CharacterMotor : MonoBehaviour
             horizontal = downhillNorm * alongSpeed + acrossSlope * acrossSpeed;
 
             // A/D strafe STEERS the slide (rotates the travel direction) rather than adding sideways
-            // velocity — the latter flung you off sideways, which felt unnatural. This curves the
-            // slide left/right while preserving speed; the fall-line alignment above still gently pulls
-            // you back toward straight-down when you let off, like carving on a slope.
+            // velocity, which would fling the character off sideways instead of curving the slide.
+            // This curves the slide left/right while preserving speed; the fall-line alignment above
+            // still gently pulls it back toward straight-down when input releases, like carving on a
+            // slope.
             strafe = Vector3.Dot(ComputeWishDirection(), acrossSlope);
             if (Mathf.Abs(strafe) > 0.01f)
                 horizontal = Quaternion.Euler(0f, strafe * SlideSteerDegPerSec * dt, 0f) * horizontal;
@@ -613,14 +607,14 @@ public sealed class CharacterMotor : MonoBehaviour
         float speed = horizontal.magnitude;
         Vector3 flatDir = speed > 0.0001f ? horizontal.normalized : transform.forward;
 
-        // Regression fix: "hold CTRL and strafe A/D to build speed" — steering re-aims flatDir at
-        // the fall line every tick, and downhillDot alone can't tell an actively-farmed realignment
-        // apart from genuinely traveling straight downhill. Two scales close that off: steepnessFactor
-        // means a barely-tilted floor no longer gives ramp-strength accel just for being non-flat
-        // (normalized against ReferenceSlopeSteepness so an actual ramp's boost is unchanged), and
-        // (1 - |strafe|) means accelerating hard and steering hard are a trade-off, not both free —
-        // straight-line downhill sliding keeps its full boost, pumping A/D to keep re-centering on
-        // the fall line no longer does.
+        // Steering re-aims flatDir at the fall line every tick, and downhillDot alone can't tell an
+        // actively-farmed realignment apart from genuinely traveling straight downhill, so holding
+        // CTRL and strafing A/D must not be a free way to build speed. Two scales close that off:
+        // steepnessFactor means a barely-tilted floor doesn't get ramp-strength accel just for being
+        // non-flat (normalized against ReferenceSlopeSteepness so an actual ramp's boost is
+        // unchanged), and (1 - |strafe|) means accelerating hard and steering hard trade off against
+        // each other — straight-line downhill sliding keeps its full boost, but pumping A/D to
+        // re-center on the fall line does not.
         float downhillDot = speed > 0.01f ? Vector3.Dot(downhill, flatDir) : 0f;
         float steepnessFactor = slopeSteepness / ReferenceSlopeSteepness;
         float steerFactor = 1f - Mathf.Clamp01(Mathf.Abs(strafe));
@@ -636,13 +630,13 @@ public sealed class CharacterMotor : MonoBehaviour
         // Release CTRL to stop. Otherwise only auto-exit when slow on FLAT ground — on a slope a
         // slide legitimately starts near-zero and accelerates, so a low-speed exit there would kill
         // it before gravity kicks in. Also force-exit once maxSlideDuration is hit regardless of
-        // continued CTRL hold — a slope previously let you hold CTRL indefinitely, steering with
-        // A/D while downhillAccelMultiplier kept adding speed the whole time.
+        // continued CTRL hold, so a slope can't be held indefinitely while downhillAccelMultiplier
+        // keeps adding speed.
         // A jump-out (slide-hop) already left above via ConsumeBufferedJump, unconditionally — bots
         // hop-cancel fast and that must never be blocked, so the min-duration window gates only the
         // STAND-UP exits, not the jump exit. Within the first minSlideDuration, ignore a CTRL release
-        // / low-speed stop: those firing a tick or two after entry (over a roof seam, or a fumbled
-        // key) were the Sliding→Grounded churn source. maxSlideDuration (1.75s) already exceeds the
+        // / low-speed stop, which would otherwise cause Sliding→Grounded churn on a tick or two right
+        // after entry (a roof seam, or a fumbled key). maxSlideDuration (1.75s) already exceeds the
         // min window (0.25s), so the force-exit is unaffected.
         bool minWindowElapsed = _slideElapsed >= config.slide.minSlideDuration;
         bool durationExceeded = _slideElapsed >= config.slide.maxSlideDuration;
@@ -711,9 +705,9 @@ public sealed class CharacterMotor : MonoBehaviour
             {
                 // Near-exact REVERSAL (quick A→D or W→S): RotateTowards on antiparallel vectors has
                 // no defined rotation axis — Unity picks an arbitrary perpendicular one, so velocity
-                // swung through an effectively random arc ("pressing opposite keys moves me in random
-                // directions"). A reversal isn't a turn: decelerate straight through zero along the
-                // input line and re-accelerate the other way — crisp and deterministic.
+                // would swing through an effectively random arc. A reversal isn't a turn: decelerate
+                // straight through zero along the input line and re-accelerate the other way — crisp
+                // and deterministic.
                 newHorizontal = Vector3.MoveTowards(horizontal, wishDir * targetSpeed, config.ground.deceleration * dt);
             }
             else
@@ -732,30 +726,29 @@ public sealed class CharacterMotor : MonoBehaviour
 
         // Project onto the slope so the resulting velocity follows the ramp's incline. Preserve the
         // intended horizontal SPEED along the slope (normalize + rescale) instead of letting the raw
-        // projection shrink it by cos(angle) — that cos-loss is half of why running UP a ramp felt
-        // like a forced walk (user). Matches TickSliding's slope projection. No-op on flat ground.
+        // projection shrink it by cos(angle) — that cos-loss is what makes running UP a ramp feel
+        // like a forced walk if left unpreserved. Matches TickSliding's slope projection. No-op on
+        // flat ground.
         Vector3 onSlope = Vector3.ProjectOnPlane(newHorizontal, _ground.normal);
         Vector3 newVelocity = newHorizontal.sqrMagnitude > 0.0001f && onSlope.sqrMagnitude > 1e-6f
             ? onSlope.normalized * newHorizontal.magnitude
             : onSlope;
 
         // Gravity's component along the slope: assists downhill, resists uphill — but ONLY while
-        // actually moving or steering. Applied at rest it caused a real bug: near a ramp's SIDE
-        // edge the ground probe's spherecast can catch the corner and return a laterally-tilted
-        // normal, so this term gained a sideways component that was re-injected every tick — a
-        // continuous lateral push indistinguishable from a held A/D key ("standing on a ramp,
-        // tapping A/D, and it slides me clean off the side"). Standing still on a walkable slope
-        // (maxSlopeAngleDegrees gate) should hold you, edges included; the term's real job —
-        // downhill assist / uphill drag while running — only matters in motion, so gate it there.
+        // actually moving or steering. Applied at rest, near a ramp's SIDE edge the ground probe's
+        // spherecast can catch the corner and return a laterally-tilted normal, so this term would
+        // gain a sideways component re-injected every tick — a continuous lateral push indistinguishable
+        // from a held A/D key. Standing still on a walkable slope (maxSlopeAngleDegrees gate) must
+        // hold position, edges included; the term's real job — downhill assist / uphill drag while
+        // running — only matters in motion, so it is gated there.
         bool hasInput = wishDir.sqrMagnitude > 0.0001f;
         if (hasInput || newHorizontal.magnitude > 0.5f)
         {
             Vector3 slopeGravity = Vector3.ProjectOnPlane(Physics.gravity, _ground.normal);
             // Downhill assist ONLY. slopeGravity points down the fall line, so on an uphill run it
-            // opposes travel and drags you — which felt bad ("not fun being slowed by the ramp", user).
-            // Applying it only when it aligns with travel (Dot > 0 = heading downhill) keeps the fun
-            // downhill speed-up while making a ramp cost no speed to run UP. Flat ground is unaffected
-            // (slopeGravity ≈ 0 there).
+            // would oppose travel and drag the character down. Applying it only when it aligns with
+            // travel (Dot > 0 = heading downhill) keeps the downhill speed-up while making a ramp
+            // cost no speed to run UP. Flat ground is unaffected (slopeGravity ≈ 0 there).
             if (Vector3.Dot(slopeGravity, newHorizontal) > 0f)
                 newVelocity += slopeGravity * (config.ground.slopeGravityInfluence * dt);
         }
@@ -766,11 +759,10 @@ public sealed class CharacterMotor : MonoBehaviour
     private void SnapToGround()
     {
         // Kill residual upward "bounce" from crossing between adjacent ground colliders WITHOUT
-        // killing the legitimate upward velocity of running UP a ramp. The old version zeroed all
-        // vel.y > 0.05, which decapitated uphill slope motion every tick and made running up a ramp
-        // crawl (user: "can't run up a ramp"). Compute the vertical speed that simply FOLLOWS the
-        // ground surface (keeps velocity in the ground plane) and clamp only the excess above it —
-        // that excess is the bounce; the slope-following part is real ascent and must survive.
+        // killing the legitimate upward velocity of running UP a ramp. Compute the vertical speed
+        // that simply FOLLOWS the ground surface (keeps velocity in the ground plane) and clamp only
+        // the excess above it — that excess is the bounce; the slope-following part is real ascent
+        // and must survive.
         Vector3 vel = _rb.linearVelocity;
         Vector3 n = _ground.normal;
         float slopeVy = _ground.grounded && n.y > 0.01f
@@ -800,8 +792,8 @@ public sealed class CharacterMotor : MonoBehaviour
 
         // Coyote-time check FIRST so ConsumeBufferedJump only consumes the buffered press inside the
         // coyote window — outside it, the press survives for the double-jump branch below (or, for a
-        // non-double-jumper, for the landing jump-buffer). Order matters: the old `Consume() && window`
-        // form ate the buffer even when the window had expired.
+        // non-double-jumper, for the landing jump-buffer). Checking the window before consuming is
+        // required: consuming first would eat the buffer even once the window had expired.
         if ((Time.time - _lastGroundedTime) <= config.jump.coyoteTime && ConsumeBufferedJump())
         {
             PerformJump(1f, config.jump.jumpSpeed);
@@ -842,11 +834,11 @@ public sealed class CharacterMotor : MonoBehaviour
         // target is fixed to the character's own facing (-transform.forward), not the current
         // velocity direction — deriving it from velocity would flip the target back to "forward"
         // the instant velocity crossed zero into reverse, oscillating instead of settling.
-        // Player-only: Move.y is the camera-relative stick/S-key (a deliberate "brake/reverse").
+        // Player-only: Move.y is the camera-relative stick/S-key (a deliberate brake/reverse).
         // AI input (cameraYaw == null, see ComputeWishDirection) feeds Move as a world-space
         // direction, so its Move.y is just the world-Z component of where it's steering — reading
-        // that as a brake air-braked bots mid-jump whenever they fled or aimed toward -Z, killing
-        // the jump and dropping them into the gap (M4 loop: 92 jump attempts, 0 completions).
+        // that as a brake would air-brake bots mid-jump whenever they fled or aimed toward -Z,
+        // killing the jump and dropping them into the gap.
         if (cameraYaw != null && _input.Move.y < -0.1f)
         {
             Vector3 currentHorizontal = HorizontalVelocity;
@@ -952,7 +944,7 @@ public sealed class CharacterMotor : MonoBehaviour
 
     private void TickWallHook(float dt)
     {
-        // Hanging directly below a reachable ledge should PULL UP, not dangle (user). Probe into the
+        // Hanging directly below a reachable ledge should PULL UP, not dangle. Probe into the
         // wall each tick; the moment a top within mantle reach exists (with real standing room — the
         // phantom-seam guard applies here too), convert the hang into a mantle. Covers hangs that
         // engaged a hair below the lip (late E while falling past a ledge).
@@ -997,8 +989,6 @@ public sealed class CharacterMotor : MonoBehaviour
         Jumped?.Invoke();
     }
 
-    /// <summary>Grab and hang on a wall you can't get up (E). Player-only — bots route via graph edges.
-    /// Hanging slides you slowly down (TickWallHook); jump to launch off, chaining wall to wall.</summary>
     /// <summary>
     /// Bot fall-recovery wall grab. Deliberately NOT a relaxation of <see cref="TryStartWallHook"/>'s
     /// cameraYaw gate: that gate exists because bots hold InteractPressed for the whole length of every
@@ -1048,14 +1038,16 @@ public sealed class CharacterMotor : MonoBehaviour
         return true;
     }
 
+    /// <summary>Grab and hang on a wall you can't get up (E). Player-only — bots route via graph edges.
+    /// Hanging slides you slowly down (TickWallHook); jump to launch off, chaining wall to wall.</summary>
     private bool TryWallHang(Vector3 wallNormal)
     {
         // Require the current-frame press, NOT the lingering interact buffer. The buffer (set for
         // InteractBufferTime whenever E is pressed) makes mantle/vault forgiving, but wall-hang is a
-        // hard, movement-arresting state: consuming a stale buffered press here caused unwanted grabs
-        // — e.g. pressing E at an out-of-range ladder (which does not clear the buffer) leaves the
-        // flag live, and running into an unrelated wall within the window then grabbed it. A
-        // deliberate wall-grab should be a fresh input, matching TryStartWallHook which already gates
+        // hard, movement-arresting state: consuming a stale buffered press here would cause unwanted
+        // grabs — e.g. pressing E at an out-of-range ladder (which does not clear the buffer) leaves
+        // the flag live, and running into an unrelated wall within the window would then grab it. A
+        // deliberate wall-grab must be a fresh input, matching TryStartWallHook which already gates
         // on the raw edge. ConsumeInteract() still clears the buffer so this used press can't also
         // feed a mantle a couple frames later.
         if (cameraYaw == null || !_input.InteractPressed) return false;
@@ -1076,10 +1068,10 @@ public sealed class CharacterMotor : MonoBehaviour
         // Anti-loop / anti-stick: don't re-enter a mantle/vault/climb right after one ended.
         if (Time.time - _lastTransitionEndTime < TransitionReentryCooldown) return false;
 
-        // TEMPORARY feel experiment (user request): auto vault/mantle is OFF for the player — every
-        // get-on-top action requires a (buffered, 0.25s-forgiving) E press. Bots (cameraYaw == null)
-        // keep full auto; their parkour-graph traversal depends on it. Delete this one gate to
-        // restore auto-vault.
+        // Player: every get-on-top action requires a (buffered, 0.25s-forgiving) E press — auto
+        // vault/mantle is disabled for the player. Bots (cameraYaw == null) keep full auto; their
+        // parkour-graph traversal depends on it. Delete this one gate to enable auto-vault for the
+        // player.
         if (cameraYaw != null && !InteractBuffered) return false;
 
         Vector3 moveDir = ComputeWishDirection();
@@ -1115,10 +1107,10 @@ public sealed class CharacterMotor : MonoBehaviour
             ? chestWallHit
             : kneeWallHit;
 
-        // A trash can is an objective you eat, not a ledge — never vault/mantle/climb onto one
-        // (user: "auto vaulting onto bins is bad"). wallMask is broad (~0) so a bin's collider
-        // registers as a wall; exclude it explicitly here rather than via a dedicated layer. Applies
-        // to bots too — they eat by proximity and have no reason to clamber a can.
+        // A trash can is an objective you eat, not a ledge — never vault/mantle/climb onto one.
+        // wallMask is broad (~0) so a bin's collider registers as a wall; exclude it explicitly here
+        // rather than via a dedicated layer. Applies to bots too — they eat by proximity and have no
+        // reason to clamber a can.
         if (wallHit.collider.GetComponentInParent<TrashCanInteractable>() != null)
             return false;
 
@@ -1142,12 +1134,12 @@ public sealed class CharacterMotor : MonoBehaviour
         if (!HasStandingRoom(topHit.point, probeDir, topHit.collider))
             return TryWallHang(wallHit.normal);
 
-        // Auto-vault/mantle/climb for BOTH players and bots: run into a ledge you can get onto and you
-        // get onto it — no E press (user: "when we can vault/climb up onto a ledge it should auto vault,
-        // more enjoyable"). The automatic gates below (approach-speed + mantleMinHeight floor) keep
-        // incidental knee-high geometry from triggering, and the standstill guard above keeps it from
-        // firing while idle against a wall. A deliberate E-press still RELAXES those gates (lower speed,
-        // knee-high lips) via explicitVault — now a bonus, no longer a requirement.
+        // Auto-vault/mantle/climb for BOTH players and bots: running into a ledge you can get onto
+        // gets you onto it — no E press required. The automatic gates below (approach-speed +
+        // mantleMinHeight floor) keep incidental knee-high geometry from triggering, and the
+        // standstill guard above keeps it from firing while idle against a wall. A deliberate E-press
+        // still RELAXES those gates (lower speed, knee-high lips) via explicitVault, as an optional
+        // shortcut rather than a requirement.
 
         // Vault takes priority in the overlap band: a low obstacle taken at speed is a vault, not a
         // mantle. Mantle only wins there when approach speed is too low to vault. A deliberate buffered
@@ -1173,18 +1165,15 @@ public sealed class CharacterMotor : MonoBehaviour
             return true;
         }
 
-        // Auto-climb tall ledges (above mantle height, up to climbMaxHeight) for players too — the
-        // "climb up onto a ledge" half of the user's request. Only walls with NO reachable top within
-        // climbMaxHeight fall through to the wall-hang below, so deliberate wall-jump chains on truly
-        // tall walls are unaffected.
+        // Auto-climb tall ledges (above mantle height, up to climbMaxHeight) for players too. Only
+        // walls with NO reachable top within climbMaxHeight fall through to the wall-hang below, so
+        // deliberate wall-jump chains on truly tall walls are unaffected.
         if (ledgeHeight > config.mantleVault.mantleMaxHeight && ledgeHeight <= config.climb.climbMaxHeight)
         {
             // Player: a tall wall (above mantle height) is only climbed on an explicit E press —
-            // NOTHING else (user: "only E should allow you to stick to the wall"). Held jump was
-            // briefly allowed too, but jumping at a wall while still holding space is just normal
-            // movement, and it kept auto-hauling the player up ("stuck trying to vault at the
-            // bottom"). Bots (cameraYaw == null) keep the unconditional auto-climb their
-            // parkour-graph routing depends on.
+            // nothing else triggers it, since jumping at a wall while still holding space is just
+            // normal movement and must not auto-haul the player up it. Bots (cameraYaw == null) keep
+            // the unconditional auto-climb their parkour-graph routing depends on.
             if (cameraYaw != null && !InteractBuffered)
                 return TryWallHang(wallHit.normal);
             StartClimbToLedge(topHit.point, probeDir);
@@ -1201,11 +1190,10 @@ public sealed class CharacterMotor : MonoBehaviour
     /// faces (RooftopArena's roof body bottoming at y=-3 + SceneStyler's building-mass box topping at
     /// y=-3, same footprint) produce a hittable interior seam — the down-probe starts inside the UPPER
     /// box (rays never hit the collider they start in) but then crosses into the LOWER box's top face,
-    /// a "ledge" buried inside solid wall. Mantling onto it was blocked by the wall around it and
-    /// looped forever — the "stuck halfway down every wall, where the smog is" bug (the smog haze
-    /// planes sit at that same y=-3 band, hence the correlation). A real roof top has open air at the
-    /// landing spot and passes untouched. <paramref name="ledgeCollider"/> is excluded (flush-face
-    /// grazing); the wall/blocking collider deliberately is NOT — it IS the evidence of burial.
+    /// a "ledge" buried inside solid wall, blocked from mantling by the wall around it. A real roof
+    /// top has open air at the landing spot and passes untouched. <paramref name="ledgeCollider"/> is
+    /// excluded (flush-face grazing); the wall/blocking collider deliberately is NOT — it IS the
+    /// evidence of burial.
     /// </summary>
     private bool HasStandingRoom(Vector3 ledgePoint, Vector3 probeDir, Collider? ledgeCollider)
     {
@@ -1259,14 +1247,13 @@ public sealed class CharacterMotor : MonoBehaviour
         float t = Mathf.Clamp01(_transitionElapsed / _transitionDuration);
         float eased = t * t * (3f - 2f * t);
 
-        // UP-THEN-OVER path, not a straight lerp. The straight start→end line cuts through the ledge
-        // CORNER: collision pinned the capsule against the wall face below the lip while t kept
-        // advancing, so the transition "completed" with the body still at the bottom, the exit
-        // velocity shoved it back into the wall, and 0.2s later it re-triggered — an endless
-        // climb-in-place loop at the wall base (the "stuck on every wall" bug). Rising vertically
-        // FIRST (along the wall face the capsule is already touching — nothing to clip) and only
-        // then moving horizontally onto the ledge keeps the whole path collision-free. t is split
-        // between the legs in proportion to their lengths so speed stays continuous.
+        // UP-THEN-OVER path, not a straight lerp. A straight start→end line would cut through the
+        // ledge CORNER: collision would pin the capsule against the wall face below the lip while t
+        // kept advancing, so the transition would "complete" with the body still at the bottom, and
+        // the exit velocity would shove it back into the wall to re-trigger next tick. Rising
+        // vertically FIRST (along the wall face the capsule is already touching — nothing to clip)
+        // and only then moving horizontally onto the ledge keeps the whole path collision-free. t is
+        // split between the legs in proportion to their lengths so speed stays continuous.
         Vector3 corner = new Vector3(_transitionStart.x, _transitionEnd.y, _transitionStart.z);
         float upLen = Vector3.Distance(_transitionStart, corner);
         float overLen = Vector3.Distance(corner, _transitionEnd);
@@ -1290,8 +1277,8 @@ public sealed class CharacterMotor : MonoBehaviour
         if (t >= 1f)
         {
             // Completion check: if collision kept the body from actually reaching the ledge (odd
-            // geometry the up-then-over path still can't clear), do NOT fire the exit velocity —
-            // that shoved the body back into the wall and fed the re-trigger loop. Just drop to
+            // geometry the up-then-over path still can't clear), do NOT fire the exit velocity — that
+            // would shove the body back into the wall and re-trigger the transition. Just drop to
             // Airborne with no push; the re-entry lockout stops an instant retry.
             bool reached = Vector3.Distance(_rb.position, _transitionEnd) <= 0.75f;
             _rb.linearVelocity = reached ? _transitionExitVelocity : Vector3.zero;
@@ -1327,12 +1314,10 @@ public sealed class CharacterMotor : MonoBehaviour
         }
         else
         {
-            // Stuck-climb timeout. The old check here (pos.y - transform.position.y > climbMaxHeight)
-            // compared positions ONE TICK apart — always ~climbSpeed*dt, so it could never fire, and a
-            // climb whose ledge is unreachable (overhang / depenetration shoving the body back down
-            // every step) climbed in place forever: the "stuck on the wall at the bottom" bug. A full
-            // climb takes climbMaxHeight/climbSpeed seconds; allow 1.5x that, then bail to Airborne
-            // with a small push away from the wall so gravity + the re-entry lockout take over.
+            // Stuck-climb timeout: a climb whose ledge is unreachable (overhang / depenetration
+            // shoving the body back down every step) must not climb in place forever. A full climb
+            // takes climbMaxHeight/climbSpeed seconds; allow 1.5x that, then bail to Airborne with a
+            // small push away from the wall so gravity + the re-entry lockout take over.
             float maxClimbSeconds = config.climb.climbMaxHeight / Mathf.Max(config.climb.climbSpeed, 0.1f) * 1.5f;
             if (Time.time - _climbStartTime > maxClimbSeconds)
             {
@@ -1381,9 +1366,8 @@ public sealed class CharacterMotor : MonoBehaviour
         if (_ladderT >= 1f)
         {
             // Off the top: launch up-and-forward (toward the wall side, opposite the outward push) to
-            // clear the wall and land on the top platform beyond it. The old code just nudged 0.1m
-            // straight up at the ladder line — still on the bare wall face with no floor, so the
-            // climber fell right back down and could never reach the top platform.
+            // clear the wall and land on the top platform beyond it — a small nudge straight up at the
+            // ladder line would leave the climber on the bare wall face with no floor to land on.
             Vector3 ontoLanding = -_currentLadder.OutwardNormal;
             _currentLadder = null;
             _lastLadderDetachTime = Time.time;
@@ -1405,7 +1389,7 @@ public sealed class CharacterMotor : MonoBehaviour
     // constraint projects it onto the rope's tangent plane, and the bob is snapped back onto the sphere
     // of radius L around the pivot each tick. Because the state IS a velocity, a momentum-true release
     // falls out for free (launch velocity == swing velocity times a multiplier) and the swing is
-    // omnidirectional — any WASD direction pumps it, unlike the old frozen-plane angle model.
+    // omnidirectional — any WASD direction pumps it.
     private void TickSwing(float dt)
     {
         if (_currentSwing is null)
@@ -1433,8 +1417,7 @@ public sealed class CharacterMotor : MonoBehaviour
         _swingVelocity = Vector3.ProjectOnPlane(_swingVelocity, ropeDir);
         _swingVelocity *= Mathf.Exp(-config.swing.dampingPerSecond * dt);
 
-        // Energy-conserving speed cap (replaces both the old flat maxTangentialSpeed clamp AND the hard
-        // angle wall). Treat maxTangentialSpeed as the speed budget AT THE LOWEST POINT of the arc — a
+        // Energy-conserving speed cap. Treat maxTangentialSpeed as the speed budget AT THE LOWEST POINT of the arc — a
         // total energy-per-mass budget of 0.5 * maxTangentialSpeed^2. As the bob rises by `height` above
         // that lowest point, energy conservation caps its speed at sqrt(maxTangentialSpeed^2 - 2*g*h):
         // being fast up high "costs" more budget, so the swing self-limits to a SOFT apex set purely by
@@ -1532,8 +1515,8 @@ public sealed class CharacterMotor : MonoBehaviour
                 && col.TryGetComponent(out LadderInteractable ladder)
                 // Feet (the transform origin) must be BELOW the climb top: standing on the roof above
                 // a pipe, the grab sphere still reaches the trigger's top sliver, and attaching there
-                // projected to t=1 — "on the pipe" while the whole body is above it, resolved a tick
-                // later by a nonsense dismount hop. Falling past the top re-qualifies naturally.
+                // would project to t=1 with the whole body above the pipe. Falling past the top
+                // re-qualifies naturally.
                 && transform.position.y < ladder.PointAt(1f).y - 0.1f)
             {
                 AttachToLadder(ladder);
@@ -1675,8 +1658,7 @@ public sealed class CharacterMotor : MonoBehaviour
         public bool SlideHeld => !Locked && Inner.SlideHeld;
         public bool SprintHeld => Inner.SprintHeld;
         // Interact passes THROUGH the dive lock (but NOT the countdown lock): lunging at a wall must
-        // stay E-cancelable into a grab/vault/ladder/swing (user: "lunge toward a wall, can't press E
-        // until the animation is done, which sucks") — a successful attach then cancels the dive
+        // stay E-cancelable into a grab/vault/ladder/swing — a successful attach then cancels the dive
         // outright, see CancelDive. The countdown freeze has no such exception: E stays locked out
         // for its whole window.
         public bool InteractPressed => !_motor.InputLocked && Inner.InteractPressed;

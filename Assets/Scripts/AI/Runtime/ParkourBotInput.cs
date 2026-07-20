@@ -8,24 +8,14 @@ using UnityEngine;
 namespace Game.AI;
 
 /// <summary>
-/// Smart M3 bot: routes through a <see cref="ParkourGraph"/> instead of steering straight at its
-/// target, and executes each edge type's required input (jump near a genuine drop-off, Interact
-/// near a climb/ladder/swing) rather than relying purely on <see cref="CharacterMotor"/>'s own
-/// auto-detection. Implements <see cref="ICharacterInput"/> exactly like the player — same
-/// speeds, same abilities — so skill comes entirely from routing/prediction/timing, matching the
-/// "bots must be scary good through decisions, not cheating" architecture constraint.
-///
-/// Taggers predict the target's future position (current position + velocity * prediction
-/// horizon) and path toward that intercept point instead of the target's current position, and
-/// loosely coordinate through <see cref="RoundController.ClaimTarget"/> so multiple taggers
-/// prefer splitting up over piling onto the same runner. Runners flee the predicted position of
-/// their nearest threat. Difficulty (<see cref="BotConfig"/>) scales reaction time (how often the
-/// bot re-evaluates its target/plan), prediction horizon, and execution precision (steering
-/// jitter) — never movement stats.
-///
-/// Falls back to direct-line steering (with the same raycast-based cliff avoidance the original
-/// dumb bots used) whenever no graph is supplied, no path exists, or the planned path has been
-/// fully walked — e.g. for the final close-quarters approach once routing has done its job.
+/// Bot input that routes through a <see cref="ParkourGraph"/> and executes each edge's required
+/// button (jump near a drop-off, Interact near a climb/ladder/swing) instead of relying on
+/// <see cref="CharacterMotor"/>'s auto-detection, with the same speeds/abilities as the player so
+/// skill comes from routing/prediction/timing. Taggers predict the target's future position and
+/// coordinate via <see cref="RoundController.ClaimTarget"/>; runners flee their nearest threat's
+/// predicted position. Difficulty (<see cref="BotConfig"/>) scales reaction time, prediction
+/// horizon, and steering jitter — never movement stats. Falls back to direct-line steering with
+/// raycast-based cliff avoidance whenever no graph/path exists or the path is fully walked.
 /// </summary>
 public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 {
@@ -33,21 +23,20 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     [SerializeField] private float nodeArrivalRadius = 1.75f;
     [SerializeField] private float interactTriggerDistance = 2f;
     // Takeoff fires when ground runs out this far ahead — every metre here is wasted jump range
-    // (the bot leaves the ledge that much before the lip). M4 loop measured jumps landing ~9m short
-    // with the old 1.3m; tightened so the bot commits nearer the edge and keeps its reach.
+    // (the bot leaves the ledge that much before the lip). Kept small so the bot commits near the
+    // edge and keeps its reach.
     [SerializeField] private float edgeLookahead = 0.6f;
 
-    // Below this empty-gap distance a sprint jump (~8.5m of range) overshoots the far platform into
-    // the next pit, so the bot approaches at walk speed (~4.4m range) instead — the M4 loop's
-    // "fails the first jump" (the 3m opening gap) was this fixed-power overshoot. Above it, sprint.
+    // Below this empty-gap distance a sprint jump (~8.5m of range) would overshoot the far platform
+    // into the next pit, so the bot approaches at walk speed (~4.4m range) instead. Above it, sprint.
     [SerializeField] private float shortJumpGapThreshold = 4.5f;
 
     // Shortfall recovery: while descending mid-Jump-edge with no floor in reach below, if the bot is
     // still farther than this from the target lip it spends its double-jump (runners only — the motor's
     // CanDoubleJump gate makes this a no-op for taggers). The double-jump adds roughly 5-6m of flight
-    // (doubleJumpSpeed 5 at ~6.5m/s horizontal), so firing with less than ~4m remaining converts a jump
-    // that would have made it into an overshoot past the node — measured: threshold 2m dropped
-    // jump_land_within from 0.77 to 0.75; only genuine shortfalls should trigger it.
+    // (doubleJumpSpeed 5 at ~6.5m/s horizontal), so firing with less than ~4m remaining would convert a
+    // jump that would have made it into an overshoot past the node; only genuine shortfalls should
+    // trigger it.
     [SerializeField] private float doubleJumpShortfallDistance = 4f;
 
     // Cliff-avoidance tuning — see ChaseFleeBotInput's original fix notes: the raycast must cover
@@ -59,23 +48,19 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
     // Momentum brake horizon. Cliff-avoidance only STEERS, and steering cannot beat momentum: the
     // fan's shallowest deflection (20°) still carries most of the forward velocity, so a sprinting bot
-    // "avoids" a lip and slides over it anyway — measured falling at x=11.22 past a lip at x=10 while
-    // chasing a target parked at the edge. That's the void-bait from manual play: it needs a runway to
-    // reach sprint, which is why bot-vs-bot self-play (runners juke away) never reproduced it.
+    // that only steers away from a lip can still slide over it — a void-bait a runway-length sprint
+    // can trigger from manual play but bot-vs-bot self-play rarely reaches (runners juke away first).
     //
     // So when our CURRENT VELOCITY would carry us off within this many seconds, stop instead of
     // steering. Scaling the check by speed (not a flat look-ahead) is the point: a flat value big
-    // enough to stop a sprint makes bots halt ~5m short of EVERY edge (measured: lookAheadDistance 6
-    // parked the bot at x=5.15, unable to reach a target on the lip at x=9.5), which just swaps the
-    // void exploit for a ledge-camping one. Speed-scaled, a slowed bot's horizon shrinks with it, so
-    // it creeps right up to the lip — charge, brake, close on foot (measured: settles at x=9.00,
-    // 0.5m from a target at the edge, inside tagReachMoving).
+    // enough to stop a sprint would halt bots well short of every edge, trading the void exploit for a
+    // ledge-camping one. Speed-scaled, a slowed bot's horizon shrinks with it, so it creeps right up to
+    // the lip — charge, brake, close on foot.
     //
     // TUNED, do not lower without re-running ParkourBotInput_BaitedToLipByTargetAtEdge: real stopping
     // distance from sprint is ~2-2.4m, NOT the ~0.33m that deceleration=75 suggests on paper (the
-    // config value isn't raw m/s²). 0.15s (1.05m) and 0.25s (1.75m) BOTH still went over the lip;
-    // 0.35s (2.45m) is the first that holds. Cost is real and measured: it drops tagger pressure
-    // enough to move bot-vs-bot runner_win_rate 0.00 -> 0.20.
+    // config value isn't raw m/s²) — 0.35s (2.45m) is the shortest horizon that reliably holds before
+    // the lip.
     [SerializeField] private float edgeBrakeSeconds = 0.35f;
 
     // Takeoff cone — see ApplySteeringSafety. Cliff-avoidance is suppressed for a gap-crossing edge
@@ -422,13 +407,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     /// <summary>
     /// Drive the pendulum while on a rope. Returns true while it owns the input.
     ///
-    /// Steering at the exit NODE — which is what normal path steering does, and what bots did before —
-    /// is a CONSTANT force on a pendulum. Constant force doesn't add energy to a swing; it just shifts
-    /// where the thing hangs. A bot that drops onto the rope out of a fall arrives with almost no
-    /// tangential speed, so it hung near the bottom of the arc forever and the motor's auto-release
-    /// (velocity toward ExitDirection > 5 AND rising > 1) could never be satisfied — measured: every
-    /// swing ended how=deadline, attached=True, min_rope_dist=0.02-0.08. They caught the rope fine;
-    /// nothing was building the arc.
+    /// Steering at the exit NODE — the default normal path-steering target — is a CONSTANT force on a
+    /// pendulum. Constant force doesn't add energy to a swing; it just shifts where the thing hangs. A
+    /// bot that drops onto the rope out of a fall arrives with almost no tangential speed, so without
+    /// pumping it would hang near the bottom of the arc forever and the motor's auto-release (velocity
+    /// toward ExitDirection > 5 AND rising > 1) could never be satisfied.
     ///
     /// Pumping means pushing along the CURRENT direction of travel, which adds energy every tick, so
     /// amplitude grows until an exit-ward upswing satisfies the release. Seeded with the exit direction
@@ -488,10 +471,9 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         // Reference height for "have I dropped?". While a planned jump is in flight the bot is SUPPOSED
         // to be below its takeoff (a Drop edge descends deliberately, and every jump arcs down onto its
         // lip), so the comparison has to be against the landing it's aiming at — not where it jumped
-        // from. Getting this wrong made recovery fire in the middle of perfectly good traversals:
-        // measured self-play stuck 7 -> 14 and double-jumps 7 -> 30 as bots grabbed walls and burned
-        // air-jumps mid-arc. Below the LANDING with nothing underneath is a miss; below the takeoff is
-        // just a jump.
+        // from. Comparing against the takeoff instead would fire recovery in the middle of perfectly
+        // good traversals, as bots grab walls and burn air-jumps mid-arc. Below the LANDING with
+        // nothing underneath is a miss; below the takeoff is just a jump.
         float landingReference = _jumpInFlight ? _jumpTargetPos.y : _lastGroundedY;
         bool falling = _agent.Motor.Velocity.y < -2f;
         bool belowLanding = transform.position.y < landingReference - fallRecoveryDropThreshold;
@@ -759,9 +741,8 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
             // Swing approach: aim at the ROPE, not the far lip. The grab volume is a radius-1.2 capsule
             // hanging down the rope line, and the exit node is metres past it — steering at the exit
-            // sends the bot off the entry lip on a trajectory that only clips the rope by chance, which
-            // is exactly why swings measured 9 attempts / 0 completions. Once attached, the pendulum
-            // owns the motion and the exit node is the right target again.
+            // would send the bot off the entry lip on a trajectory that only clips the rope by chance.
+            // Once attached, the pendulum owns the motion and the exit node is the right target again.
             if (edge.Type == ParkourEdgeType.Swing && _edgeSwing != null
                 && _agent.Motor.CurrentState != MotorState.OnSwing)
             {
@@ -873,10 +854,10 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     ///
     /// (2) On approach to a deliberate gap-crossing edge — but only inside the TAKEOFF CONE (near the
     /// takeoff node AND heading along the edge), not for the edge's whole duration. Outside the cone
-    /// there's no takeoff to protect, so avoidance (and the momentum brake) stay on. Note this is
-    /// hardening, NOT the void-fall fix: the old edge-wide suppression was measured NOT to cause falls,
-    /// because steering jitter is re-rolled per tick and so is zero-mean noise that never accumulates
-    /// into a side-lip departure. The actual void fall was momentum — see SteerSafely.
+    /// there's no takeoff to protect, so avoidance (and the momentum brake) stay on. This suppression
+    /// exists to protect the takeoff, not to guard against void-falls from steering jitter: jitter is
+    /// re-rolled per tick and so is zero-mean noise that never accumulates into a side-lip departure.
+    /// The actual void-fall risk is momentum — see SteerSafely.
     /// </summary>
     private Vector3 ApplySteeringSafety(Vector3 dir)
     {
@@ -906,10 +887,10 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     /// leaves the map.
     ///
     /// Shared deliberately by ApplySteeringSafety (suppress cliff-avoidance only here) and
-    /// ExecuteEdgeButtons (press Jump only here). Both previously trusted "the current edge is a
-    /// Jump" on its own, which fires at ANY lip the bot happens to reach — so a bot nudged toward a
-    /// side lip by steering jitter, a shove, or a bait would launch itself into the void with
-    /// avoidance switched off. One guard covering both is why the fix holds.
+    /// ExecuteEdgeButtons (press Jump only here): trusting "the current edge is a Jump" on its own
+    /// would fire at ANY lip the bot happens to reach, so a bot nudged toward a side lip by steering
+    /// jitter, a shove, or a bait could launch itself into the void with avoidance switched off. One
+    /// guard covering both call sites keeps them from drifting out of sync.
     ///
     /// The cone opens naturally: the Run edge preceding a Jump ends AT its takeoff node, so when the
     /// path advances onto the Jump the bot is already within nodeArrivalRadius of it — well inside.
@@ -989,9 +970,8 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
                 if (_agent.Motor.CurrentState != MotorState.OnSwing)
                     InteractPressed = true;
                 // Resolve the actual rope so ComputeSteerPoint can aim AT it. Holding interact is
-                // useless if the bot's arc never enters the grab capsule, which is what steering at the
-                // far exit node produced: measured 9 swing attempts, 0 completions — it was catching the
-                // rope only by luck of trajectory.
+                // useless if the bot's arc never enters the grab capsule, which steering at the far
+                // exit node alone would produce — catching the rope only by luck of trajectory.
                 CacheEdgeSwing(edge);
                 // TEMP DIAG (remove once swings land): attempts>>usage says bots start swing edges and
                 // never finish them. Track how close we actually get to the rope and whether we ever
@@ -1026,10 +1006,11 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     }
 
     /// <summary>Latch onto the special edge the bot has just started executing: freeze planning until
-    /// the edge completes (ToNode arrival), a fall-respawn teleport, or the deadline. Records
-    /// exactly ONE attempt per execution here — swing/climb/ladder previously counted per-FixedUpdate
-    /// (frame-inflated: 333/471/54 attempts, 0 completions); this matches Jump's per-event semantics.
-    /// No-op if already committed, so neither the counter nor the deadline re-arm each frame.
+    /// the edge completes (ToNode arrival), a fall-respawn teleport, or the deadline. Records exactly
+    /// ONE attempt per execution here, matching Jump's per-event semantics, rather than counting every
+    /// FixedUpdate tick while committed (which would frame-inflate the attempt count for swing/climb/
+    /// ladder edges). No-op if already committed, so neither the counter nor the deadline re-arm each
+    /// frame.
     ///
     /// The deadline is per-edge-kind because a flat 4s is SHORTER than a swing's own designed hang
     /// budget (swing.maxHangSeconds = 8): a bot that attached correctly would have its commit expire
@@ -1074,9 +1055,10 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         foreach (Collider col in hits)
             if (col.TryGetComponent(out ChainSwingInteractable swing)) { _edgeSwing = swing; return; }
 
-        // TEMP DIAG (remove once swings land): a failed lookup was previously SILENT, and the attach
-        // diagnostics are all gated behind _edgeSwing != null — so "rope not found" and "no data" were
-        // indistinguishable. Once per execution: the retry runs every tick until the edge ends.
+        // TEMP DIAG (remove once swings land): logs once per execution so a failed rope lookup is
+        // distinguishable from "no data" — the attach diagnostics are all gated behind _edgeSwing !=
+        // null, so a silent failure here would otherwise look identical to never having tried. The
+        // retry runs every tick until the edge ends.
         if (!_swingRopeSearchFailed)
         {
             _swingRopeSearchFailed = true;
@@ -1088,7 +1070,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     /// short jump the bot is *about to take* — either the current edge is that short jump, or the bot
     /// is on the Run approach immediately before one (it needs the run-up to decelerate sprint→walk,
     /// which takes more than the short takeoff platform alone). Crucially it does NOT walk a *long*
-    /// jump whose next edge happens to be short — doing so made long jumps fall short into the pit.</summary>
+    /// jump whose next edge happens to be short — doing so would make long jumps fall short into the pit.</summary>
     private bool IsShortJumpAhead()
     {
         if (_path == null || _pathIndex >= _path.Count) return false;
@@ -1104,8 +1086,7 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
         ParkourEdge edge = _path[index];
         if (edge.Type != ParkourEdgeType.Jump) return false;
 
-        // Real per-edge void distance (lip-to-lip, insets removed) baked in by RooftopGraphBuilder —
-        // no longer the retired corridor's PlatformLength const that misclassified nearly every gap.
+        // Real per-edge void distance (lip-to-lip, insets removed), baked in by RooftopGraphBuilder.
         return edge.EmptyGap <= shortJumpGapThreshold;
     }
 

@@ -7,21 +7,12 @@ using UnityEngine;
 namespace Game.Rules;
 
 /// <summary>
-/// The ranged catch, reworked from an instant hand-tag into a THROWN bug net. Added by
-/// <see cref="TagAgent"/> to itself in Configure (so the bootstrap needs no extra wiring), it owns:
-/// a handheld net carried in a Tagger's right hand between throws; a windup → flight state machine
-/// (ticked in FixedUpdate for sim, read by Update for presentation); and hit/miss resolution.
-///
-/// On a HIT a trap dome drops over the victim, who struggles for <see cref="TagRulesConfig.netTrapDuration"/>
-/// before the normal tag flow runs (role conversion / round-end), byte-for-byte the same as the old
-/// ranged tag downstream of <see cref="TagAgent.ExecuteTag"/>. A MISS lands the net flat on the ground
-/// and the tagger eats the existing whiff lockout.
-///
-/// When the target is the LOCAL player the throw's flight doubles as the existing clutch-dodge reaction
-/// window: <see cref="NetThrownAtPlayer"/> hands resolution to <see cref="RoundController"/>, which opens
-/// a slow-mo window of length <see cref="TagRulesConfig.netFlightTime"/> and drives it back to
-/// <see cref="OnDodged"/> (dodged) or <see cref="OnHitConfirmed"/> (net lands). Bots get no QTE — their
-/// dive i-frames already counter — so they self-resolve at flight end.
+/// The ranged catch: a THROWN bug net. Added by <see cref="TagAgent"/> to itself in Configure, it owns
+/// the handheld/thrown net visuals, a windup → flight state machine, and hit/miss resolution. A HIT
+/// drops a trap dome over the victim, who struggles before the normal tag flow runs via
+/// <see cref="TagAgent.ExecuteTag"/>; a MISS lands the net flat and the tagger eats the whiff lockout.
+/// Aimed at the LOCAL player, the flight doubles as the clutch-dodge reaction window via
+/// <see cref="NetThrownAtPlayer"/>/<see cref="RoundController"/>; bots self-resolve at flight end.
 /// </summary>
 public sealed class NetThrower : MonoBehaviour
 {
@@ -77,10 +68,10 @@ public sealed class NetThrower : MonoBehaviour
 
     /// <summary>Attempt a throw (player right-click, or a bot's rate-limited AI hook). Mirrors the gates
     /// <see cref="TagAgent.TryLunge"/> checks, plus the net's own cooldown. Self-gating, so a bot may call
-    /// it every tick — it no-ops unless a shot is actually available. NO BLIND THROWS: bots call this every
-    /// tick, so committing without a valid target had every tagger hurling nets at nothing on cooldown —
-    /// nets sailing around empty rooftops, the windup animation firing at nobody, and the cooldown burned
-    /// right when a real target finally came in range. No target = keep the net in hand.</summary>
+    /// it every tick — it no-ops unless a shot is actually available. NO BLIND THROWS: since bots call
+    /// this every tick, committing without a valid target would have every tagger hurling nets at
+    /// nothing and burning the cooldown right when a real target comes in range. No target = keep the
+    /// net in hand.</summary>
     public void TryThrow()
     {
         if (!CanThrow()) return;
@@ -199,8 +190,8 @@ public sealed class NetThrower : MonoBehaviour
             + _targetAgent.Motor.HorizontalVelocity * (_config.netFlightTime * leadScale);
 
         // LEAD CLAMP: even scaled, a fast runner near max range could lead the land point well past
-        // netThrowRange (throws landed ~9m out and read absurd). Clamp the land point's HORIZONTAL offset
-        // from the thrower back to netThrowRange; keep its height so the arc/land-raycast handle vertical.
+        // netThrowRange. Clamp the land point's HORIZONTAL offset from the thrower back to
+        // netThrowRange; keep its height so the arc/land-raycast handle vertical.
         Vector3 flatOffset = Vector3.ProjectOnPlane(land - transform.position, Vector3.up);
         if (flatOffset.magnitude > _config.netThrowRange)
         {
@@ -253,9 +244,9 @@ public sealed class NetThrower : MonoBehaviour
     internal void OnHitConfirmed()
     {
         TagAgent? victim = _targetAgent;
-        // FAR-CATCH FIX: the QTE only tests reaction TIME (did the player dodge?), it never checked WHERE
-        // the net landed — so a player who simply outran the landing point still got caught from metres
-        // away. Gate on WithinHitRadius exactly like the bot path (ResolveSelf): outside the radius = miss.
+        // The QTE only tests reaction TIME (did the player dodge?), so WHERE the net landed must be
+        // gated separately or a player who simply outran the landing point would still get caught from
+        // metres away. Gate on WithinHitRadius exactly like the bot path (ResolveSelf): outside the radius = miss.
         if (victim != null && !victim.IsInGrace && !victim.IsDodgingViaIFrames() && WithinHitRadius(victim))
         {
             ResolveHit(victim);
@@ -312,8 +303,8 @@ public sealed class NetThrower : MonoBehaviour
     {
         if (_projectile == null) return;
 
-        // FLOATING-NET FIX: _landPos is a PREDICTED point, routinely mid-air (target led off a roof edge
-        // or over a street gap) — parking the net there left it hanging in the sky for the whole linger.
+        // _landPos is a PREDICTED point, routinely mid-air (target led off a roof edge or over a street
+        // gap), so it can't be used directly or the net would hang in the sky for the whole linger.
         // Raycast straight down to find the real surface under the predicted point and drop the net flat
         // on it; if there's nothing below (an open gap) destroy the net immediately rather than float it.
         if (Physics.Raycast(_landPos + Vector3.up * 0.5f, Vector3.down, out RaycastHit hit, 40f))
@@ -395,10 +386,9 @@ public sealed class NetThrower : MonoBehaviour
         _carriedNet.SetActive(_state != ThrowState.Flight);
     }
 
-    // CARRIED-NET ORIENTATION FIX: parenting under the R_Hand bone with IDENTITY local rotation left the
-    // net's pole (local +Y) following the Tripo rig's arbitrary hand axes — the bag dangled by the
-    // tagger's leg and dragged the ground, reading as not-held. Worse, a one-time corrective rotation at
-    // build drifts as the run cycle swings the arm. So: every frame AFTER the Animator has posed the hand
+    // Parenting under the R_Hand bone with IDENTITY local rotation would leave the net's pole (local +Y)
+    // following the Tripo rig's arbitrary hand axes, and a one-time corrective rotation at build would
+    // drift as the run cycle swings the arm — so every frame AFTER the Animator has posed the hand
     // (LateUpdate), re-assert an AGENT-space orientation — pole up and ~25° forward, hoop opening facing
     // the agent's forward — while the throw is Idle. During Windup the hand's own swing takes over (the
     // additive throw pose in CharacterAnimatorBridge reads better with the net following the arm), and

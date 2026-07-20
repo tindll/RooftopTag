@@ -10,12 +10,12 @@ namespace Game.EditorTools;
 
 /// <summary>
 /// Populates the Kenney modular street grid with real CC0 Kenney vehicles that drive their lanes, stop
-/// at red lights and turn at intersections — reusing the already-working <see cref="TrafficNetwork"/> /
-/// <see cref="CarDrifter"/> / <see cref="CarImpact"/> runtime (the same lane-follow + signal logic proven
-/// on the old ring), just sourced from the grid's intersections/segments and dressed with vehicle models
-/// instead of generated boxes. Editor-only; every component here is attached at build time, never in the
-/// headless harness. Each vehicle keeps a <see cref="CarImpact"/> trigger so the street-death path (a
-/// fallen agent getting launched by a car) still works.
+/// at red lights and turn at intersections — reusing the <see cref="TrafficNetwork"/> /
+/// <see cref="CarDrifter"/> / <see cref="CarImpact"/> runtime, sourced from the grid's
+/// intersections/segments and dressed with vehicle models instead of generated boxes. Editor-only; every
+/// component here is attached at build time, never in the headless harness. Each vehicle keeps a
+/// <see cref="CarImpact"/> trigger so the street-death path (a fallen agent getting launched by a car)
+/// still works.
 ///
 /// Some placement values (vehicle scale/yaw/lift, lane offset, trigger box) are marked as consts to be
 /// eyeballed against a screenshot — the Kenney car models' native size/orientation is only known once seen.
@@ -89,11 +89,10 @@ public static class KenneyTrafficBuilder
         net.SetData(nodes, lanes.ToArray(), LightCycle, LightClearance, StopMargin, Accel, Decel);
 
         // Cycling signal posts (green/yellow/red) at every intersection, driven off the SAME network the
-        // cars obey. The post visual is the CC0 Kenney Retro Urban Kit's curved traffic-signal pole
-        // (user round 3: "make them a little nicer looking than just BIG square on stick"); the small
-        // emissive Bulb cube sits at the signal head hanging over the road, and TrafficLightPost cycles
-        // its color. One shared bulb material is enough: each post's Awake clones a per-post instance
-        // via renderer.material (see TrafficLightPost's load-safety notes).
+        // cars obey. The post visual is the CC0 Kenney Retro Urban Kit's curved traffic-signal pole; the
+        // small emissive Bulb cube sits at the signal head hanging over the road, and TrafficLightPost
+        // cycles its color. One shared bulb material is enough: each post's Awake clones a per-post
+        // instance via renderer.material (see TrafficLightPost's load-safety notes).
         Shader? lit = Shader.Find("Universal Render Pipeline/Lit");
         var bulbMat = new Material(lit != null ? lit : Shader.Find("Standard")) { color = new Color(0.94f, 0.16f, 0.13f) };
         bulbMat.EnableKeyword("_EMISSION");
@@ -116,9 +115,9 @@ public static class KenneyTrafficBuilder
             var post = new GameObject($"Signal_{ni}");
             if (dressingLayer >= 0) post.layer = dressingLayer;
             post.transform.SetParent(root.transform, false);
-            // Kerb corner of the 8m intersection tile ITSELF (±4 from node) — 4.6 put posts on the block
-            // plinth where building plots can reach and clip them. The curved arm (local -Z on the model)
-            // swings out over the roadway toward the intersection centre.
+            // Kerb corner of the 8m intersection tile ITSELF (~±4 from node) — posts must stay off the
+            // block plinth or building plots can reach and clip them. The curved arm (local -Z on the
+            // model) swings out over the roadway toward the intersection centre.
             post.transform.position = nodes[ni].pos + new Vector3(3.55f, 0f, 3.55f);
             post.transform.rotation = Quaternion.LookRotation(new Vector3(1f, 0f, 1f));
 
@@ -142,8 +141,8 @@ public static class KenneyTrafficBuilder
             bulb.name = "Bulb"; // TrafficLightPost.Awake finds it by this name
             if (dressingLayer >= 0) bulb.layer = dressingLayer;
             bulb.transform.SetParent(post.transform, false);
-            // Hang just BELOW the arm end (model-space head ~(0.04, 0.93, -0.42)): inside the head box
-            // the bulb was invisible; under it, it reads as the hanging signal lamp from street level.
+            // Hang just BELOW the arm end (model-space head ~(0.04, 0.93, -0.42)) — inside the head box
+            // the bulb is invisible; below it, it reads as the hanging signal lamp from street level.
             bulb.transform.localPosition = new Vector3(0.04f, 0.80f, -0.45f) * SignalScale;
             bulb.transform.localScale = Vector3.one * 0.5f;
             var br = bulb.GetComponent<Renderer>();
@@ -188,7 +187,7 @@ public static class KenneyTrafficBuilder
                 float startDist = (j + (float)rng.NextDouble()) / perLane * len;
                 car.AddComponent<CarDrifter>().Configure(net, li, speed, startDist, 20240718 + carIndex);
 
-                // Street-death trigger (Ragdoll layer, kinematic mover) — same pattern as the old cars.
+                // Street-death trigger (Ragdoll layer, kinematic mover).
                 var impact = new GameObject("Impact");
                 if (ragdollLayer >= 0) impact.layer = ragdollLayer;
                 impact.transform.SetParent(car.transform, false);

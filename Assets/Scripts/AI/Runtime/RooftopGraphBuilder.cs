@@ -8,19 +8,11 @@ namespace Game.AI;
 
 /// <summary>
 /// Parkour graph for the <see cref="RooftopArena"/> chase playground. Each roof gets FIVE nodes — a
-/// centre (<see cref="RooftopArena.Roof.Walk"/>) plus four edge-midpoints inset ~1m from the roof
-/// lips — wired into an intra-roof mesh (centre↔midpoint spokes + a midpoint-to-midpoint perimeter
-/// ring). This density is the fix for the "start==goal → empty path" collapse: with only one node
-/// per roof, 12 agents clustered on a roof all resolved to the same nearest node, so
-/// <see cref="ParkourGraph.FindPath"/> returned start==goal and bots fell back to raw beeline
-/// steering (symptom: total_edge_usage=[] and runner_avg_survival=0.00). Off-centre agents now
-/// resolve to DISTINCT nodes and get real planned paths. Link edges are wired lip-to-lip (the
-/// closest node pair across the two roofs), which is both shorter and truer than centre-to-centre.
-///
-/// Reads roof/link data straight from RooftopArena so nodes land on the exact physical roofs the
-/// geometry builds. Node/edge budget: ~26*5 + 6 link nodes ≈ 136 nodes, ~250 logical edges —
-/// Dijkstra's linear-scan frontier and NearestNode's linear scan stay fine at this size
-/// (12 agents × ~3 replans/s), so no priority queue / spatial index is warranted.
+/// centre (<see cref="RooftopArena.Roof.Walk"/>) plus four edge-midpoints inset ~1m from the lips,
+/// wired into an intra-roof mesh (spokes + a perimeter ring) — so agents clustered on one roof
+/// resolve to distinct nodes and get real planned paths. Link edges are wired lip-to-lip between the
+/// closest node pair across two roofs. Reads roof/link data straight from RooftopArena; stays small
+/// enough (~136 nodes, ~250 edges) that Dijkstra's linear-scan frontier needs no priority queue.
 /// </summary>
 public static class RooftopGraphBuilder
 {

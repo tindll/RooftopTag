@@ -17,15 +17,12 @@ using UnityEngine.TestTools;
 namespace RooftopTag.Tests.PlayMode;
 
 /// <summary>
-/// Headless self-play harness (M3's "self-playtest loop"): runs full bot-only Tag Arena matches
-/// (12 bots, no human) at accelerated Time.timeScale and logs per-match + aggregate metrics —
-/// win distribution, time-to-first-tag, parkour edge-type usage, stuck agents, falls, speed
-/// percentiles. This is the tool for iterating on bot behavior without a human playtester for
-/// every pass; manual feel-testing is still needed for "is this fun," which no metric captures.
-///
-/// Round duration is intentionally shortened from the real 300s default (see
-/// <see cref="RoundDurationSeconds"/>) so a batch finishes in a reasonable amount of wall-clock
-/// time even under a headless batch run — this is a test-only knob, not a gameplay tuning change.
+/// Headless self-play harness: runs full bot-only Tag Arena matches (12 bots, no human) at
+/// accelerated Time.timeScale and logs per-match + aggregate metrics — win distribution,
+/// time-to-first-tag, parkour edge-type usage, stuck agents, falls, speed percentiles. Round
+/// duration (<see cref="RoundDurationSeconds"/>) is intentionally shortened from the real 300s
+/// default so a batch finishes in reasonable wall-clock time under a headless run; this is a
+/// test-only knob, not a gameplay tuning change.
 /// </summary>
 public sealed class SelfPlayTests
 {
@@ -63,8 +60,7 @@ public sealed class SelfPlayTests
         tagConfig.lateGamePhaseDuration = RoundDurationSeconds * (75f / 300f);
 
         var botConfig = ScriptableObject.CreateInstance<BotConfig>();
-        // Branching RooftopArena topology, not the old linear corridor — see TUNING_LOG.md for why
-        // (0% runner_avg_survival measured on the corridor; a single lane can't let Runners evade).
+        // Branching RooftopArena topology: a single lane can't let Runners evade.
         ParkourGraph graph = RooftopGraphBuilder.Build(movementConfig);
 
         var allResults = new List<MatchMetrics>();
@@ -141,10 +137,9 @@ public sealed class SelfPlayTests
         foreach (TagAgent agent in agents) lastCheckPositions[agent] = agent.transform.position;
         var countedStuck = new HashSet<TagAgent>();
 
-        // Count falls where they're actually decided, not by polling for a depth nobody reaches.
-        // RoundController consequences a fall from y < -15 (respawn + Runner->Tagger conversion), so the
-        // old y < -20 poll could never fire: total_fallen read 0 in every batch ever run, and that zero
-        // was mistaken for "bots don't fall off this map". EVERY fall is one of these events.
+        // Count falls where they're actually decided (the AgentFell event), not by polling for a
+        // depth nobody reaches — RoundController consequences a fall from y < -15 (respawn +
+        // Runner->Tagger conversion). EVERY fall is one of these events.
         controller.AgentFell += _ => metrics.FallCount++;
 
         float elapsed = 0f;

@@ -8,21 +8,12 @@ using UnityEngine.Rendering.Universal;
 namespace Game.MapGeometry;
 
 /// <summary>
-/// Pure, runtime-safe geometry creation for the Tag Arena / movement playground's shared greybox
-/// layout — boxes, ramps, and the map's sequential sections (spawn, ramp valley, gap gauntlet,
-/// wall-run alley, ledge row). Deliberately has zero UnityEditor dependency so it can be shared by
-/// both <c>Game.EditorTools.PlaygroundBuilder</c> (which builds and saves the visual scenes) and
-/// a headless self-play harness (which builds the same physical geometry at runtime for bot-only
-/// matches, never touching a scene file) — one source of truth for the map layout instead of two
-/// hand-synced copies.
-///
-/// Ladder and swing-chasm geometry are NOT here: they attach an <c>InteractableMarker</c>
-/// component that must stay in the default namespace-free assembly specifically so it can be
-/// persisted into a saved scene (see PlaygroundBuilder's class remarks on the deserialization
-/// bug this project routes around) — a custom asmdef like this one can't reference that type.
-/// They remain in PlaygroundBuilder, appended after <see cref="BuildMainCorridor"/>. This also
-/// happens to not matter for self-play yet, since the ledge row's control wall currently blocks
-/// any route reaching them anyway.
+/// Pure, runtime-safe geometry for the Tag Arena / movement playground's shared greybox layout —
+/// boxes, ramps, and the map's sequential sections (spawn, ramp valley, gap gauntlet, wall-run alley,
+/// ledge row). Has no UnityEditor dependency, so both <c>Game.EditorTools.PlaygroundBuilder</c> (saved
+/// visual scenes) and the headless self-play harness (runtime-only, no scene file) share it as the one
+/// source of truth for map layout. Ladder and swing-chasm geometry stay in PlaygroundBuilder instead,
+/// since they attach an <c>InteractableMarker</c> that must live in the default namespace-free assembly.
 /// </summary>
 public static class TagArenaMapGeometry
 {
@@ -62,8 +53,8 @@ public static class TagArenaMapGeometry
         string key = $"{role}:{seed}";
         // Unity null check on the cache hit, NOT just TryGetValue: an AssetDatabase refresh mid-session
         // can UnloadUnusedAssets and destroy these non-asset materials while the dictionary still holds
-        // live C# wrappers — returning one bakes a dead reference into the scene (whole-playfield
-        // magenta, round 3). Same disease as project_dynamic_material_domain_reload, dictionary form.
+        // live C# wrappers — returning one bakes a dead reference into the scene (a whole-playfield
+        // magenta material). Same disease as project_dynamic_material_domain_reload, dictionary form.
         if (RoleMaterialCache.TryGetValue(key, out Material cached) && cached != null) return cached;
 
         VisualThemeConfig t = Theme;
@@ -109,10 +100,10 @@ public static class TagArenaMapGeometry
     /// property mapping that differs between the two (_BaseColor/_BaseMap vs _Color/_MainTex, which
     /// Material.color/.mainTexture resolve for us) — stays in exactly one place.
     ///
-    /// Public because the far skyline needs the identical treatment at its own haze-lerped tint and a
-    /// dimmer glow (SceneStyler.CreateSilhouettes): a windowed play area against an unwindowed horizon
-    /// was the visible break. Cached on (tint, intensity) — the same shape as <see cref="GetMaterial(Color)"/>'s
-    /// colour-keyed cache — because the skyline mints one material per RING, not per box.
+    /// Public so any caller can request the same windowed treatment at its own tint/intensity, not just
+    /// <see cref="SurfaceRole.BuildingFacade"/>. Cached on (tint, intensity) — the same shape as
+    /// <see cref="GetMaterial(Color)"/>'s colour-keyed cache — so repeated calls at the same tint/intensity
+    /// share one material instance instead of minting a new one per caller.
     /// </summary>
     public static Material GetFacadeMaterial(Color tint, float emissiveIntensity)
     {
@@ -370,15 +361,15 @@ public static class TagArenaMapGeometry
     /// verts, 4 per face, hard normals so it flat-shades by construction.
     /// See <see cref="CreateBuildingBox"/> for what facadeBottomY/facadeTopY mean.
     ///
-    /// Public so SceneStyler can put the same window grid on the far skyline without duplicating any of
-    /// this into the Editor assembly. It builds a MESH only — the caller keeps ownership of the
-    /// GameObject, so the skyline path keeps stripping its collider and keeps its Dressing layer, while
-    /// CreateBuildingBox keeps its collider. Nothing here creates or touches a collider.
+    /// Public so any caller building a windowed box can reuse this mesh generation directly. It builds a
+    /// MESH only — the caller keeps ownership of the GameObject and its collider/layer;
+    /// <see cref="CreateBuildingBox"/> is the current caller and keeps its collider. Nothing here creates
+    /// or touches a collider.
     /// </summary>
     /// <param name="separateCaps">true: submesh 0 = the four ±X/±Z sides, submesh 1 = top + bottom, so a
-    /// caller can give the caps their own material (a building's roof deck). false: ONE submesh with all
-    /// six faces — the skyline's ~160 boxes are pure backdrop whose tops are never visible, and a second
-    /// submesh would double them to ~320 draw calls for nothing. Either way the caps get (0,0) UVs, which
+    /// caller can give the caps their own material (a building's roof deck) — what
+    /// <see cref="CreateBuildingBox"/> uses. false: ONE submesh with all six faces, for a caller whose box
+    /// tops are never visible and wants the fewest draw calls. Either way the caps get (0,0) UVs, which
     /// lands in a cell's WALL border (the window rect is centred and inset), so a single-submesh cap
     /// samples plain tint with zero emission rather than a stray window.</param>
     public static Mesh BuildFacadeMesh(string name, Vector3 center, Vector3 size, float facadeBottomY, float facadeTopY, int seed, bool separateCaps)
@@ -628,8 +619,8 @@ public static class TagArenaMapGeometry
         // The climb LINE (bottom/top) sits wallInset (0.4m) proud of the facade — that's character
         // clearance and must not move. The VISUAL doesn't owe the climb line anything, so it's pulled
         // back toward the wall until its surface nearly kisses the facade (0.02m gap): offset from the
-        // climb line = -(wallInset - radius - 0.02). A pipe floating 0.4m off the wall read as detached
-        // (user report); the trigger/interactable stay on the climb line, so gameplay is untouched.
+        // climb line = -(wallInset - radius - 0.02). A pipe floating 0.4m off the wall reads as detached
+        // from the building; the trigger/interactable stay on the climb line, so gameplay is untouched.
         Vector3 faceOffset = -fwd * (wallInset - radius - 0.02f);
         Vector3 mid = new(baseXZ.x + faceOffset.x, bottom.y + height * 0.5f, baseXZ.z + faceOffset.z);
 
@@ -703,19 +694,17 @@ public static class TagArenaMapGeometry
             body = model;
 
             // Measure from mesh geometry, NOT Renderer.bounds: this runs at scene-build time in
-            // BATCHMODE, where Renderer.bounds reads back near-zero (renderer bounds are only valid
-            // after a render frame, which a headless -quit build never runs). That near-zero read
-            // previously slipped under the size.y > 0.01f guard, skipped the scale-to-height step,
-            // and baked the bin at its ~1cm native scale — an invisible can. Mesh bounds are valid
-            // immediately, so the target-height scale is correct headlessly.
+            // BATCHMODE, where Renderer.bounds is only valid after a render frame — a headless -quit
+            // build never runs one, so it reads back near-zero. Mesh bounds are valid immediately, so
+            // the target-height scale below is correct headlessly.
             if (TryComputeMeshWorldBounds(model, out Bounds mb))
             {
                 // Tripo-style exports need a bounds-scale to hit a target height (same pattern as
                 // CharacterModelAttacher.Attach's ~1.8m character scale). The bin FBXs import at a
-                // ~1cm native size, so the guard here must be a tiny divide-by-zero epsilon, NOT the
-                // old 0.01f — that threshold sat ABOVE the model's real height (~0.00998), skipped
-                // the scale-up, and baked an invisible 1cm can. Only a truly degenerate (zero) mesh
-                // is now rejected.
+                // ~1cm native size, so this epsilon guard must stay far below that (1e-4, not a
+                // threshold like 0.01f which would sit above the model's real height) — anything at or
+                // above the real mesh height skips the scale-up and bakes an invisible ~1cm can; only a
+                // truly degenerate (zero) mesh should be rejected.
                 if (mb.size.y > 1e-4f) model.transform.localScale *= targetHeight / mb.size.y;
 
                 // Recompute post-scale bounds and lift the model so its mesh BASE (not necessarily
@@ -761,11 +750,11 @@ public static class TagArenaMapGeometry
     }
 
     /// <summary>Floating, bobbing orange arrow pointing DOWN at an active bin — the
-    /// "eat this one" objective telegraph (replaces the old ground eat-zone disc). Kept named
-    /// "TrashCanZone" because TagArenaBootstrap and TrashCanInteractable find/toggle it by that name.
-    /// Bare GameObject with a procedural flat-shaded mesh (down-pyramid head + box shaft), no collider —
-    /// nothing physical to strip. Tip hovers <paramref name="binTopHeight"/>+0.35m above the roof so the
-    /// bob never clips the bin; a <see cref="BinIndicatorBob"/> drives the up/down motion.</summary>
+    /// "eat this one" objective telegraph. Named "TrashCanZone" because TagArenaBootstrap and
+    /// TrashCanInteractable find/toggle it by that name. Bare GameObject with a procedural flat-shaded
+    /// mesh (down-pyramid head + box shaft), no collider — nothing physical to strip. Tip hovers
+    /// <paramref name="binTopHeight"/>+0.35m above the roof so the bob never clips the bin; a
+    /// <see cref="BinIndicatorBob"/> drives the up/down motion.</summary>
     private static GameObject BuildIndicatorArrow(Transform parent, Vector3 groundPos, float binTopHeight)
     {
         var arrow = new GameObject("TrashCanZone");
@@ -1080,9 +1069,9 @@ public static class TagArenaMapGeometry
     {
         // Root carries the physics (Rigidbody + CapsuleCollider, which CharacterMotor sizes feet-up
         // from the origin). The visible capsule is a CHILD, scaled to ~1.8m tall and lifted half its
-        // height so its base sits at the root origin (the feet). Previously the mesh WAS the root:
-        // the primitive capsule mesh is 2 units tall centred on its origin, so with the collider
-        // feet-up the visible body hung ~1m below the feet and clipped through the floor.
+        // height so its base sits at the root origin (the feet): the primitive capsule mesh is 2 units
+        // tall centred on its own origin, so without this offset it would hang ~1m below the feet-up
+        // collider and clip through the floor.
         var root = new GameObject(name) { layer = layer };
         root.transform.position = position;
 

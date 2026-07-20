@@ -37,8 +37,7 @@ namespace Game.EditorTools
         private const string DevRootName = "DevKenneyCity";
 
         // -- Tunable placement constants ------------------------------------
-        // road-straight's dashes run along LOCAL X at rotation 0 (verified against a user screenshot —
-        // the first guess had them perpendicular to travel): identity for X runs, 90° for Z runs.
+        // road-straight's dashes run along LOCAL X at rotation 0: identity for X runs, 90° for Z runs.
         private static readonly Quaternion RotationAlongX = Quaternion.identity;
         private static readonly Quaternion RotationAlongZ = Quaternion.Euler(0f, 90f, 0f);
 
@@ -66,8 +65,7 @@ namespace Game.EditorTools
             List<Rect>? keepOut = null,
             int seed = 90210)
         {
-            // Round 8 (user: "the buildings in rooftop arena aren't inside blocks"): keepOut rects
-            // (XZ, x=world X, y=world Z) carve the lattice — any road RUN crossing a rect is dropped
+            // keepOut rects (XZ, x=world X, y=world Z) carve the lattice — any road RUN crossing a rect is dropped
             // whole (tiles, lamp, traffic segment), any intersection inside one disappears, and fill
             // tiles under the rects are skipped. The playable cluster becomes its own super-block
             // with the streets flowing AROUND it instead of running underneath the towers.
@@ -93,9 +91,8 @@ namespace Game.EditorTools
 
             var cache = new Dictionary<string, GameObject?>();
 
-            // VARIED block sizes (blockTiles±1 tiles per column/row, seeded) — a uniform lattice read as
-            // "squares and squares of roads" (user feedback); irregular blocks read as a real city where
-            // the roads go AROUND the blocks instead of tiling a checkerboard.
+            // VARIED block sizes (blockTiles±1 tiles per column/row, seeded) so the roads read as a real
+            // city going AROUND the blocks instead of tiling a uniform checkerboard.
             var sizeRng = new System.Random(seed);
             var colTiles = new int[blocksX];
             var rowTiles = new int[blocksZ];
@@ -136,8 +133,7 @@ namespace Game.EditorTools
             int litLamps = 0; // every Nth lamp gets a real warm point light (kept limited for URP perf)
 
             // ONE shared emissive bulb material for every lamp head — the visible glow (bloom picks up
-            // the HDR emission) even on lamps that don't carry a real point light (user round 3: "your
-            // street lights need a little light too").
+            // the HDR emission) even on lamps that don't carry a real point light.
             Shader? litShader = Shader.Find("Universal Render Pipeline/Lit");
             var lampGlowMat = new Material(litShader != null ? litShader : Shader.Find("Standard"))
             {

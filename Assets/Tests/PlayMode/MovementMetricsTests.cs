@@ -57,9 +57,6 @@ public sealed class MovementMetricsTests
     [UnityTest]
     public IEnumerator AirBrake_HoldingBackEventuallyReversesDirection()
     {
-        // Regression test: holding S mid-air used to only ever decay horizontal speed toward
-        // zero (asymptotic, never past it) — reported directly from a manual feel-test ("pressing
-        // S mid air doesn't really send you backwards when it really should").
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 100f), new Vector3(10f, 1f, 220f));
 
@@ -94,8 +91,7 @@ public sealed class MovementMetricsTests
     public IEnumerator Jump_ChainedWithinBunnyHopWindow_GrantsSpeedBonus()
     {
         // Bunny-hop feel: chaining a jump quickly after landing should reward a small speed bonus,
-        // not just "not being blocked" (buffer/coyote already allowed a near-instant re-jump) —
-        // requested directly from a manual feel-test.
+        // not just "not being blocked" (buffer/coyote already allow a near-instant re-jump).
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 100f), new Vector3(10f, 1f, 220f));
 
@@ -154,11 +150,9 @@ public sealed class MovementMetricsTests
     [UnityTest]
     public IEnumerator SlideHeld_RequiresSprintSpeedNotJustWalking()
     {
-        // Updated for the slide.minEntrySpeed bump (3 -> 4, slide-feel polish task): this used to
-        // assert the OPPOSITE — that a plain walkSpeed-only shuffle (3.5 m/s, no Sprint) triggered
-        // a slide — which is exactly the "walking half-slides" feel the bump was meant to remove.
-        // Now asserts the corrected behavior: walking alone no longer triggers it, sprinting still
-        // does. The slope-standstill OR-entry (IsOnSlope) is a separate path, untouched by this.
+        // Walking alone (no Sprint) should not trigger a slide, since minEntrySpeed sits above
+        // walkSpeed; sprinting still triggers it. The slope-standstill OR-entry (IsOnSlope) is a
+        // separate path, untouched by this.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 100f), new Vector3(10f, 1f, 220f));
 
@@ -191,12 +185,9 @@ public sealed class MovementMetricsTests
     [UnityTest]
     public IEnumerator ExitSliding_BlockedByLowCeiling_StaysShrunkAndSliding()
     {
-        // Ceiling-check regression (slide-feel polish): ExitSliding used to restore full capsule
-        // height unconditionally on a stand-up, so sliding under low geometry and releasing CTRL
-        // popped the capsule straight into the ceiling. A low overhead box's bottom face (y=1.3)
-        // sits above the shrunk slide capsule's top (0.9 = capsuleHeightMultiplier 0.5 * default
-        // height 1.8, so the slide itself is unaffected) but below the full standing capsule's top
-        // (1.8), so it blocks only the stand-up.
+        // A low overhead box's bottom face (y=1.3) sits above the shrunk slide capsule's top (0.9 =
+        // capsuleHeightMultiplier 0.5 * default height 1.8, so the slide itself is unaffected) but
+        // below the full standing capsule's top (1.8), so it blocks only the stand-up.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 100f), new Vector3(10f, 1f, 220f));
         CreateGround(_sceneRoot.transform, new Vector3(0f, 2.8f, 100f), new Vector3(6f, 3f, 220f));
@@ -254,10 +245,10 @@ public sealed class MovementMetricsTests
     [UnityTest]
     public IEnumerator Ladder_HeldInteractThroughTopDismount_DoesNotReattachFlap()
     {
-        // Regression: bots (ParkourBotInput) press Interact every tick while near the ladder's top
-        // node, unlike the player's single tap. That held press used to re-grab the ladder on the
-        // very next airborne tick right after the top dismount, flapping OnLadder<->Airborne — which
-        // re-fired TagAgent's arm hang pose and looked like the bot's arms glitching on the way up.
+        // Bots (ParkourBotInput) press Interact every tick near the ladder's top node, unlike the
+        // player's single tap, so a held press must not re-grab the ladder on the very next
+        // airborne tick right after the top dismount (that flap would re-fire TagAgent's arm-hang
+        // pose, looking like the bot's arms glitching on the way up).
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(6f, 1f, 6f));
 
@@ -285,8 +276,7 @@ public sealed class MovementMetricsTests
         Assert.Greater(go.transform.position.y, ladderHeight * 0.8f, "Character should dismount near the top of the ladder.");
 
         // Keep Interact held for a short window after dismount while still inside the ladder's grab
-        // range. The re-grab cooldown must absorb the held press so the motor stays off the ladder —
-        // pre-fix it snapped straight back to OnLadder on the next tick, failing here immediately.
+        // range. The re-grab cooldown must absorb the held press so the motor stays off the ladder.
         for (int i = 0; i < 15; i++)
         {
             input.PressInteract();
@@ -315,11 +305,10 @@ public sealed class MovementMetricsTests
         yield return new WaitForFixedUpdate();
         Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should attach to the swing when in range and interacting.");
 
-        // Release near a genuine speed peak rather than at a fixed time, so the test isn't
-        // flaky against whatever phase of the pendulum's period an arbitrary deadline lands on.
-        // The reworked swing is a velocity-state pendulum driven by a constant WASD hold
-        // projected onto the rope's tangent plane (not the old square-wave pump signal, which
-        // was tuned for a different, weaker force model).
+        // Release near a genuine speed peak rather than at a fixed time, so the test isn't flaky
+        // against whatever phase of the pendulum's period an arbitrary deadline lands on. The swing
+        // is a velocity-state pendulum driven by a constant WASD hold projected onto the rope's
+        // tangent plane.
         float maxSpeedSoFar = 0f;
         float elapsed = 0f;
         const float minPumpTime = 1f;
@@ -395,9 +384,8 @@ public sealed class MovementMetricsTests
         // CharacterMotor.ComputeWishDirection treats cameraYaw == null as the AI-input convention:
         // forward = Vector3.forward, right = Vector3.right, i.e. Move maps straight to world axes
         // with no rotation. So driving pure Move.x below pushes straight along world +X, which is
-        // orthogonal to this Y-Z swing plane. The old fixed-plane pendulum could not respond to an
-        // out-of-plane push at all (~0m of X displacement); this is the regression test for the
-        // reworked pendulum's omnidirectionality.
+        // orthogonal to this Y-Z swing plane — the pendulum must be able to respond to that
+        // out-of-plane push.
         float startAngleRad = 30f * Mathf.Deg2Rad;
         Vector3 startPos = pivot + new Vector3(0f, -Mathf.Cos(startAngleRad), Mathf.Sin(startAngleRad)) * length;
         (GameObject go, CharacterMotor motor, ScriptedCharacterInput input) = CreatePlayer(startPos);
@@ -495,8 +483,8 @@ public sealed class MovementMetricsTests
         Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should attach to the swing when in range and interacting.");
         Assert.IsTrue(swing.IsOccupied, "Precondition: swing should be occupied after attaching.");
 
-        // Regression test: a round reset used to leak a permanent claim, bricking the rope for
-        // every subsequent round because IsOccupied never went back to false.
+        // A round reset must clear any swing claim the motor was holding, or the rope stays
+        // occupied for every subsequent round.
         motor.ResetState(new Vector3(50f, 1.1f, 50f), Quaternion.identity);
         yield return new WaitForFixedUpdate();
 
@@ -524,11 +512,9 @@ public sealed class MovementMetricsTests
         Assert.AreEqual(MotorState.OnSwing, motor.CurrentState, "Character should attach to the swing when in range and interacting.");
 
         // Resonance pump: always push along the swing plane (X — the attach offset's plane) in the
-        // direction of current motion, the most energy-efficient pump this model allows. (An earlier
-        // version pumped a time-based square wave on the ORTHOGONAL axis, which curved the bob into a
-        // lazy orbit instead of amplifying the arc — it under-filled the energy budget and never
-        // genuinely exercised the height-dependent cap this test exists to prove.) The cap should let
-        // the bob climb but converge to a BOUNDED apex set by the energy budget, never over the pivot.
+        // direction of current motion, the most energy-efficient pump this model allows. The cap
+        // should let the bob climb but converge to a BOUNDED apex set by the energy budget, never
+        // over the pivot.
         float maxAngle = 0f;
         float maxHeight = go.transform.position.y;
         float elapsed = 0f;
@@ -626,9 +612,9 @@ public sealed class MovementMetricsTests
     [UnityTest]
     public IEnumerator Swing_HangCapForcesRelease_ThenRegrabCooldownBlocksReattach()
     {
-        // Anti-exploit regression test: a Runner used to grab the chasm rope, press NOTHING, and hang
-        // forever to the round timer (taggers can't reach a mid-air point). Now a hang cap force-drops
-        // the swinger, and a regrab cooldown stops drop-and-instant-regrab cycling of the same rope.
+        // Anti-exploit: a Runner who grabs a rope and holds it must be force-dropped by a hang cap
+        // (an unlimited grab defeats taggers, who can't reach a mid-air point), and a regrab
+        // cooldown must block drop-and-instant-regrab cycling of the same rope.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -20f, 0f), new Vector3(300f, 1f, 300f));
 
@@ -718,8 +704,8 @@ public sealed class MovementMetricsTests
         float elapsed = 0f;
         while (go.transform.position.y < wallHeight * 0.8f && elapsed < timeout)
         {
-            // Climbing is now a deliberate E-grab rather than an automatic hold-jump-into-wall,
-            // so press Interact every tick while approaching — it's a no-op until the character
+            // Climbing is a deliberate E-grab rather than an automatic hold-jump-into-wall, so
+            // press Interact every tick while approaching — it's a no-op until the character
             // is actually within reach of the ledge.
             input.PressInteract();
             yield return new WaitForFixedUpdate();
@@ -734,10 +720,8 @@ public sealed class MovementMetricsTests
     [UnityTest]
     public IEnumerator Vault_ExplicitPressFromStandstill()
     {
-        // Feel-test regression: standing right at a low ledge and pressing E did nothing. The forward
-        // probe fired from chest height (~0.9m) and sailed clean over the wall's top, and even a wall
-        // it did see was blocked from a standstill by the 3 m/s auto gate. A deliberate E-press now
-        // vaults from near-stationary: ~0.6m from a 1.0m wall, essentially no speed, press E.
+        // A deliberate E-press should vault from near-stationary: ~0.6m from a 1.0m wall,
+        // essentially no speed, press E.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(6f, 1f, 6f));
 
@@ -779,18 +763,16 @@ public sealed class MovementMetricsTests
     [UnityTest]
     public IEnumerator WallHook_BufferedInteractGrabsWhileFalling()
     {
-        // Regression (reported): falling fast beside a wall, it was unclear when you could still grab
-        // it — a slightly-early E press whiffed because the hook demanded the raw InteractPressed edge
-        // on the exact in-range frame, probed with one thin forward ray. It now consumes the 0.25s
-        // interact buffer (like mantle/vault) and probes with a fatter SphereCast, so a single press
-        // while falling reliably grabs.
+        // A single Interact press while falling beside a wall should grab it: the hook consumes
+        // the 0.25s interact buffer (like mantle/vault) and probes with a SphereCast rather than
+        // a single forward ray.
         _sceneRoot = new GameObject("TestScene");
 
         // A tall wall whose near face sits at z=1.1 — just BEYOND the mantle/vault thin forward ray
         // (1.0m from the capsule centre at z=0) so that path can't intercept, but within the hook's
-        // SphereCast reach (1.0m travel + 0.25m radius). This is exactly the generosity Fix 3 adds:
-        // a thin ray misses here, the fat cast catches. Very tall => no reachable ledge, so mantle
-        // and wall-hang stay out of the way and the grab must come through TryStartWallHook.
+        // SphereCast reach (1.0m travel + 0.25m radius): a thin ray misses here, the fat cast
+        // catches. Very tall => no reachable ledge, so mantle and wall-hang stay out of the way
+        // and the grab must come through TryStartWallHook.
         CreateWall(_sceneRoot.transform, new Vector3(0f, 10f, 1.6f), new Vector3(6f, 20f, 1f));
 
         // cameraYaw must be non-null (bots are gated out of the hook) and it also aims the body —
@@ -886,16 +868,12 @@ public sealed class MovementMetricsTests
     [UnityTest]
     public IEnumerator Slide_ExceedsMaxDuration_ForcesExit()
     {
-        // Regression test: holding CTRL on a slope let the player slide indefinitely while
-        // downhillAccelMultiplier kept adding speed and A/D kept steering — "I can just keep hold
-        // of CTRL and slide forever whilst gaining momentum" from a manual feel-test. This ramp
-        // takes ~2.3-2.6s to fully traverse (see SlideDownRamp_FasterThanRunningDownSameRamp just
-        // above), comfortably longer than maxSlideDuration (1.75s default), so a force-exit here
-        // is necessarily the duration cap, not just reaching the bottom.
-        // Ramp is deliberately long (100m, same ~22-degree grade as the ramp used elsewhere in this
-        // file) so that even at the ~13 m/s speed cap, sliding physically cannot reach the bottom
-        // within maxSlideDuration (1.75s) or this test's polling window — the only possible exit is
-        // the duration cap itself, not "reached the end and fell off."
+        // Holding CTRL should not let the player slide indefinitely while downhillAccelMultiplier
+        // keeps adding speed and A/D keeps steering. Ramp is deliberately long (100m, same
+        // ~22-degree grade as the ramp used elsewhere in this file) so that even at the ~13 m/s
+        // speed cap, sliding physically cannot reach the bottom within maxSlideDuration (1.75s) or
+        // this test's polling window — the only possible exit is the duration cap itself, not
+        // reaching the end.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, -3f), new Vector3(10f, 1f, 6f));
         CreateRamp(_sceneRoot.transform, 0f, 0f, 100f, -40f, 10f);
@@ -959,15 +937,13 @@ public sealed class MovementMetricsTests
     [UnityTest]
     public IEnumerator Slide_SelfCorrectsTowardTrueDownhillDirection()
     {
-        // Regression test: sliding used to lock onto whatever heading the character had at the
-        // exact moment Slide was pressed. Since normal running steers via camera-relative WASD,
-        // a camera turned to one side during the run-up left the character already drifting that
-        // way, and the slide would preserve that skew indefinitely instead of following the
-        // ramp's true downhill line — reported directly from a manual feel-test as "sliding off
-        // the ramp to the side depending on camera direction."
-        // Wide geometry: flat ground has no correction mechanism (only slopes do), so lateral
-        // drift accumulates unchecked during the run-up — needs generous room or the character
-        // runs off the side edge before ever reaching the ramp, let alone before correcting.
+        // Slide direction should self-correct toward the slope's true downhill line rather than
+        // preserve camera-induced lateral drift accumulated during the run-up (normal running
+        // steers via camera-relative WASD, so a turned camera leaves the character already
+        // drifting). Wide geometry: flat ground has no correction mechanism (only slopes do), so
+        // lateral drift accumulates unchecked during the run-up — needs generous room or the
+        // character runs off the side edge before ever reaching the ramp, let alone before
+        // correcting.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, -3f), new Vector3(60f, 1f, 6f));
         CreateRamp(_sceneRoot.transform, 0f, 0f, 20f, -8f, 60f); // this ramp only varies in Z/Y — true downhill has zero X component.
@@ -984,8 +960,8 @@ public sealed class MovementMetricsTests
 
         float lateralSpeedEarly = Mathf.Abs(motor.Velocity.x);
 
-        // A/D now actively STEERS the slide (rotates travel direction while held) rather than being
-        // a passive run-up artifact — holding the same sideways input through the slide would fight
+        // A/D actively STEERS the slide (rotates travel direction while held) rather than being a
+        // passive run-up artifact — holding the same sideways input through the slide would fight
         // the fall-line self-correction below by design, not exercise it. Release the sideways
         // component once sliding, same as a player letting off A/D, so the "let off and it carves
         // back toward straight-down" self-correction actually gets a chance to run.
@@ -994,7 +970,7 @@ public sealed class MovementMetricsTests
         // Short window, deliberately: at slide speeds up to the ~13 m/s cap this 20m ramp is
         // covered quickly, and the correction (rightly) stops the moment the character leaves
         // the slope — measuring too late would catch it airborne past the ramp's end instead of
-        // mid-slide, which is what an earlier version of this test got wrong.
+        // mid-slide.
         yield return RunForSeconds(0.6f);
         Assert.AreEqual(MotorState.Sliding, motor.CurrentState, "Should still be sliding partway down the ramp.");
         float lateralSpeedLate = Mathf.Abs(motor.Velocity.x);

@@ -5,26 +5,19 @@ using UnityEngine;
 namespace Game.MapGeometry;
 
 /// <summary>
-/// Presentation-only: drives one "car" box along the backdrop city's lane graph
-/// (<see cref="TrafficNetwork"/>) — cruises its lane, eases to a stop at the stop line when the junction
-/// ahead is red for its travel axis, then pulls away and turns onto a new lane when it clears the
-/// intersection. Purely flavour dressing seen from the rooftops far above — no collider, no gameplay
-/// effect (the ragdoll trigger is a separate child, see <see cref="CarImpact"/>). Attached only by
-/// SceneStyler.CreateCars (editor-time scene building), never by the headless self-play harness, so this
-/// never runs there even though the class lives in the runtime assembly (same pattern as
-/// <see cref="CloudDrifter"/>).
-///
-/// <para><c>transform.forward</c> stays pointed down the current lane every frame, so
-/// <see cref="CarImpact"/>'s launch direction (which reads it) keeps working unchanged through turns and
-/// stops.</para>
+/// Presentation-only: drives one Kenney vehicle along the street grid's lane graph
+/// (<see cref="TrafficNetwork"/>), stopping for red lights on its travel axis and turning lanes at
+/// clear intersections. Flavour dressing only — no collider; the ragdoll trigger is a separate child
+/// (<see cref="CarImpact"/>). Attached only by <see cref="Game.EditorTools.KenneyTrafficBuilder"/>, never
+/// the headless self-play harness. <c>transform.forward</c> tracks the lane each frame so CarImpact's
+/// launch direction keeps working through turns.
 /// </summary>
 public sealed class CarDrifter : MonoBehaviour
 {
     // Config is SERIALIZED: Configure() runs at editor scene-build time, and these values must survive
-    // the scene being saved, reloaded and domain-reloaded into a real play session. (They originally
-    // didn't — private non-serialized fields meant every car woke up with _net == null in a real play
-    // session and Update() early-returned forever: "the cars don't move". Editor-time smoke tests in the
-    // SAME session masked it, because the in-memory values were still alive there.)
+    // the scene being saved, reloaded and domain-reloaded into a real play session — a private
+    // non-serialized field here would come back null/default in that session and stop Update() from
+    // ever moving the car.
     [SerializeField] private TrafficNetwork? _net;
     [SerializeField] private int _startLane;
     [SerializeField] private float _cruise = 4f; // this car's preferred speed

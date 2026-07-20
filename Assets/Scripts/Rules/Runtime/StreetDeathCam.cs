@@ -8,18 +8,10 @@ namespace Game.Rules;
 
 /// <summary>
 /// Holds the shot on the local player's ragdoll after a street car launches them, then hands the rig
-/// back. Takes the camera over exactly the way <see cref="KillCamPlayback"/> does — resolve the rig,
-/// cache its enabled flag, disable it (it writes the camera from LateUpdate too), grab its Camera,
-/// drive that Camera from our own LateUpdate, then restore + SnapToTarget on the way out.
-///
-/// <para>The ONE thing it deliberately does not copy from KillCamPlayback is the timeScale freeze.
-/// That exists there to hold the world still while a recording is scrubbed over it; here the whole
-/// point is a body tumbling down the road under live physics. Freezing time would stop the very thing
-/// this is pointed at — so this touches no clock at all and runs on scaled time like the sim it is
-/// watching.</para>
-///
-/// <para>Presentation only, local player only, and never load-bearing: RoundController's street
-/// sequence resolves on its own timers whether this ever runs or not. Bots ragdoll with no camera.</para>
+/// back — takes the camera over the way <see cref="KillCamPlayback"/> does, but unlike it never
+/// freezes timeScale, since the whole point is a body tumbling down the road under live physics.
+/// Presentation only, local player only, and never load-bearing: RoundController's street sequence
+/// resolves on its own timers whether this ever runs or not. Bots ragdoll with no camera.
 /// </summary>
 public sealed class StreetDeathCam : MonoBehaviour
 {

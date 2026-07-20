@@ -386,12 +386,10 @@ public sealed class TagAgent : MonoBehaviour
         UpdateColor();
     }
 
-    // Runner = the OLD rigged biped raccoon FBX (round 10, user: "go back to the old raccoon model
-    // for now, the new one needs some work") — the well-tested Animator+ragdoll path. The quadruped
-    // models ("rigged_raccoon", "raccoon_quad") and QuadrupedPresenter stay on disk for when the
-    // quad gets its rework; switching back is this one string.
-    // TEMP: runner model swapped "raccoon" -> "raccon_testing" for evaluation (user request 2026-07-20).
-    // Revert this string (and the two in TagArenaBootstrap) to go back.
+    // Runner resource is the rigged biped raccoon FBX — the well-tested Animator+ragdoll path. The
+    // quadruped models ("rigged_raccoon", "raccoon_quad") and QuadrupedPresenter stay on disk for a
+    // future quad rework; switching to them is this one string (and the two matching ones in
+    // TagArenaBootstrap).
     private static string ResourceForRole(Role role) => role == Role.Tagger ? "pest_control" : "raccon_testing";
 
     /// <summary>
@@ -444,13 +442,12 @@ public sealed class TagAgent : MonoBehaviour
         // window against stale or paused state.
         if (Time.timeScale == 0f) return;
 
-        // Swallow only the spawn-frame click, not the whole round-start grace. Root cause of the
-        // "lunge on spawn" bug: the local player's lunge is bound to <Mouse>/leftButton, so the
-        // main-menu PLAY click (or an R-restart click) leaks a leftButton press that fires TryLunge on
-        // the round's first frame. The old fix blocked lunging for the entire start grace (~3s), which
-        // also blocked the legitimate movement dash for that whole time (user: "can't lunge until ~4s
-        // in"). A brief post-spawn swallow eats the leaked click while leaving the dash available
-        // immediately after. A real TAG still can't land in grace — OnCollisionEnter re-checks it.
+        // Swallow only the spawn-frame click, not the whole round-start grace: the local player's lunge
+        // is bound to <Mouse>/leftButton, so the main-menu PLAY click (or an R-restart click) leaks a
+        // leftButton press that fires TryLunge on the round's first frame. A brief post-spawn swallow
+        // eats that leaked click while leaving the movement dash available immediately after, instead
+        // of blocking lunging for the whole start grace. A real TAG still can't land in grace —
+        // OnCollisionEnter re-checks it.
         if (Time.time - _spawnTime < SpawnLungeSwallowSeconds) return;
 
         // Lunge is a separate InputAction — it bypasses the motor's input filter entirely, so the
@@ -490,11 +487,11 @@ public sealed class TagAgent : MonoBehaviour
     {
         // Committed dive: CharacterMotor redirects existing momentum forward, locks the character in
         // for diveDuration, then eases the speed cap back to the pre-dive speed over diveRecovery —
-        // never netting speed (beyond A's runner burst). The dive-lock replaces the old cooldown as
-        // the rate limiter for Taggers; Runners layer the runnerRollCooldown on top.
+        // never netting speed (beyond the Runner's own escape burst, runnerDiveSpeed). The dive-lock
+        // is the rate limiter for Taggers; Runners layer the runnerRollCooldown on top.
         _motor.BeginDive(diveSpeed, _config.diveDuration, _config.diveRecovery, _config.diveSteeringScale);
         _lungeCooldownRemaining = cooldown;
-        _diveStartTime = Time.time; // C: start the proactive dodge i-frame clock
+        _diveStartTime = Time.time; // start of the proactive dodge i-frame window
 
         // Finishing-move variant, decided at fire time: a Tagger's committed dive AT a catchable victim
         // (nearest opponent within catchRange AND ahead) plays the DivingCatch clip instead of the generic
@@ -719,12 +716,12 @@ public sealed class TagAgent : MonoBehaviour
         TagAgent? nearest = _roundController.FindNearestOpposingAgent(this);
         if (nearest == null || nearest.IsInGrace) return;
 
-        // "Actually catching you" checks (user: bots tagged from visibly far away). Applies to the
-        // player's right-click identically — same chokepoint, same fairness. Three tighteners:
-        // 1) HORIZONTAL reach, with a separate vertical band — the old 3D distance let a tag land on
-        //    someone ~2m directly above/below (a different roof) while looking nowhere near them.
-        // 2) The reach values themselves are tighter (see TagRulesConfig) — 2.0m center-to-center
-        //    left ~1.2m of visible daylight between two 0.4-radius bodies at the moment of the tag.
+        // "Actually catching you" checks, applied to the player's right-click identically — same
+        // chokepoint, same fairness. Three gates:
+        // 1) HORIZONTAL reach, with a separate vertical band, so a tag can't land on someone directly
+        //    above/below (a different roof) while looking nowhere near them.
+        // 2) The reach values (see TagRulesConfig) leave only a small margin of daylight between two
+        //    0.4-radius bodies at the moment of the tag.
         // 3) LINE OF SIGHT — no tagging through a thin wall or roof lip; chest-to-chest linecast
         //    must reach the target (or hit nothing but the participants).
         Vector3 delta = nearest.transform.position - transform.position;
@@ -755,9 +752,8 @@ public sealed class TagAgent : MonoBehaviour
     }
 
     // Tagging is an explicit ranged attempt only (player: right click, via TryTagInRange; bots call
-    // TryTagInRange from their AI). Physical body contact deliberately does NOT tag — an earlier
-    // OnCollisionEnter path did, which meant merely brushing or landing on a runner tagged them with
-    // no input; removed per feel-test.
+    // TryTagInRange from their AI). Physical body contact deliberately does NOT tag — merely brushing
+    // or landing on a runner must never tag them with no input.
 
     private void PerformTag(TagAgent other)
     {

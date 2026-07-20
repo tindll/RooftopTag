@@ -9,11 +9,9 @@ namespace Game.Movement;
 /// Replaces a placeholder capsule with a rigged, animated character model loaded from Resources,
 /// adds the Animator bridge, and returns the renderer to tint plus a flag for skipping the
 /// procedural capsule presentation. Falls back to the capsule (procedural = true) if the model or
-/// controller assets are missing, so the game still runs.
-/// Shared by TagArenaBootstrap (initial spawn, in Assembly-CSharp) and TagAgent (role-swap
-/// conversions, in the Game.Rules asmdef) — lives here in Game.Movement, which both can reference,
-/// rather than in TagArenaBootstrap itself, since Game.Rules cannot reference back into
-/// Assembly-CSharp.
+/// controller assets are missing, so the game still runs. Shared by TagArenaBootstrap (initial
+/// spawn, in Assembly-CSharp) and TagAgent (role-swap conversions, in Game.Rules) — lives here in
+/// Game.Movement, which both can reference, since Game.Rules cannot reference Assembly-CSharp.
 /// </summary>
 public static class CharacterModelAttacher
 {
@@ -43,7 +41,7 @@ public static class CharacterModelAttacher
         Animator rigAnimator = model.GetComponentInChildren<Animator>();
         if (rigAnimator == null) return AttachStaticQuadruped(root, model, motor);
 
-        // Tripo exports ~1 m tall; scale up to a ~1.8 m character (matches the old capsule height).
+        // Tripo exports ~1 m tall; scale up to a ~1.8 m character (matches the placeholder capsule's height).
         var rends = model.GetComponentsInChildren<Renderer>();
         if (rends.Length > 0)
         {

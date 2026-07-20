@@ -40,12 +40,11 @@ public static class SceneStyler
             CreateBuildingExtensions(theme);
             if (theme.constructionZone)
             {
-                // Round 5/7: the playable cluster is an under-construction site. Preferred path
-                // (round 7): the user's modular building kit stacked per tower — it strips the
-                // body/mass renderers and carries all its own facade detail, so the generated
-                // ConstructionShells facade/topper pass must NOT also run. Fallback (flag off):
-                // the generated construction facades. Dressing (cranes/planks/worklights/props)
-                // applies in both cases.
+                // Playable cluster is an under-construction site. modularBuildings uses a modular
+                // building kit stacked per tower that strips the body/mass renderers and carries its
+                // own facade detail, so ConstructionShells' facade/topper pass must NOT also run then.
+                // Flag off falls back to the generated construction facades. Dressing
+                // (cranes/planks/worklights/props) applies in both cases.
                 if (theme.modularBuildings) ModularBuildings.Apply(theme);
                 else ConstructionShells.Apply(theme);
                 ConstructionDressing.Apply(theme);
@@ -68,10 +67,8 @@ public static class SceneStyler
     ///
     /// The slab stays ONE mesh with ONE material at any size: <see cref="AddBox"/> bakes the extent into
     /// the vertices, so growing it from ~100m to 960m costs exactly zero extra draw calls. It is a plain
-    /// flat <c>sidewalkColor</c> now — it used to carry a tiled grid texture that WAS the backdrop street
-    /// grid, and the reason that is gone is structural rather than a retune: a tile repeats by definition,
-    /// so every block it drew was identical pixels at a uniform 13m pitch. "Squares on squares on squares"
-    /// is what a tile IS; no knob on it could have produced variety. The streets became geometry instead.
+    /// flat <c>sidewalkColor</c> box with no texture — the street grid is drawn by real geometry on top
+    /// of it, not a repeating tile on the slab.
     ///
     /// The ground slab's BoxCollider is the second collider this file deliberately KEEPS (the other is
     /// the building masses — see <see cref="CreateBuildingExtensions"/> for that one's reasoning);
@@ -80,12 +77,11 @@ public static class SceneStyler
     /// dressing — so the collider has to be the slab, or anyone landing off a tile would fall forever
     /// having already tripped RoundController's -15 fall check, with nothing left to ever recover them.
     ///
-    /// This is only safe because the street MOVED DOWN with it: at the old buildingBaseY (-12) the
-    /// slab sat ABOVE FallResetY (-15), so agents would have landed on it without ever crossing the
-    /// line, stranding bots and never losing the player their round. At -25 the fall check fires
-    /// mid-air, on the way down, and the slab is just where they end up (see buildingBaseY's remarks).
-    /// The slab also can't be a phantom ledge: it sits 22m below the lowest playable surface (roof
-    /// bodies bottom out at -3), far past anything reachable from the rooftops.</summary>
+    /// The slab must stay below FallResetY (-15): if buildingBaseY placed it above that line, a falling
+    /// agent would land on it without ever crossing the fall-reset threshold, stranding bots and never
+    /// losing the player their round (see buildingBaseY's remarks). The slab also can't be a phantom
+    /// ledge: it sits 22m below the lowest playable surface (roof bodies bottom out at -3), far past
+    /// anything reachable from the rooftops.</summary>
     public static void CreateRoads(VisualThemeConfig theme)
     {
         var root = new GameObject("Streets");
@@ -100,22 +96,21 @@ public static class SceneStyler
         float slabTop = theme.buildingBaseY - theme.roadSurfaceLift;
         var groundSize = new Vector3(groundRect.width, slabThickness, groundRect.height);
         var ground = new GameObject("Ground");
-        // Deliberately NOT on "Dressing" (it was, and the road strips still are) — left on Default with
-        // the building masses, so the minimap camera renders it. The layer gates exactly one thing:
-        // RoundController.SetupMinimap's cullingMask. It does NOT gate the collider — CharacterMotor's
-        // probe masks are ~0-derived (see its Configure), so the slab stays solid to a falling agent on
-        // any layer.
+        // Deliberately NOT on "Dressing" — left on Default with the building masses, so the minimap
+        // camera renders it. The layer gates exactly one thing: RoundController.SetupMinimap's
+        // cullingMask. It does NOT gate the collider — CharacterMotor's probe masks are ~0-derived (see
+        // its Configure), so the slab stays solid to a falling agent on any layer.
         //
         // A map-wide slab DOES render as a flat fill over the entire minimap; that is the point, not the
         // objection. The minimap camera is ortho size 25 looking straight down from +40, and it clears to
-        // near-black (0.05) — so before this, the street gaps between roofs and "off the edge of the
-        // world" were the same black, and the map read as roofs floating in nothing. The slab is
-        // sidewalkColor (albedo 0.227) under roofs at concreteFloor (0.43) and masses at concreteWall
-        // (0.36); all are flat, up-facing and identically lit, so the roofs keep ~2:1 contrast over it
-        // and still read plainly — the gaps just become STREETS instead of void.
+        // near-black (0.05), so the street gaps between roofs and off the edge of the world would
+        // otherwise read as the same black void. The slab is sidewalkColor (albedo 0.227) under roofs at
+        // concreteFloor (0.43) and masses at concreteWall (0.36); all are flat, up-facing and identically
+        // lit, so the roofs keep ~2:1 contrast over it and still read plainly — the gaps read as STREETS
+        // instead of void.
         ground.transform.SetParent(root.transform, false);
         ground.transform.position = new Vector3(groundRect.center.x, slabTop - slabThickness * 0.5f, groundRect.center.y);
-        // Plain untextured box, no UVs: the slab is the SIDEWALK between the streets now, and the streets
+        // Plain untextured box, no UVs: the slab is the SIDEWALK between the streets, and the streets
         // are real quads on top of it (see the summary). AddBox is the same six-face flat-shaded builder
         // every other generated box in this file uses; it bakes the extent into the vertices and leaves
         // localScale at one.
@@ -143,9 +138,9 @@ public static class SceneStyler
     ///   ground  — the slab / street network's full extent. CENTRED on the roofs' combined XZ bounds
     ///             (layout-derived, so the street can't end up off-centre under the city) but SIZED from
     ///             the skyline, because the two answer different questions: the roofs say where the city
-    ///             is, and skylineOuterRadius says how far you can see it. Sizing to the roofs is what
-    ///             put the old edge at ~90 — a hard line in 59% fog, with the skyline floating past it to
-    ///             340. Square, so the edge is at least groundEdgeMargin out in every direction; that
+    ///             is, and skylineOuterRadius says how far you can see it. Sizing to the roofs instead
+    ///             would put the edge at ~90 — a hard line inside the fog, with the skyline floating
+    ///             past it. Square, so the edge is at least groundEdgeMargin out in every direction; that
     ///             margin (140) also dwarfs the ~13m offset between this centre and the play area's own,
     ///             which is why the two never need reconciling.
     ///   keepOut — the playable cluster, plus backdropKeepOutMargin. No backdrop road is drawn inside it
@@ -183,18 +178,17 @@ public static class SceneStyler
         var root = new GameObject("Clouds");
         var rng = new System.Random(4242); // fixed seed: identical layout on every rebuild
         var center = new Vector3(6f, 0f, 13f); // roughly the play area's center (matches silhouette dressing's offset)
-        // Root cause of "no minimap": the minimap camera (RoundController.SetupMinimap) is an
-        // ortho top-down view with a default (everything) cullingMask, sitting at player height +
-        // MinimapCameraHeight (~40) — squarely inside cloudHeightMin/Max (35-55). Huge cloud meshes
-        // (length up to 110) render straight across the minimap, washing it out.
+        // Minimap camera (RoundController.SetupMinimap) is an ortho top-down view with a default
+        // (everything) cullingMask, sitting at player height + MinimapCameraHeight (~40) — squarely
+        // inside cloudHeightMin/Max (35-55). Huge cloud meshes (length up to 110) would render straight
+        // across the minimap, washing it out, unless kept on the culled "Dressing" layer.
         // PlaygroundBuilder.EnsureLayer("Dressing") reserves this layer at build time; -1 here just
         // means the layer wasn't created (e.g. a stale scene, or this method invoked outside the
         // normal PlaygroundBuilder path) — fall back to layer 0 (Default) so clouds still render
-        // normally everywhere except the (now unfiltered) minimap.
+        // normally everywhere except the (then unfiltered) minimap.
         int dressingLayer = LayerMask.NameToLayer("Dressing");
 
-        // ONE shared opaque material for every cloud (was one translucent Sprites/Default material
-        // PER cloud) — clouds are now solid low-poly meshes, so there is nothing left that needs a
+        // ONE shared material for every cloud: clouds are solid low-poly meshes, so nothing needs a
         // per-cloud material instance.
         Color cloudTint = theme.cloudColor;
         cloudTint.a = Mathf.Clamp01(theme.cloudAlpha);
@@ -203,8 +197,7 @@ public static class SceneStyler
         // hand-authored cloud models pale gray against the night sky.
         material.SetFloat("_Smoothness", 0.04f);
         material.SetFloat("_Metallic", 0f);
-        // Round 4 ("more transparent", re-applied after a concurrent-session revert): URP transparent
-        // surface at theme.cloudAlpha so the sky gradient reads through the puffs.
+        // URP transparent surface at theme.cloudAlpha so the sky gradient reads through the puffs.
         material.SetFloat("_Surface", 1f);
         material.SetOverrideTag("RenderType", "Transparent");
         material.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.SrcAlpha);
@@ -214,10 +207,9 @@ public static class SceneStyler
         material.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
         material.SetColor("_BaseColor", cloudTint);
 
-        // Quaternius CC0 cloud models (round 3: "our clouds really really suck") — hand-authored
-        // low-poly clouds replacing the generated icosphere blobs. Long axis is local X, same as the
-        // generated meshes, so tier lengths translate directly into a uniform scale. Falls back to
-        // the old generated meshes if the assets are missing.
+        // Quaternius CC0 cloud models, preferred over the generated icosphere blobs below. Long axis is
+        // local X, same as the generated meshes, so tier lengths translate directly into a uniform scale.
+        // Falls back to the generated meshes if the assets are missing.
         var cloudModels = new System.Collections.Generic.List<(GameObject asset, Bounds bounds)>();
         for (int m = 1; m <= 5; m++)
         {
@@ -314,7 +306,7 @@ public static class SceneStyler
         // onto the local y=0 plane (see AppendIcosphereBlob), so its underside is a flat disc and its
         // top puffs up. Domes packed along the long (local X) axis share ONE flat base and give a
         // puffy, staggered top — the flat-base / puffy-top asymmetry that reads as "cloud" instead of
-        // "cluster of spheres" (the old tangent-ellipsoid version scalloped its underside and read round).
+        // "cluster of spheres".
         int blobCount = rng.Next(theme.cloudBlobsMin, theme.cloudBlobsMax + 1);
         for (int b = 0; b < blobCount; b++)
         {
@@ -551,11 +543,9 @@ public static class SceneStyler
 
     private static readonly Dictionary<string, Mesh> SkylineMeshCache = new();
 
-    /// <summary>A model's own mesh, cached per model name (also reused by the far-skyline dressing that
-    /// used to live here). Thin wrapper over
-    /// <see cref="LoadModelMesh"/> (Phase 3's loader, reused rather than duplicated): that method's own
-    /// AssetDatabase calls are idempotent but not free, and the skyline calls this ~128 times against
-    /// only 4 distinct models.</summary>
+    /// <summary>A model's own mesh, cached per model name. Thin wrapper over <see cref="LoadModelMesh"/>:
+    /// that method's own AssetDatabase calls are idempotent but not free, so caching avoids repeating
+    /// them across the many crane/pipe placements that share only a handful of distinct models.</summary>
     private static Mesh GetSkylineMesh(GlbCityKit.GlbModel model)
     {
         if (SkylineMeshCache.TryGetValue(model.Name, out Mesh cached) && cached != null) return cached;
@@ -575,9 +565,9 @@ public static class SceneStyler
     /// KEPT (not destroyed): the real roof body's collider bottoms out at exactly -3, so without this
     /// the visible building face silently turned intangible mid-fall — you'd clip through a wall that
     /// still looks solid. Keeping it makes the mental model honest: if it looks like a wall, it's a
-    /// wall (grabbable/collidable). Left on the Default layer (CreatePrimitive's default; unlike the
-    /// SilhouetteBox helpers it is deliberately NOT put on "Dressing"), so the minimap camera — which
-    /// culls Dressing — still renders the building footprints with no holes.</summary>
+    /// wall (grabbable/collidable). Left on the Default layer (CreatePrimitive's default) — deliberately
+    /// NOT put on "Dressing" — so the minimap camera, which culls Dressing, still renders the building
+    /// footprints with no holes.</summary>
     public static void CreateBuildingExtensions(VisualThemeConfig theme)
     {
         var root = new GameObject("BuildingMasses");
@@ -593,8 +583,7 @@ public static class SceneStyler
             RooftopArena.Roof r = RooftopArena.Roofs[i];
             // CreateBuildingBox's BoxCollider is intentionally kept, not destroyed: the visible building
             // face must stay solid so a falling player never passes through a wall that still looks like
-            // a wall (see summary above). It is a plain unit BoxCollider matching the box, identical to
-            // what the old CreatePrimitive(Cube) left here.
+            // a wall (see summary above). It is a plain unit BoxCollider matching the box.
             //
             // seed i+1 mirrors RooftopArena.Build's per-roof seed exactly, and facadeBottomY/facadeTopY
             // are the same full-column pair the roof body passes — that is what makes the window rows
@@ -606,9 +595,9 @@ public static class SceneStyler
         }
     }
 
-    /// <summary>PHASE 3 of the GLB integration plan: one painterly Tripo building model skinned over each
-    /// of RooftopArena's 31 playable roofs as a pure VISUAL SHELL — a renderer standing exactly where the
-    /// flat windowed boxes used to draw, spanning the whole column those two boxes covered between them
+    /// <summary>One painterly Tripo building model skinned over each of RooftopArena's 31 playable roofs
+    /// as a pure VISUAL SHELL — a renderer standing exactly where the flat windowed boxes (roof body +
+    /// mass) would otherwise draw, spanning the whole column those two boxes cover between them
     /// (r.Center.y down to buildingBaseY). Gated on <see cref="VisualThemeConfig.glbShellEnabled"/> and
     /// called from <see cref="Apply"/>'s RooftopArena block, after <see cref="CreateBuildingExtensions"/>
     /// has built the masses this strips.
@@ -688,7 +677,7 @@ public static class SceneStyler
             $"are ~3.6x taller than wide, so nothing lands near it.\n{report}");
     }
 
-    /// <summary>PHASE 5: the crane_swing.glb model over each RooftopArena swing link — VISUAL crane, so the
+    /// <summary>The crane_swing.glb model over each RooftopArena swing link — VISUAL crane, so the
     /// procedural crane's boxes (built by the live ChainSwingInteractable) keep their COLLIDERS but stop
     /// rendering. A bare GameObject + MeshFilter/MeshRenderer on the Dressing layer, ZERO colliders (same
     /// structural guarantee as the shells: it cannot carry one, so it cannot touch simulation).
@@ -711,16 +700,13 @@ public static class SceneStyler
     {
         if (!theme.glbShellEnabled) return;
 
-        // Round 10 (user: "replace the existing cranes with the yellow ones from the pack... make
-        // them actually work as the swing ropes"): the visual is now the Majadroid CC0 yellow tower
-        // crane, placed by the SAME hook-meets-pivot solve — its measured hook tip (vertex-scanned
-        // model-local (-8.49, 26.76, -5.21)) lands exactly on the swing pivot, so the live
-        // ChainSwingInteractable chain hangs straight off the yellow hook. Chain physics, grab
-        // trigger and the procedural crane's structural COLLIDERS are all untouched; only renderers
-        // changed. Falls back to crane_swing.glb if the FBX is missing.
-        // Round 12 fix (user: "you replaced the only good one" + the screenshot): the base-plate
-        // crane is Crane-On-GROUND — flat 7.4x7.4 plate at its foot, exactly the reference image.
-        // Every crane is now this model; Crane-Mounted is out.
+        // Visual is the Majadroid CC0 yellow tower crane, placed by the SAME hook-meets-pivot solve —
+        // its measured hook tip (vertex-scanned model-local (-8.49, 26.76, -5.21)) lands exactly on the
+        // swing pivot, so the live ChainSwingInteractable chain hangs straight off the yellow hook. Chain
+        // physics, grab trigger and the procedural crane's structural COLLIDERS are all untouched; only
+        // renderers changed. Falls back to crane_swing.glb if the FBX is missing.
+        // The base-plate crane is Crane-On-GROUND — flat 7.4x7.4 plate at its foot. Every crane uses
+        // this model; Crane-Mounted is not used.
         var majAsset = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(
             "Assets/Art/Construction/Majadroid/fbx files/Crane-On-Ground.fbx");
         MeshFilter? majMf = majAsset != null ? majAsset.GetComponentInChildren<MeshFilter>(true) : null;
@@ -765,19 +751,16 @@ public static class SceneStyler
         // markers to flag are already in the scene.
         InteractableMarker[] markers = Object.FindObjectsByType<InteractableMarker>(FindObjectsInactive.Exclude);
 
-        // ROUND 11 (user): EVERY chain swing gets the yellow crane — the old loop iterated
-        // RooftopArena.Links and structurally could not see the 4 hand-placed ExtraRooftopSwings, so
-        // only 2 of the 6 swings had a crane. Now marker-driven: every Swing InteractableMarker in
-        // the built scene (pointA = pivot transform, per the marker contract).
+        // EVERY chain swing gets the yellow crane: must be marker-driven (every Swing InteractableMarker
+        // in the built scene, pointA = pivot transform, per the marker contract) rather than iterating
+        // RooftopArena.Links directly — that would miss the hand-placed ExtraRooftopSwings.
         //
-        // BASE-ON-A-BUILDING SOLVE (user: "make sure the crane base is on one of our buildings —
-        // just rotate them so the chain is more or less in the same place"): the chain ALWAYS hangs
-        // at the marker pivot (hook-meets-pivot fixes that); the free parameters are the crane's yaw
-        // and uniform scale. For every (roof, yaw in 10° steps): the scale that puts the mast foot
-        // exactly on that roof's deck is s = (pivot.y - deckY) / hookDrop; accept candidates whose
-        // foot lands inside the roof footprint (1m inset) with a sane scale, score by foot depth and
-        // scale sanity, take the best. Fallback (no roof works): old behavior — yaw from the swing
-        // exit, mast column dropped to street.
+        // BASE-ON-A-BUILDING SOLVE: the chain ALWAYS hangs at the marker pivot (hook-meets-pivot fixes
+        // that); the free parameters are the crane's yaw and uniform scale. For every (roof, yaw in 10°
+        // steps): the scale that puts the mast foot exactly on that roof's deck is
+        // s = (pivot.y - deckY) / hookDrop; accept candidates whose foot lands inside the roof footprint
+        // (1m inset) with a sane scale, score by foot depth and scale sanity, take the best. If no roof
+        // candidate works, the swing keeps its procedural crane instead of placing this model.
         float hookDrop = hookLocal.y - footLocal.y; // model-local metres of mast between hook and foot
         int placedCount = 0, onRoof = 0;
         foreach (InteractableMarker swingMarker in markers)
@@ -787,20 +770,18 @@ public static class SceneStyler
             Vector3 exit = swingMarker.outwardDirection.sqrMagnitude > 0.001f
                 ? swingMarker.outwardDirection.normalized : Vector3.forward;
 
-            // ROUND-12 SOLVE (user: base-plate cranes only, AND "make sure the chain/rope hangs off
-            // the end of them"): both constraints are now EXACT via per-axis scale. Foot anchored on
-            // a deck; Y scale from the drop puts the hook at exactly chain-top HEIGHT; the horizontal
-            // scale is then set to f·s so the jib's reach equals the foot→pivot distance exactly —
-            // the chain hangs off the hook tip, always. f is clamped to [0.62, 1.6] (a lattice crane
-            // up to ~50% wider/narrower still reads as a crane; beyond that it reads as a mistake),
-            // which is what limits which decks qualify. The site ground (street level, inside the
-            // fence) is a candidate too — that's what grounds the east-pier swing whose pivot has no
-            // roof in reach (probe-proven last round); it gets a tall street crane instead.
+            // Both constraints are exact via per-axis scale. Foot anchored on a deck; Y scale from the
+            // drop puts the hook at exactly chain-top HEIGHT; the horizontal scale is then set to f·s so
+            // the jib's reach equals the foot→pivot distance exactly — the chain hangs off the hook tip,
+            // always. f is clamped to [0.62, 1.6] (a lattice crane up to ~50% wider/narrower still reads
+            // as a crane; beyond that it reads as a mistake), which is what limits which decks qualify.
             Vector2 hookOffsetLocalXZ = new(hookLocal.x - footLocal.x, hookLocal.z - footLocal.z);
             float localReachAngle = Mathf.Atan2(hookOffsetLocalXZ.x, hookOffsetLocalXZ.y) * Mathf.Rad2Deg;
             float localReach = hookOffsetLocalXZ.magnitude;
 
-            // Candidate stands: every roof, plus the site ground slab (cluster bounds at street level).
+            // Candidate stands: roofs only. A street-level stand would mean a much larger drop to the
+            // pivot, producing an oversized crane; size is hard-capped via sy below, and a swing with no
+            // roof stand keeps its procedural crane instead of getting a monster.
             float gMinX = float.MaxValue, gMaxX = float.MinValue, gMinZ = float.MaxValue, gMaxZ = float.MinValue;
             foreach (RooftopArena.Roof rr in RooftopArena.Roofs)
             {
@@ -809,9 +790,6 @@ public static class SceneStyler
                 gMinZ = Mathf.Min(gMinZ, rr.Center.z - rr.SizeZ * 0.5f);
                 gMaxZ = Mathf.Max(gMaxZ, rr.Center.z + rr.SizeZ * 0.5f);
             }
-            // Round-12 fix: ROOF stands only — the street-level stand produced the "massive cranes"
-            // the user rejected (a 35m drop meant a skyline-scale model). Size is hard-capped via sy;
-            // a swing with no roof stand keeps its procedural crane instead of getting a monster.
             var stands = new List<(Vector3 center, float sizeX, float sizeZ)>();
             foreach (RooftopArena.Roof rr in RooftopArena.Roofs)
                 stands.Add((rr.Center, rr.SizeX, rr.SizeZ));
@@ -857,9 +835,8 @@ public static class SceneStyler
             bool grounded = bestScore > float.MinValue;
             if (!grounded)
             {
-                // Round 12: no base-plate stand exists for this pivot — per the user ("only have the
-                // cranes that have this base"), place NO floating model; the procedural crane keeps
-                // rendering so the chain still visibly hangs from something.
+                // No base-plate stand exists for this pivot: place NO floating model here — the
+                // procedural crane keeps rendering so the chain still visibly hangs from something.
                 Debug.LogWarning($"GLBCRANE: swing at pivot {pivot} has no valid crane stand even with " +
                     "per-axis stretch — keeping its procedural crane visible.");
                 continue;
@@ -877,8 +854,8 @@ public static class SceneStyler
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
             go.AddComponent<MeshRenderer>().sharedMaterial = material;
 
-            // CLIMB KIT: solid mast + walkable jib + an invisible ladder ON the mast face (round 12:
-            // no more glued-on pipe visual — the lattice mast IS the ladder you see).
+            // CLIMB KIT: solid mast (climbable via wall-grab/jump — no ladder object) + walkable jib and
+            // counter-jib decks.
             AttachCraneClimbKit(root.transform, bestFoot, bestDeckY, scl, rot, dressingLayer);
             onRoof++;
 
@@ -889,18 +866,17 @@ public static class SceneStyler
             $"{placedCount} swings ({onRoof} based on buildings with climb kits).");
     }
 
-    /// <summary>Round 11/12: makes a yellow crane a parkour object — a solid mast column, a walkable
-    /// collider along the jib (measured local run), and a player-only ladder ON the mast's outer
-    /// face. Round 12: the ladder builds its own marker WITHOUT the climb-pipe visual (user: no
-    /// glued-on pipe — the lattice mast itself is the ladder you see; you climb the crane). Scale is
-    /// a full vector because round-12 cranes are per-axis stretched (jib reach solved independently
-    /// of height). Never a bot graph edge.</summary>
+    /// <summary>Makes a yellow crane a parkour object — a solid mast column (climbed via wall-grab/jump,
+    /// no ladder object: the lattice mast itself is what you climb), a walkable collider along the jib
+    /// (measured local run), and a walkable collider along the counter-jib. Scale is a full vector
+    /// because cranes are per-axis stretched (jib reach solved independently of height). Never a bot
+    /// graph edge.</summary>
     internal static void AttachCraneClimbKit(Transform parent, Vector3 footWorld, float deckY, Vector3 scl,
         Quaternion rot, int dressingLayer)
     {
-        // Constants vertex-scanned from Crane-On-GROUND.fbx (round-12 model): base plate 7.4x7.4 at
-        // y=0, jib running toward local (+0.51,+0.86), tip (18.1, 51.8, 30.6).
-        // Standable base plate — the pale slab in the user's reference shot; you can hop onto it.
+        // Constants vertex-scanned from Crane-On-GROUND.fbx: base plate 7.4x7.4 at y=0, jib running
+        // toward local (+0.51,+0.86), tip (18.1, 51.8, 30.6).
+        // Standable base plate: you can hop onto it.
         var plateGo = new GameObject("CraneBasePlate");
         plateGo.transform.SetParent(parent, false);
         plateGo.transform.SetPositionAndRotation(new Vector3(footWorld.x, deckY + scl.y * 0.4f * 0.5f, footWorld.z), rot);
@@ -915,8 +891,8 @@ public static class SceneStyler
         var mastBox = mastGo.AddComponent<BoxCollider>();
         mastBox.size = new Vector3(scl.x * 2.6f, mastH, scl.z * 2.6f);
 
-        // Walkable jib along the TOP chord (round 14: the deck sat on the BOTTOM chord at y≈51 —
-        // "looks like we're walking on the 1st layer"; the vertex-scanned top chord is y=54.0).
+        // Walkable jib along the TOP chord — the vertex-scanned top chord is y=54.0; the bottom chord
+        // (y≈51) reads as walking a layer below the jib's visible top.
         var jibStartRel = new Vector3(0f, 53.8f, 0f);
         var jibEndRel = new Vector3(18.2f, 53.8f, 30.4f);
         Vector3 a = footWorld + rot * Vector3.Scale(scl, jibStartRel);
@@ -925,13 +901,13 @@ public static class SceneStyler
         jibGo.transform.SetParent(parent, false);
         jibGo.transform.SetPositionAndRotation((a + b) * 0.5f, Quaternion.LookRotation((b - a).normalized, Vector3.up));
         var jibBox = jibGo.AddComponent<BoxCollider>();
-        // Round 13 (user: "the physics floor at the top is too thin, I'm falling off"): the jib walk
-        // deck is a generous catwalk now — at least 1.6m wide regardless of crane scale.
+        // Jib walk deck stays a generous catwalk: at least 1.6m wide regardless of crane scale, so the
+        // physics floor doesn't read as too thin to stand on.
         jibBox.size = new Vector3(Mathf.Max(1.6f, scl.x * 4.0f), 0.35f, Vector3.Distance(a, b) + scl.x * 1.0f);
 
-        // Round 14: the BACK of the crane (counter-jib over the concrete counterweights, local proj
-        // -1..-10.8 behind the mast, half-width 2.6) gets a floor too — you no longer fall through
-        // when walking behind the mast. Same top-chord height as the jib deck.
+        // The BACK of the crane (counter-jib over the concrete counterweights, local proj -1..-10.8
+        // behind the mast, half-width 2.6) gets a floor too, so walking behind the mast doesn't fall
+        // through. Same top-chord height as the jib deck.
         var counterDir = new Vector3(-0.51f, 0f, -0.86f);
         Vector3 c1 = footWorld + rot * Vector3.Scale(scl, counterDir * 1.0f + Vector3.up * 53.8f);
         Vector3 c2 = footWorld + rot * Vector3.Scale(scl, counterDir * 10.8f + Vector3.up * 53.8f);
@@ -941,11 +917,11 @@ public static class SceneStyler
         var counterBox = counterGo.AddComponent<BoxCollider>();
         counterBox.size = new Vector3(Mathf.Max(1.6f, scl.x * 5.2f), 0.35f, Vector3.Distance(c1, c2) + scl.x * 1.0f);
 
-        // Round 13: NO ladder — the user wants cranes climbed like WALLS (wall-grab + jump). The
-        // solid mast collider is exactly that; the existing climb/wall-hook mechanics handle it.
+        // NO ladder — cranes are climbed like WALLS (wall-grab + jump). The solid mast collider is
+        // exactly that; the existing climb/wall-hook mechanics handle it.
     }
 
-    /// <summary>PHASE 7 of the GLB integration plan: modular_pipe.glb tiled up every climbable wall pipe
+    /// <summary>modular_pipe.glb tiled up every climbable wall pipe
     /// (TagArenaMapGeometry.BuildClimbPipeVisual's "ClimbPipeVisual" groups), replacing the flat
     /// matte-grey cylinder primitive with a rusty, collared segment run. Purely cosmetic, same guarantee
     /// as the shells/cranes: every added GameObject is a bare MeshFilter/MeshRenderer — structurally
@@ -1083,12 +1059,12 @@ public static class SceneStyler
     private static readonly Dictionary<string, Material> ImportedGlbMaterialCache = new();
 
     /// <summary>A model's own Tripo-painted material (glTFast imports one under the active pipeline),
-    /// cached per model name. NOT GlbCityKit.BuildLitMaterial: that keys "glass" panes and lights a
-    /// seeded subset — meaningful on a building, nonsense on a machine or a pipe. Shared by
-    /// <see cref="CraneModelMaterial"/> and <see cref="CreateGlbPipes"/> — neither wants window-keying,
-    /// and the previous crane-only version cached a single field, which would have silently reused the
-    /// crane's own material for the pipe. Falls back to <paramref name="fallbackColor"/> if the GLB
-    /// somehow carries no material sub-asset.</summary>
+    /// cached per model name — must stay keyed by model name, not a single shared field, or the crane's
+    /// material would silently leak onto the pipe (or vice versa). NOT GlbCityKit.BuildLitMaterial: that
+    /// keys "glass" panes and lights a seeded subset — meaningful on a building, nonsense on a machine or
+    /// a pipe. Shared by <see cref="CraneModelMaterial"/> and <see cref="CreateGlbPipes"/> — neither
+    /// wants window-keying. Falls back to <paramref name="fallbackColor"/> if the GLB somehow carries no
+    /// material sub-asset.</summary>
     private static Material ImportedGlbMaterial(GlbCityKit.GlbModel model, Color fallbackColor)
     {
         if (ImportedGlbMaterialCache.TryGetValue(model.Name, out Material cached) && cached != null) return cached;
@@ -1200,9 +1176,8 @@ public static class SceneStyler
         float r = Mathf.Clamp(brightness + skew, floor, 1f);
         float b = Mathf.Clamp(brightness - skew, floor, 1f);
         // The near-white jitter above varies buildings AGAINST each other; glbShellNightTint then pulls
-        // the whole result into the dark night palette so no shell reads as a bright cream tower (the
-        // "light buildings" of two feedback rounds were exactly these shells). Bucketing/material-ceiling
-        // behaviour unchanged — this is a constant multiply on every bucket.
+        // the whole result into the dark night palette so no shell reads as a bright cream tower.
+        // Bucketing/material-ceiling behaviour unchanged — this is a constant multiply on every bucket.
         Color night = theme.glbShellNightTint;
         return new Color(r * night.r, brightness * night.g, b * night.b, 1f);
     }
@@ -1284,7 +1259,7 @@ public static class SceneStyler
         return culled;
     }
 
-    /// <summary>A model's mesh. building4's comes from the PHASE 1 DECIMATION ASSET, not from its GLB: the
+    /// <summary>A model's mesh. building4's comes from a pre-decimated mesh asset, not from its GLB: the
     /// raw import is 1,016,677 verts (the others are 7-8k), which is unusable skinned over a roof. The rest
     /// are the largest Mesh sub-asset of their own GLB — every Tripo model is one fused mesh, so "largest"
     /// is just a safe way to say "the model" — behind an explicit ImportAsset first, because these GLBs are
@@ -1306,33 +1281,30 @@ public static class SceneStyler
         return best ?? throw new System.InvalidOperationException($"GLBSHELL: no Mesh sub-asset at {model.Path}");
     }
 
-    /// <summary>Mid-height facade life for WORK ITEM 3 of the city-grounding brief: props on the bare
-    /// vertical walls between roof and street. Two independent placement targets, both seeded off one
-    /// fixed RNG so a rebuild is byte-identical, both gated on <c>propMaxRadius</c> for budget honesty
-    /// (see the knob's doc comment for the fog numbers behind that default):
+    /// <summary>Mid-height facade life: props on the bare vertical walls between roof and street. Two
+    /// independent placement targets, both seeded off one fixed RNG so a rebuild is byte-identical, both
+    /// gated on <c>propMaxRadius</c> for budget honesty (see the knob's doc comment for the fog numbers
+    /// behind that default):
     ///
     ///   1. Water towers / AC units sit on the ROOFTOPS of far-skyline "dressing" buildings — the
-    ///      <c>SilhouetteDressing</c> boxes the (now-removed) legacy GLB skyline pass used to build. This
-    ///      reads the ACTUAL placed boxes via <c>GameObject.Find</c> rather than re-deriving their RNG
-    ///      stream, so a tower always sits flush on a real rooftop instead of floating over one that
-    ///      jittered elsewhere — see the "PHASE 4" comment below: since that pass no longer runs, this
-    ///      prefix match always finds nothing and roofPropCount is always 0, deliberately.
+    ///      <c>SilhouetteDressing</c> boxes a legacy GLB skyline pass used to build. That pass no longer
+    ///      runs, so <c>GameObject.Find("SilhouetteDressing")</c> below always finds nothing and
+    ///      roofPropCount is always 0 — deliberately, not a stale check.
     ///
-    ///   2. Billboards / fire escapes mount on the WALL FACES of the playable cluster's building
-    ///      masses (<see cref="CreateBuildingExtensions"/>'s boxes, re-derived here from
+    ///   2. Fire escapes mount on the WALL FACES of the playable cluster's building masses
+    ///      (<see cref="CreateBuildingExtensions"/>'s boxes, re-derived here from
     ///      <c>RooftopArena.Roofs</c> directly — no need for the actual GameObjects, the footprint math
     ///      is identical). This is the keep-out-critical half: every placement is constrained to
     ///      [buildingBaseY + propWallTopMargin, buildingBodyBottomY - propWallTopMargin] by
     ///      construction, then independently re-verified per-prop by <see cref="VerifyPropKeepOut"/> —
-    ///      belt and suspenders, because this is "the one that must not be wrong" (brief's words): a
-    ///      prop above buildingBodyBottomY (-3) inside a roof's footprint would sit on a face an agent
-    ///      can wall-run or mantle, and these props carry zero colliders, so a wrong one would be an
-    ///      invisible-but-textured phantom ledge.
+    ///      belt and suspenders: a prop above buildingBodyBottomY (-3) inside a roof's footprint would
+    ///      sit on a face an agent can wall-run or mantle, and these props carry zero colliders, so a
+    ///      wrong one would be an invisible-but-textured phantom ledge.
     ///
-    /// Draw calls: exactly 3 for the entire city (one merged mesh per material — concrete/metal,
-    /// emissive billboards, dark fire escapes), regardless of prop count, per the brief's 3-4 budget.
-    /// No colliders anywhere; every merged mesh is a bare GameObject + MeshFilter/MeshRenderer on the
-    /// Dressing layer, matching every other backdrop pass in this file.</summary>
+    /// Draw calls: exactly 2 for the entire city (one merged mesh per material — concrete/metal props,
+    /// dark fire escapes), regardless of prop count. No colliders anywhere; every merged mesh is a bare
+    /// GameObject + MeshFilter/MeshRenderer on the Dressing layer, matching every other backdrop pass in
+    /// this file.</summary>
     public static void CreateFacadeProps(VisualThemeConfig theme)
     {
         var root = new GameObject("FacadeProps");
@@ -1343,7 +1315,6 @@ public static class SceneStyler
         var metalVerts = new System.Collections.Generic.List<Vector3>();
         var metalNormals = new System.Collections.Generic.List<Vector3>();
         var metalTris = new System.Collections.Generic.List<int>();
-        // (Billboard vertex lists removed with the billboards themselves — round 4, re-applied.)
         var darkVerts = new System.Collections.Generic.List<Vector3>();
         var darkNormals = new System.Collections.Generic.List<Vector3>();
         var darkTris = new System.Collections.Generic.List<int>();
@@ -1351,9 +1322,9 @@ public static class SceneStyler
         int roofPropCount = 0, wallPropCount = 0;
 
         // --- 1. Roof props: water towers / AC units on far-skyline building tops (unreachable). ---
-        // The legacy GLB skyline pass that used to populate "SilhouetteDressing" with "Skyline_..."
-        // boxes has been removed (Kenney perimeter wall is the horizon now), so this prefix match always
-        // finds nothing and roofPropCount is always 0 — deliberately, not a stale check.
+        // A legacy GLB skyline pass populated "SilhouetteDressing" with "Skyline_..." boxes; it no longer
+        // runs (Kenney perimeter wall is the horizon now), so this prefix match always finds nothing and
+        // roofPropCount is always 0 — deliberately, not a stale check.
         GameObject? skylineRoot = GameObject.Find("SilhouetteDressing");
         if (skylineRoot != null)
         {
@@ -1400,8 +1371,7 @@ public static class SceneStyler
                 Vector3 normal = faceNormals[rng.Next(4)];
                 bool isXFace = normal.x != 0f; // this face's outward normal runs along world X
                 float faceHalfWidth = (isXFace ? r.SizeZ : r.SizeX) * 0.5f;
-                // Round 4 (re-applied after a concurrent-session revert): billboards removed (user:
-                // "they suck") — every wall prop is a fire escape. rng.Next(2) still consumed so the
+                // Every wall prop is a fire escape; rng.Next(2) still consumed (result unused) so the
                 // rest of the prop layout stays deterministic.
                 rng.Next(2);
                 float footprintWidth = theme.propFireEscapeSlatWidth;
@@ -1423,7 +1393,7 @@ public static class SceneStyler
         Material darkMat = new(shader) { color = theme.silhouetteColor }; // reuses the existing silhouette knob
 
         BuildMergedPropMesh(root.transform, "Props_ConcreteMetal", metalVerts, metalNormals, metalTris, metalMat, dressingLayer);
-        // Round 4 (re-applied): no Props_Billboards mesh — billboards are gone, fire escapes carry the walls.
+        // No Props_Billboards mesh — fire escapes carry the walls.
         BuildMergedPropMesh(root.transform, "Props_FireEscapes", darkVerts, darkNormals, darkTris, darkMat, dressingLayer);
 
         Debug.Log($"ROOFTOP_FACADE_PROPS: {roofPropCount} roof props (water tower/AC) on skyline buildings, " +
@@ -1441,14 +1411,14 @@ public static class SceneStyler
         return baseCount + (rng.NextDouble() < frac ? 1 : 0);
     }
 
-    /// <summary>THE keep-out check (brief: "the one that must not be wrong"): logs an error if a prop's
-    /// world position falls inside any RooftopArena.Roofs footprint (expanded by propKeepOutMargin in
-    /// XZ) at a height at or above buildingBodyBottomY - propWallTopMargin — i.e. anywhere an agent
-    /// could actually stand or wall-run. Every wall prop is constructed to already satisfy this by
-    /// construction (see CreateFacadeProps' massTop/massBottom clamp); this is the independent runtime
-    /// re-check the brief asks for, so a future retune of propWallTopMargin/propKeepOutMargin toward an
-    /// unsafe value fails loudly at build time instead of silently shipping a phantom ledge. O(props x
-    /// roofs) = a few hundred x 31, negligible at editor build time.</summary>
+    /// <summary>THE keep-out check: logs an error if a prop's world position falls inside any
+    /// RooftopArena.Roofs footprint (expanded by propKeepOutMargin in XZ) at a height at or above
+    /// buildingBodyBottomY - propWallTopMargin — i.e. anywhere an agent could actually stand or wall-run.
+    /// Every wall prop is constructed to already satisfy this by construction (see CreateFacadeProps'
+    /// massTop/massBottom clamp); this is the independent runtime re-check, so a future retune of
+    /// propWallTopMargin/propKeepOutMargin toward an unsafe value fails loudly at build time instead of
+    /// silently shipping a phantom ledge. O(props x roofs) = a few hundred x 31, negligible at editor
+    /// build time.</summary>
     private static void VerifyPropKeepOut(Vector3 worldPos, VisualThemeConfig theme, string propKind)
     {
         foreach (RooftopArena.Roof r in RooftopArena.Roofs)
@@ -1468,11 +1438,11 @@ public static class SceneStyler
     }
 
     /// <summary>Builds one merged-mesh backdrop GameObject: bare GameObject + MeshFilter/MeshRenderer, no
-    /// collider, one shared material — this is what keeps the entire prop pass at 3 draw calls regardless
-    /// of prop count, and the entire backdrop street network at 2 regardless of road count. Sets
-    /// IndexFormat.UInt32 if the merge ever crosses Unity's default UInt16 ceiling (65535 verts); every
-    /// group here stays a few thousand (see CreateFacadeProps' / CreateRoads' Debug.Log), but this guards
-    /// the format explicitly rather than trusting it stays under forever as the density knobs get retuned.</summary>
+    /// collider, one shared material — this is what keeps the entire prop pass at 2 draw calls regardless
+    /// of prop count. Sets IndexFormat.UInt32 if the merge ever crosses Unity's default UInt16 ceiling
+    /// (65535 verts); every group here stays a few thousand (see CreateFacadeProps' Debug.Log), but this
+    /// guards the format explicitly rather than trusting it stays under forever as the density knobs get
+    /// retuned.</summary>
     private static void BuildMergedPropMesh(Transform parent, string name,
         System.Collections.Generic.List<Vector3> verts, System.Collections.Generic.List<Vector3> normals,
         System.Collections.Generic.List<int> tris, Material material, int dressingLayer,
@@ -1485,7 +1455,7 @@ public static class SceneStyler
         if (verts.Count > 65535) mesh.indexFormat = IndexFormat.UInt32;
         mesh.SetVertices(verts);
         mesh.SetNormals(normals);
-        if (uvs != null) mesh.SetUVs(0, uvs); // props are untextured; the backdrop roads are not
+        if (uvs != null) mesh.SetUVs(0, uvs); // optional — current callers (props) leave this null and stay untextured
         mesh.SetTriangles(tris, 0);
         mesh.RecalculateBounds();
         go.AddComponent<MeshFilter>().sharedMesh = mesh;
@@ -1585,8 +1555,9 @@ public static class SceneStyler
     /// <summary>Appends one outward-facing emissive billboard quad into a shared vertex/normal/triangle
     /// list, flush-mounted on a wall face at <paramref name="wallCenter"/> plus a small
     /// <paramref name="protrusion"/> off it. Same right = cross(n, up) corner convention as every other
-    /// quad in this file (TagArenaMapGeometry.BuildFacadeMesh's AddQuad) — single-
-    /// sided is correct here since the panel is mounted flush against a wall, its back face never seen.</summary>
+    /// quad in this file (TagArenaMapGeometry.BuildFacadeMesh's AddQuad) — single-sided is correct here
+    /// since the panel is mounted flush against a wall, its back face never seen. Currently unused: every
+    /// wall prop placed by <see cref="CreateFacadeProps"/> is a fire escape.</summary>
     private static void AddBillboardPanel(System.Collections.Generic.List<Vector3> verts, System.Collections.Generic.List<Vector3> normals,
         System.Collections.Generic.List<int> tris, Vector3 wallCenter, Vector3 outwardNormal, float width, float height, float protrusion)
     {
@@ -1615,9 +1586,9 @@ public static class SceneStyler
     }
 
     /// <summary>Appends a few thin flat dark slats stacked up a wall face into a shared
-    /// vertex/normal/triangle list — impressionistic, NOT modelled stairs (per the brief): a handful of
-    /// AddBox slats alternating a small lateral offset reads as a fire-escape switchback from any
-    /// distance a player will actually see one.</summary>
+    /// vertex/normal/triangle list — impressionistic, NOT modelled stairs: a handful of AddBox slats
+    /// alternating a small lateral offset reads as a fire-escape switchback from any distance a player
+    /// will actually see one.</summary>
     private static void AddFireEscape(System.Collections.Generic.List<Vector3> verts, System.Collections.Generic.List<Vector3> normals,
         System.Collections.Generic.List<int> tris, Vector3 wallBase, Vector3 normal, VisualThemeConfig theme)
     {
@@ -1665,11 +1636,10 @@ public static class SceneStyler
         Face(Vector3.down, Vector3.forward, size.x, size.z);
     }
 
-    /// <summary>Global URP volume: bloom (picks up the city's window/billboard glow, interactable orange
-    /// and the rim trims), a faintly cool color grade, subtle vignette. The profile is created in-memory
-    /// and embeds into the saved scene, like the generated materials (confirmed pattern in this project).
-    /// Every value here is a VisualThemeConfig knob and each is documented there — the night re-theme
-    /// retuned bloom/vignette/contrast/colorFilter without touching this method.</summary>
+    /// <summary>Global URP volume: bloom (picks up the city's window glow, interactable orange and the
+    /// rim trims), a faintly cool color grade, subtle vignette. The profile is created in-memory and
+    /// embeds into the saved scene, like the generated materials. Every value here is a VisualThemeConfig
+    /// knob, documented there.</summary>
     public static void CreatePostVolume(VisualThemeConfig theme)
     {
         var go = new GameObject("GlobalPostVolume");

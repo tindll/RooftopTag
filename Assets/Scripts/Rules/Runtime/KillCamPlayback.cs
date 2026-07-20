@@ -14,12 +14,9 @@ namespace Game.Rules;
 /// Kill-cam replay: freezes the world, scrubs every agent the <see cref="KillCamRecorder"/> has data
 /// for back through the last couple of seconds at 0.6x, and reframes the shot as the same third-person
 /// view the tagger's own player sees during live play — <see cref="ThirdPersonCameraRig"/>'s framing,
-/// driven off the recorded frame instead of a live motor.
-/// <para>
-/// Presentation only — it changes no rules state and puts back everything it touched (timeScale, the
-/// camera rig, animator update modes, the recorder, and every transform it moved), so a replay can run
-/// mid-round (F9) and hand play straight back.
-/// </para>
+/// driven off the recorded frame instead of a live motor. Presentation only — it changes no rules
+/// state and puts back everything it touched (timeScale, camera rig, animator update modes, the
+/// recorder, and every transform it moved), so a replay can run mid-round (F9) and hand play back.
 /// </summary>
 public sealed class KillCamPlayback : MonoBehaviour
 {
@@ -248,10 +245,10 @@ public sealed class KillCamPlayback : MonoBehaviour
             return;
         }
 
-        // No skip: the kill cam plays to the end (user). R still restarts the round outright —
+        // No skip: the kill cam plays to the end. R still restarts the round outright —
         // RoundController reads it every frame and RestartRound cancels this — so there is still a
-        // way out, it just isn't a stray click. Dropping the click-skip also removed a real bug: the
-        // skip shared leftButton with TagAgent's lunge, so skipping armed a dive that fired on resume.
+        // way out, it just isn't a stray click. A click-skip would share leftButton with TagAgent's
+        // lunge, arming a dive that fires on resume.
         if (_scrubTime < _endTime)
         {
             _scrubTime = Mathf.Min(_scrubTime + Time.unscaledDeltaTime * PlaybackRate, _endTime);
@@ -422,7 +419,7 @@ public sealed class KillCamPlayback : MonoBehaviour
     /// <summary>Never leave the game frozen because this component got switched off mid-replay.</summary>
     private void OnDisable() => Cancel();
 
-    // ---------------------------------------------------------------- PHASE 4: F9 debug trigger
+    // ---------------------------------------------------------------- F9 debug trigger
 
     /// <summary>
     /// Replays the last couple of seconds from the nearest Tagger's POV and RESUMES PLAY — the normal

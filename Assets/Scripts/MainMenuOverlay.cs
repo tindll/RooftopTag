@@ -10,25 +10,11 @@ using UnityEngine.InputSystem;
 
 /// <summary>
 /// Main-menu overlay: difficulty select, chaser-count select, PLAY, and a collapsed-by-default
-/// CONTROLS dropdown whose rows are live rebind buttons (shared flow: <see cref="KeyRebinder"/>),
-/// styled entirely off <see cref="GameUIStyle"/> (100% OnGUI, no UI Toolkit — see that
-/// file's remarks). Shown at round start and whenever the Esc-pause menu's Quit button returns
-/// here (see <see cref="SettingsMenu"/>). Reuses the exact freeze mechanism the pause menu already
-/// uses — <c>Time.timeScale = 0</c> plus <see cref="ThirdPersonCameraRig.CursorUnlocked"/>/
-/// <see cref="ThirdPersonCameraRig.SuppressAutoRelock"/> — rather than inventing a second one.
-///
-/// Deliberately has no namespace and lives outside any custom asmdef (compiles into
-/// Assembly-CSharp), same as <see cref="SettingsMenu"/>/<see cref="TagArenaBootstrap"/>, which
-/// attach it live at runtime — see <see cref="PlaygroundBootstrap"/>'s remarks (mirrored on
-/// PlaygroundBuilder.cs) for why: this environment's headless Unity cannot reliably resolve
-/// custom-asmdef script types when deserializing a saved scene. Assembly-CSharp already sees
-/// Game.UI/Game.Movement without an explicit asmdef reference — it auto-references every
-/// autoReferenced asmdef in the project, same reason SettingsMenu.cs already used InputAction here.
-///
-/// Only ever attached by <see cref="TagArenaBootstrap"/>, so it's naturally absent from the
-/// headless self-play harness (<c>SelfPlayTests.cs</c> builds bot agents directly in code and
-/// never calls into any bootstrap) and from the movement playground (<see cref="PlaygroundBootstrap"/>
-/// never attaches it) — both inherently safe with zero extra guarding.
+/// CONTROLS dropdown of live rebind buttons (<see cref="KeyRebinder"/>), styled via
+/// <see cref="GameUIStyle"/> (OnGUI only, no UI Toolkit). Shown at round start and whenever the
+/// pause menu's Quit button returns here; freezes gameplay the same way the pause menu does.
+/// Deliberately has no namespace and lives outside any custom asmdef, same as
+/// <see cref="SettingsMenu"/>/<see cref="TagArenaBootstrap"/> (see <see cref="PlaygroundBootstrap"/>).
 /// </summary>
 public sealed class MainMenuOverlay : MonoBehaviour
 {
@@ -37,9 +23,9 @@ public sealed class MainMenuOverlay : MonoBehaviour
     private static readonly int[] ChaserCounts = { 0, 1, 3, 5, 10 };
 
     // Card geometry, design-space (GameUIStyle.Scale takes it to real pixels @1080p/1440p/ultrawide).
-    // Left column, not centered — see PHASE 3 note. Height is computed per open state: the CONTROLS
-    // dropdown is the one thing that changes row count at runtime, so the card grows by exactly its
-    // rows when expanded (fixed budget otherwise, same reasoning as before).
+    // Left column, not centered. Height is computed per open state: the CONTROLS dropdown is the
+    // one thing that changes row count at runtime, so the card grows by exactly its rows when
+    // expanded.
     private const float CardX = 90f;
     private const float CardY = 110f;
     private const float CardWidth = 460f;

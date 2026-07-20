@@ -7,7 +7,7 @@ using Game.Rules;
 using UnityEngine;
 
 /// <summary>
-/// M2 tag-arena equivalent of <see cref="PlaygroundBootstrap"/>: attaches every custom-asmdef
+/// Tag-arena equivalent of <see cref="PlaygroundBootstrap"/>: attaches every custom-asmdef
 /// component live, at runtime, instead of relying on the scene to have them pre-attached (see
 /// <see cref="PlaygroundBootstrap"/>'s remarks for why). Spawns one human-controlled agent and
 /// N bot agents, wires them all into a single <see cref="RoundController"/>, and wires up the
@@ -78,8 +78,7 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         var botConfig = ScriptableObject.CreateInstance<BotConfig>();
         // Both scenes that use this bootstrap (Tag Arena, Rooftop Arena) build on the same branching
-        // RooftopArena topology now — the old linear-corridor graph builder was removed, as it had
-        // no caller left through this path.
+        // RooftopArena topology.
         ParkourGraph graph = Game.AI.RooftopGraphBuilder.Build(movementConfig);
 
         var roundControllerGo = new GameObject("RoundController");
