@@ -112,69 +112,77 @@ public static class NetSwingClipBuilder
 
     // ---------------------------------------------------------------- pose synthesis
 
-    // blend = position along the swing ARC (0 = loaded direction, 1 = scoop direction). Kept at 1
-    // through the recoil — the arms lower along the scoop line as weight decays, they must NOT
-    // slerp back through "overhead" (that read as a celebration-V, not a follow-through).
-    private static (float raise, float scoop, float sweep, float blend) PhaseAt(float t)
+    // weight = how strongly the authored pose overrides bind pose. It stays FULL through the
+    // recoil: decaying it blended back toward the FBX's bind pose, which is a T-POSE — the clip
+    // visibly ended with arms splayed out sideways (reported as "arms go to his right"). Instead
+    // the recoil keeps weight 1 and blends the arc DIRECTION from the scoop into an authored
+    // ready pose (arms lowered in FRONT, pole back upright).
+    // dirBlend = position along the swing arc (0 = loaded, 1 = scoop);
+    // readyBlend = recoil progress from the scoop pose into the ready pose.
+    private static (float weight, float dirBlend, float readyBlend, float sweep) PhaseAt(float t)
     {
         if (t < RaiseEnd)
         {
             float u = t / RaiseEnd;
             float raise = 1f - (1f - u) * (1f - u);
-            return (raise, 0f, SweepStartDeg * raise, 0f);
+            return (raise, 0f, 0f, SweepStartDeg * raise);
         }
-        if (t < HoldEnd) return (1f, 0f, SweepStartDeg, 0f);
+        if (t < HoldEnd) return (1f, 0f, 0f, SweepStartDeg);
         if (t < WhipEnd)
         {
             float u = (t - HoldEnd) / (WhipEnd - HoldEnd);
             float scoop = u * u;
-            return (1f - scoop, scoop, Mathf.Lerp(SweepStartDeg, SweepEndDeg, scoop), scoop);
+            return (1f, scoop, 0f, Mathf.Lerp(SweepStartDeg, SweepEndDeg, scoop));
         }
         float v = (t - WhipEnd) / (ClipLength - WhipEnd);
         float settle = 1f - (1f - v) * (1f - v);
-        float residual = Mathf.Lerp(1f, ReadyResidual, settle);
-        return (0f, residual, Mathf.Lerp(SweepEndDeg, SweepEndDeg * ReadyResidual, settle), 1f);
+        return (1f, 1f, settle, Mathf.Lerp(SweepEndDeg, 0f, settle));
     }
 
     // internal: NetSwingFbxExporter drives this directly (single source of truth for the pose math).
     internal static void ApplySwingPose(Animator animator, Transform agent, float t)
     {
-        (float raise, float scoop, float sweep, float blendPhase) = PhaseAt(t);
+        (float weight, float dirBlend, float readyBlend, float sweep) = PhaseAt(t);
+        float raise = (1f - dirBlend) * weight;            // torso "loaded" amount
+        float scoop = dirBlend * (1f - readyBlend);        // torso "swung" amount, relaxing on recoil
         Vector3 right = agent.right, up = agent.up, fwd = agent.forward;
         Quaternion sweepRot = Quaternion.AngleAxis(sweep, up); // rotates the whole swing plane
 
         // Torso: spine points up (perpendicular to the pitch axis), so axis rotations are safe here.
-        float spinePitch = -SpineArchDeg * raise + SpinePitchFwdDeg * scoop;
+        float spinePitch = -SpineArchDeg * raise + SpinePitchFwdDeg * scoop + 5f * readyBlend; // ends slightly hunched-ready
         float spineTwist = SpineTwistLoadDeg * raise + sweep * 0.4f;
         RotateBone(animator, HumanBodyBones.Spine, Quaternion.AngleAxis(spinePitch * 0.5f, right) * Quaternion.AngleAxis(spineTwist * 0.5f, up));
         RotateBone(animator, HumanBodyBones.Chest, Quaternion.AngleAxis(spinePitch * 0.5f, right) * Quaternion.AngleAxis(spineTwist * 0.5f, up));
         RotateBone(animator, HumanBodyBones.Neck, Quaternion.AngleAxis(-spinePitch * 0.7f, right)); // eyes on target
 
-        // Legs: bind pose points them down (also perpendicular to the pitch axis) — light stagger.
-        RotateBone(animator, HumanBodyBones.RightUpperLeg, Quaternion.AngleAxis(14f * raise - 6f * scoop, right));
-        RotateBone(animator, HumanBodyBones.LeftUpperLeg, Quaternion.AngleAxis(-12f * raise + 4f * scoop, right));
-        RotateBone(animator, HumanBodyBones.RightLowerLeg, Quaternion.AngleAxis(-10f * raise, right));
-        RotateBone(animator, HumanBodyBones.LeftLowerLeg, Quaternion.AngleAxis(-8f * raise - 6f * scoop, right));
+        // Legs: bind pose points them down (also perpendicular to the pitch axis) — light stagger,
+        // settling to a soft-kneed ready stance.
+        RotateBone(animator, HumanBodyBones.RightUpperLeg, Quaternion.AngleAxis(14f * raise - 6f * scoop + 4f * readyBlend, right));
+        RotateBone(animator, HumanBodyBones.LeftUpperLeg, Quaternion.AngleAxis(-12f * raise + 4f * scoop + 4f * readyBlend, right));
+        RotateBone(animator, HumanBodyBones.RightLowerLeg, Quaternion.AngleAxis(-10f * raise - 6f * readyBlend, right));
+        RotateBone(animator, HumanBodyBones.LeftLowerLeg, Quaternion.AngleAxis(-8f * raise - 6f * scoop - 6f * readyBlend, right));
 
-        // ---- Arms: direction targets in agent space, blended windup → scoop, then swept about up.
-        // Windup: right upper arm points up-and-back over the RIGHT shoulder; scoop: forward-and-down.
+        // ---- Arms: direction targets in agent space. The arc runs load → scoop (dirBlend), then
+        // scoop → READY (readyBlend): arms lowered in FRONT of the body, pole back near upright —
+        // close to the in-game carry, and critically NOT the T-pose the bind would give.
         Vector3 upperLoadR = (up * 1.0f - fwd * 0.55f + right * 0.25f).normalized;
         Vector3 upperScoop = (fwd * 1.0f - up * 0.55f).normalized;
+        Vector3 upperReady = (fwd * 0.2f - up * 1.0f + right * 0.35f).normalized; // right hand settles at the right hip
         Vector3 lowerLoadR = (up * 0.8f - fwd * 0.9f + right * 0.1f).normalized;
         Vector3 lowerScoop = (fwd * 1.0f - up * 0.35f).normalized;
-        // Net pole (right hand local +Y): pokes further behind at load, slams forward-down on the scoop.
+        Vector3 lowerReady = (fwd * 0.45f - up * 0.85f + right * 0.15f).normalized;
+        // Net pole (right hand local +Y): behind at load, slams forward-down, back upright at ready.
         Vector3 poleLoad = (up * 0.55f - fwd * 1.0f).normalized;
         Vector3 poleScoop = (fwd * 0.9f - up * 0.5f).normalized;
+        Vector3 poleReady = (up * 1.0f + fwd * 0.25f + right * 0.2f).normalized; // upright, tilted off the face
 
-        float blend = blendPhase;
-        float weight = Mathf.Clamp01(raise + scoop);
-        Vector3 poleDir = (sweepRot * Vector3.Slerp(poleLoad, poleScoop, blend)).normalized;
+        Vector3 upperDir = Vector3.Slerp(Vector3.Slerp(upperLoadR, upperScoop, dirBlend), upperReady, readyBlend);
+        Vector3 lowerDir = Vector3.Slerp(Vector3.Slerp(lowerLoadR, lowerScoop, dirBlend), lowerReady, readyBlend);
+        Vector3 poleDir = (sweepRot * Vector3.Slerp(Vector3.Slerp(poleLoad, poleScoop, dirBlend), poleReady, readyBlend)).normalized;
 
         // Right arm drives the swing.
-        AimSegment(animator, HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm,
-            sweepRot * Vector3.Slerp(upperLoadR, upperScoop, blend), weight);
-        AimSegment(animator, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand,
-            sweepRot * Vector3.Slerp(lowerLoadR, lowerScoop, blend), weight);
+        AimSegment(animator, HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, sweepRot * upperDir, weight);
+        AimSegment(animator, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand, sweepRot * lowerDir, weight);
 
         // Hands get FULL orientations, not minimal rotations — FromToRotation kept the bind pose's
         // roll, which left both palms facing OUTWARD. LookRotation pins the pole axis (hand +Y)
