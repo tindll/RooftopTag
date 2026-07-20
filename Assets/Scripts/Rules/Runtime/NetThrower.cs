@@ -37,6 +37,10 @@ public sealed class NetThrower : MonoBehaviour
     private const float MissLingerSeconds = 2f;   // a missed net lies on the ground this long, then destroys
     private const float ArcHeightFraction = 0.18f; // parabola apex as a fraction of throw distance
     private const float SpinDegPerSec = 720f;      // end-over-end tumble of the thrown net
+    // Trap-dome VISUAL radius, deliberately decoupled from netHitRadius: the hit radius is a gameplay
+    // forgiveness knob (1.1m), but a dome built that wide renders as a ~2.2m pancake swallowing the
+    // rooftop. The dome only needs to read "raccoon trapped under a net", so it stays raccoon-sized.
+    private const float TrapDomeVisualRadius = 0.8f;
 
     private static bool HasGraphics =>
         SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null;
@@ -73,12 +77,18 @@ public sealed class NetThrower : MonoBehaviour
 
     /// <summary>Attempt a throw (player right-click, or a bot's rate-limited AI hook). Mirrors the gates
     /// <see cref="TagAgent.TryLunge"/> checks, plus the net's own cooldown. Self-gating, so a bot may call
-    /// it every tick — it no-ops unless a shot is actually available.</summary>
+    /// it every tick — it no-ops unless a shot is actually available. NO BLIND THROWS: bots call this every
+    /// tick, so committing without a valid target had every tagger hurling nets at nothing on cooldown —
+    /// nets sailing around empty rooftops, the windup animation firing at nobody, and the cooldown burned
+    /// right when a real target finally came in range. No target = keep the net in hand.</summary>
     public void TryThrow()
     {
         if (!CanThrow()) return;
 
-        _targetAgent = AcquireTarget(); // may be null → a blind forward throw that always misses
+        TagAgent? target = AcquireTarget();
+        if (target == null) return;
+
+        _targetAgent = target;
         _cooldownRemaining = _config.netThrowCooldown;
         _windupRemaining = _config.netWindupSeconds;
         _state = ThrowState.Windup;
@@ -172,9 +182,33 @@ public sealed class NetThrower : MonoBehaviour
     }
 
     // Lead the throw: aim at where the runner will be when the net lands, not where they are now.
-    private Vector3 PredictLandPos() => _targetAgent == null
-        ? transform.position + transform.forward * _config.netThrowRange
-        : _targetAgent.transform.position + _targetAgent.Motor.HorizontalVelocity * _config.netFlightTime;
+    private Vector3 PredictLandPos()
+    {
+        if (_targetAgent == null)
+            return transform.position + transform.forward * _config.netThrowRange;
+
+        // CLOSE-RANGE WHIFF FIX: a full-velocity lead overshoots a NEAR target — point-blank against a
+        // 7 m/s sprint the land point sits ~3m past the runner, outside netHitRadius, so taggers right
+        // next to their target whiffed. Scale the lead by how far the target is (0 at the thrower, 1 at
+        // netThrowRange): close throws aim near the target's CURRENT position, only max-range throws keep
+        // the full predictive lead.
+        Vector3 toTarget = _targetAgent.transform.position - transform.position;
+        float horizontalDist = Vector3.ProjectOnPlane(toTarget, Vector3.up).magnitude;
+        float leadScale = Mathf.Clamp01(horizontalDist / _config.netThrowRange);
+        Vector3 land = _targetAgent.transform.position
+            + _targetAgent.Motor.HorizontalVelocity * (_config.netFlightTime * leadScale);
+
+        // LEAD CLAMP: even scaled, a fast runner near max range could lead the land point well past
+        // netThrowRange (throws landed ~9m out and read absurd). Clamp the land point's HORIZONTAL offset
+        // from the thrower back to netThrowRange; keep its height so the arc/land-raycast handle vertical.
+        Vector3 flatOffset = Vector3.ProjectOnPlane(land - transform.position, Vector3.up);
+        if (flatOffset.magnitude > _config.netThrowRange)
+        {
+            Vector3 clamped = transform.position + flatOffset.normalized * _config.netThrowRange;
+            land = new Vector3(clamped.x, land.y, clamped.z);
+        }
+        return land;
+    }
 
     private Vector3 HandWorldPos() => _carriedNet != null
         ? _carriedNet.transform.position
@@ -219,7 +253,10 @@ public sealed class NetThrower : MonoBehaviour
     internal void OnHitConfirmed()
     {
         TagAgent? victim = _targetAgent;
-        if (victim != null && !victim.IsInGrace && !victim.IsDodgingViaIFrames())
+        // FAR-CATCH FIX: the QTE only tests reaction TIME (did the player dodge?), it never checked WHERE
+        // the net landed — so a player who simply outran the landing point still got caught from metres
+        // away. Gate on WithinHitRadius exactly like the bot path (ResolveSelf): outside the radius = miss.
+        if (victim != null && !victim.IsInGrace && !victim.IsDodgingViaIFrames() && WithinHitRadius(victim))
         {
             ResolveHit(victim);
         }
@@ -248,7 +285,7 @@ public sealed class NetThrower : MonoBehaviour
         GameObject? dome = null;
         if (HasGraphics)
         {
-            dome = NetVisual.BuildTrapDome(null, _config.netHitRadius);
+            dome = NetVisual.BuildTrapDome(null, TrapDomeVisualRadius);
             dome.transform.position = victim.transform.position; // hoop centre at the victim's ground
         }
         _trapDome = dome; // most-recent, for AbortThrow's best-effort cleanup
@@ -274,9 +311,21 @@ public sealed class NetThrower : MonoBehaviour
     private void ResolveMiss()
     {
         if (_projectile == null) return;
-        _projectile.transform.position = _landPos;
-        _projectile.transform.rotation = Quaternion.Euler(90f, _projectile.transform.eulerAngles.y, 0f); // hoop flat down
-        Destroy(_projectile, MissLingerSeconds);
+
+        // FLOATING-NET FIX: _landPos is a PREDICTED point, routinely mid-air (target led off a roof edge
+        // or over a street gap) — parking the net there left it hanging in the sky for the whole linger.
+        // Raycast straight down to find the real surface under the predicted point and drop the net flat
+        // on it; if there's nothing below (an open gap) destroy the net immediately rather than float it.
+        if (Physics.Raycast(_landPos + Vector3.up * 0.5f, Vector3.down, out RaycastHit hit, 40f))
+        {
+            _projectile.transform.position = hit.point;
+            _projectile.transform.rotation = Quaternion.Euler(90f, _projectile.transform.eulerAngles.y, 0f); // hoop flat down
+            Destroy(_projectile, MissLingerSeconds);
+        }
+        else
+        {
+            Destroy(_projectile);
+        }
         _projectile = null;
     }
 
@@ -344,6 +393,27 @@ public sealed class NetThrower : MonoBehaviour
         }
 
         _carriedNet.SetActive(_state != ThrowState.Flight);
+    }
+
+    // CARRIED-NET ORIENTATION FIX: parenting under the R_Hand bone with IDENTITY local rotation left the
+    // net's pole (local +Y) following the Tripo rig's arbitrary hand axes — the bag dangled by the
+    // tagger's leg and dragged the ground, reading as not-held. Worse, a one-time corrective rotation at
+    // build drifts as the run cycle swings the arm. So: every frame AFTER the Animator has posed the hand
+    // (LateUpdate), re-assert an AGENT-space orientation — pole up and ~25° forward, hoop opening facing
+    // the agent's forward — while the throw is Idle. During Windup the hand's own swing takes over (the
+    // additive throw pose in CharacterAnimatorBridge reads better with the net following the arm), and
+    // in Flight the carried net is hidden anyway.
+    private void LateUpdate()
+    {
+        if (_carriedNet == null || !_carriedNet.activeSelf) return;
+        if (_state != ThrowState.Idle || _carryParent == transform) return;
+        // Pole direction is the axis that must be exact (it sells "held upright"), so build the rotation
+        // with the pole as primary: LookRotation's forward argument gets the agent-forward re-projected
+        // perpendicular to the pole, and its up argument gets the pole itself (which LookRotation then
+        // honors exactly, since the two are orthogonal).
+        Vector3 poleDir = Vector3.Slerp(transform.up, transform.forward, 25f / 90f).normalized; // +Y up, ~25° fwd
+        Vector3 hoopFwd = Vector3.ProjectOnPlane(transform.forward, poleDir).normalized;
+        _carriedNet.transform.rotation = Quaternion.LookRotation(hoopFwd, poleDir);
     }
 
     private Transform ResolveHandOrShoulder()

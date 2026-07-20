@@ -47,7 +47,7 @@ public static class KenneyTrafficBuilder
     private static readonly string[] HeroVehicles = { "taxi", "police", "ambulance" };
     private const float HeroChance = 0.13f;
 
-    public static void BuildTraffic(Transform parent, CityGrid grid, float streetY, int dressingLayer)
+    public static void BuildTraffic(Transform parent, CityGrid grid, float streetY, int seed, int dressingLayer)
     {
         Transform? existing = parent.Find("KenneyTraffic");
         if (existing != null) Object.DestroyImmediate(existing.gameObject);
@@ -154,7 +154,7 @@ public static class KenneyTrafficBuilder
         }
 
         // 3) Spawn vehicles strung along the lanes.
-        var rng = new System.Random(20240718);
+        var rng = new System.Random(seed);
         var cache = new Dictionary<string, GameObject?>();
         int carIndex = 0;
         for (int li = 0; li < lanes.Count; li++)

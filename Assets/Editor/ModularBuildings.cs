@@ -380,23 +380,64 @@ public static class ModularBuildings
             "roof/mass renderers stripped, colliders untouched.");
     }
 
-    /// <summary>One module floor: scaled so its XZ bounds match the roof footprint exactly (walls
-    /// coplanar with the BoxCollider faces — the wall you see is the wall you wall-climb), its
-    /// bounds-min.y sitting at <paramref name="baseY"/>.</summary>
+    /// <summary>One module floor scaled to the roof footprint. Thin wrapper over
+    /// <see cref="StackAt"/> for the play-cluster towers.</summary>
     private static void Stack(Transform parent, Module m, RooftopArena.Roof r, float yaw, float baseY, float scaleY)
+        => StackAt(parent, m, new Vector3(r.Center.x, 0f, r.Center.z), r.SizeX, r.SizeZ, yaw, baseY, scaleY);
+
+    /// <summary>One module floor: scaled so its XZ bounds match the given footprint exactly (walls
+    /// coplanar with the footprint faces — the wall you see is the wall you wall-climb, where that
+    /// matters), its bounds-min.y sitting at <paramref name="baseY"/>.</summary>
+    private static void StackAt(Transform parent, Module m, Vector3 centerXZ, float footprintX, float footprintZ,
+        float yaw, float baseY, float scaleY)
     {
         var go = new GameObject(m.Mesh.name);
         go.transform.SetParent(parent, false);
         var rot = Quaternion.Euler(0f, yaw, 0f);
-        var scale = new Vector3(r.SizeX / Mathf.Max(0.01f, m.Bounds.size.x), scaleY,
-            r.SizeZ / Mathf.Max(0.01f, m.Bounds.size.z));
+        var scale = new Vector3(footprintX / Mathf.Max(0.01f, m.Bounds.size.x), scaleY,
+            footprintZ / Mathf.Max(0.01f, m.Bounds.size.z));
         // Solve position from the one known local point: bounds centre XZ at bounds min Y.
         var anchorLocal = new Vector3(m.Bounds.center.x, m.Bounds.min.y, m.Bounds.center.z);
-        var anchorWorld = new Vector3(r.Center.x, baseY, r.Center.z);
+        var anchorWorld = new Vector3(centerXZ.x, baseY, centerXZ.z);
         go.transform.SetPositionAndRotation(anchorWorld - rot * Vector3.Scale(scale, anchorLocal), rot);
         go.transform.localScale = scale;
         go.AddComponent<MeshFilter>().sharedMesh = m.Mesh;
         go.AddComponent<MeshRenderer>().sharedMaterial = m.Material;
+    }
+
+    /// <summary>An UNFINISHED modular building for a ground-level construction lot: bottom module +
+    /// (<paramref name="floors"/>-1) middle modules of one random complete type, with NO top module
+    /// or deck cap (the raw open storey reads as "still under construction"). Footprint scaled to the
+    /// given XZ size, base at <paramref name="baseY"/>. Decor only — the player never reaches the
+    /// street, so nothing here gets a collider. Returns the tower root, or null if no module type has
+    /// both a bottom and a middle available.</summary>
+    public static GameObject? BuildUnfinishedLotBuilding(Transform parent, Vector3 centerXZ,
+        float footprintX, float footprintZ, float baseY, int floors, int seed)
+    {
+        var rng = new System.Random(seed);
+        var complete = new List<string>();
+        foreach (string t in Types)
+            if (GetModule("bot", t, false) != null && GetModule("mid", t, false) != null) complete.Add(t);
+        if (complete.Count == 0) return null;
+
+        string type = complete[rng.Next(complete.Count)];
+        Module bot = GetModule("bot", type, false)!;
+        Module mid = GetModule("mid", type, false)!;
+
+        floors = Mathf.Clamp(floors, 1, 4);
+        float yaw = rng.Next(2) * 180f; // footprint axes preserved (no quarter turns)
+        var go = new GameObject($"UnfinishedBuilding_{type}");
+        go.transform.SetParent(parent, false);
+
+        float cursor = baseY;
+        StackAt(go.transform, bot, centerXZ, footprintX, footprintZ, yaw, cursor, BottomStorey / bot.Bounds.size.y);
+        cursor += BottomStorey;
+        for (int f = 1; f < floors; f++)
+        {
+            StackAt(go.transform, mid, centerXZ, footprintX, footprintZ, yaw, cursor, MiddleStorey / mid.Bounds.size.y);
+            cursor += MiddleStorey;
+        }
+        return go;
     }
 
     private static void StripRenderer(Transform? box)

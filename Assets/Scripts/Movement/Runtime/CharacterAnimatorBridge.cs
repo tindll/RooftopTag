@@ -116,15 +116,34 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     // Rules-agnostic — TagAgent drives it via BeginThrow/ReleaseThrow so this stays in Game.Movement.
     private enum ThrowPhase { None, Windup, Release }
     private ThrowPhase _throwPhase = ThrowPhase.None;
-    private float _throwWindup = 0.3f;
+    private float _throwWindup = 0.3f; // set from BeginThrow(windupSeconds)
     private float _throwTimer;
-    private const float ThrowReleaseSweep = 0.15f; // fast forward whip on release
-    private const float ThrowReleaseBlend = 0.25f; // ease back to the animator pose afterward
-    private const float ThrowRaiseDeg = 95f;       // up-and-back at full windup (upper arm)
-    private const float ThrowForwardDeg = 70f;     // forward thrust at the release peak (upper arm)
 
-    /// <summary>Begin the wind-up: the right arm raises up-and-back over <paramref name="windupSeconds"/>.
-    /// Additive over the current pose, so it composes with whatever locomotion clip is playing.</summary>
+    // Release "swoop": one follow-through window with a fast attack then a relaxed settle back to neutral.
+    private const float ThrowFollowThrough = 0.35f; // total release duration
+    private const float ThrowAttackFrac = 0.30f;    // first 30% whips to the full forward scoop; rest eases back
+
+    // Right arm (dominant). Degrees of WORLD-space pitch about the AGENT's right axis (see LateUpdate:
+    // the Tripo rig's bone-local axes are diagonal garbage, so all throw rotations are applied about
+    // agent-frame axes — rig-independent). Negative pitch lifts the hanging arm up-and-back overhead;
+    // positive drives it down-and-forward.
+    private const float ThrowRaiseDeg = 150f;       // windup: hanging arm rotated up past vertical → overhead-and-back
+    private const float ThrowForwardDeg = 60f;      // swoop peak: arm forward-and-down ~30° below horizontal
+    private const float ThrowLowerRaiseDeg = 40f;   // extra elbow cock during windup
+    private const float ThrowLowerForwardDeg = 15f; // slight elbow extension through the scoop
+
+    // Left arm (supporting): follows the right at a reduced scale. World-axis rotations need no mirror.
+    private const float ThrowSupportRaise = 0.6f;
+    private const float ThrowSupportForward = 0.55f;
+
+    // Spine/torso (UpperChest→Chest→Spine, whichever is mapped), also agent-frame axes.
+    private const float ThrowArchBackDeg = 12f; // arch back while loading the windup
+    private const float ThrowTwistDeg = 10f;    // twist toward the right while loading
+    private const float ThrowPitchFwdDeg = 20f; // pitch forward on the swoop
+    private const float ThrowSweepDeg = 8f;     // right→left horizontal sweep so release reads as a scoop
+
+    /// <summary>Begin the wind-up: both arms sweep up-and-back (right dominant) and the torso arches/twists
+    /// over <paramref name="windupSeconds"/>. Additive over the current pose, so it composes with locomotion.</summary>
     public void BeginThrow(float windupSeconds)
     {
         _throwPhase = ThrowPhase.Windup;
@@ -132,8 +151,9 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         _throwTimer = 0f;
     }
 
-    /// <summary>Release: whip the arm forward fast (~0.15s), then blend the additive pose back out
-    /// (~0.25s). The carried net (parented to the hand bone by NetThrower) follows the hand for free.</summary>
+    /// <summary>Release: whip the arms forward-and-down in an overhead scoop with a fast attack, then ease
+    /// the additive pose back to neutral over a ~0.35s follow-through. The carried net (parented to the hand
+    /// bone by NetThrower) follows the hand for free.</summary>
     public void ReleaseThrow()
     {
         _throwPhase = ThrowPhase.Release;
@@ -144,48 +164,83 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     {
         if (_throwPhase == ThrowPhase.None || _animator == null || !_animator.isHuman) return;
 
-        Transform upper = _animator.GetBoneTransform(HumanBodyBones.RightUpperArm);
-        Transform lower = _animator.GetBoneTransform(HumanBodyBones.RightLowerArm);
-        if (upper == null) { _throwPhase = ThrowPhase.None; return; } // rig without a mapped upper arm — bail cleanly
+        Transform rUpper = _animator.GetBoneTransform(HumanBodyBones.RightUpperArm);
+        Transform rLower = _animator.GetBoneTransform(HumanBodyBones.RightLowerArm);
+        Transform lUpper = _animator.GetBoneTransform(HumanBodyBones.LeftUpperArm);
+        Transform lLower = _animator.GetBoneTransform(HumanBodyBones.LeftLowerArm);
+        Transform spine = _animator.GetBoneTransform(HumanBodyBones.UpperChest)
+                          ?? _animator.GetBoneTransform(HumanBodyBones.Chest)
+                          ?? _animator.GetBoneTransform(HumanBodyBones.Spine);
+        if (rUpper == null) { _throwPhase = ThrowPhase.None; return; } // rig without a mapped right arm — bail cleanly
 
-        float raise;   // 0..1 up-and-back
-        float forward; // 0..1 forward thrust
+        float raise;   // 0..1 wound up overhead-and-back
+        float forward; // 0..1 swooped forward-and-down
         if (_throwPhase == ThrowPhase.Windup)
         {
             _throwTimer += Time.deltaTime;
-            raise = Mathf.Clamp01(_throwTimer / _throwWindup);
+            float t = Mathf.Clamp01(_throwTimer / _throwWindup);
+            raise = 1f - (1f - t) * (1f - t); // EaseOutQuad: quick load, settle at the top
             forward = 0f;
-        }
-        else if (_throwTimer <= ThrowReleaseSweep)
-        {
-            _throwTimer += Time.deltaTime;
-            float u = Mathf.Clamp01(_throwTimer / ThrowReleaseSweep);
-            raise = 1f - u;
-            forward = u;
-        }
-        else if (_throwTimer <= ThrowReleaseSweep + ThrowReleaseBlend)
-        {
-            _throwTimer += Time.deltaTime;
-            float u = (_throwTimer - ThrowReleaseSweep) / ThrowReleaseBlend;
-            raise = 0f;
-            forward = 1f - u;
         }
         else
         {
-            _throwPhase = ThrowPhase.None;
-            return;
+            _throwTimer += Time.deltaTime;
+            float attack = ThrowFollowThrough * ThrowAttackFrac;
+            if (_throwTimer <= attack)
+            {
+                // Fast attack: whip from the wound-up pose down into the full forward scoop.
+                forward = Mathf.Clamp01(_throwTimer / attack);
+                raise = 1f - forward;
+            }
+            else if (_throwTimer <= ThrowFollowThrough)
+            {
+                // Relaxed follow-through: ease the scoop back out to neutral.
+                float v = (_throwTimer - attack) / (ThrowFollowThrough - attack);
+                forward = (1f - v) * (1f - v); // EaseOutQuad back to 0
+                raise = 0f;
+            }
+            else
+            {
+                _throwPhase = ThrowPhase.None;
+                return;
+            }
         }
 
-        // Additive rotation about the bone's local X (approximate shoulder pitch for a Mixamo humanoid):
-        // negative raises the arm up-and-back, positive swings it down-and-forward.
-        float upperDeg = -ThrowRaiseDeg * raise + ThrowForwardDeg * forward;
-        upper.localRotation *= Quaternion.Euler(upperDeg, 0f, 0f);
-        if (lower != null)
-        {
-            float lowerDeg = -0.4f * ThrowRaiseDeg * raise + 0.3f * ThrowForwardDeg * forward;
-            lower.localRotation *= Quaternion.Euler(lowerDeg, 0f, 0f);
-        }
+        // All rotations are applied as WORLD-space pre-rotations about the AGENT's axes (right = pitch
+        // axis, up = twist/sweep axis) rather than bone-local Eulers: this rig's bone-local axes point
+        // diagonally (Tripo auto-rig), so local-X "pitch" swings the arm sideways. Pre-multiplying a
+        // world-axis rotation pivots the limb at its own joint but along agent-meaningful directions,
+        // on ANY humanoid rig. In Unity a positive angle about the agent's right axis rotates
+        // forward→down, so NEGATIVE pitch lifts the hanging arm forward→up→overhead.
+        Vector3 pitchAxis = transform.right;
+        Vector3 upAxis = transform.up;
+        float sweep = ThrowSweepDeg * forward; // right→left drift so the release reads as a scoop, not a jab
+
+        // Cross-fade: windup holds -ThrowRaiseDeg (overhead-back); the attack blends toward
+        // +ThrowForwardDeg... except the scoop end pose is itself expressed as a NEGATIVE lift from the
+        // hanging rest pose (-ThrowForwardDeg would be forward-up); forward-and-down 30° below horizontal
+        // is -60° from hanging. So both keyframes are negative lifts and the swing sweeps between them.
+        float upperPitch = -(ThrowRaiseDeg * raise + ThrowForwardDeg * forward);
+        Rotate(rUpper, Quaternion.AngleAxis(upperPitch, pitchAxis) * Quaternion.AngleAxis(-sweep, upAxis));
+        if (rLower != null)
+            Rotate(rLower, Quaternion.AngleAxis(-(ThrowLowerRaiseDeg * raise + ThrowLowerForwardDeg * forward), pitchAxis));
+
+        // Left arm supports at a reduced scale (same world axes — no mirroring needed).
+        if (lUpper != null)
+            Rotate(lUpper, Quaternion.AngleAxis(ThrowSupportRaise * -ThrowRaiseDeg * raise + ThrowSupportForward * -ThrowForwardDeg * forward, pitchAxis)
+                           * Quaternion.AngleAxis(sweep, upAxis));
+        if (lLower != null)
+            Rotate(lLower, Quaternion.AngleAxis(ThrowSupportRaise * -ThrowLowerRaiseDeg * raise + ThrowSupportForward * -ThrowLowerForwardDeg * forward, pitchAxis));
+
+        // Torso: arch back + twist toward the right while loading, then pitch forward + sweep left on the
+        // swoop (positive pitch about the agent's right axis = lean forward).
+        if (spine != null)
+            Rotate(spine, Quaternion.AngleAxis(-ThrowArchBackDeg * raise + ThrowPitchFwdDeg * forward, pitchAxis)
+                          * Quaternion.AngleAxis(ThrowTwistDeg * raise - sweep, upAxis));
     }
+
+    // Pre-multiply a world-space rotation onto a bone: pivots at the bone's joint, axes stay world/agent.
+    private static void Rotate(Transform bone, Quaternion worldRot) => bone.rotation = worldRot * bone.rotation;
 
     private void Update()
     {

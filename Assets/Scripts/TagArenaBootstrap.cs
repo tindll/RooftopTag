@@ -95,9 +95,9 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         CharacterMotor playerMotor = playerRoot.AddComponent<CharacterMotor>();
         playerMotor.Configure(groundMask, wallMask, cameraYawPivot);
         TagAgent playerAgent = playerRoot.AddComponent<TagAgent>();
-        var (playerRenderer, playerProcedural, playerBridge) = CharacterModelAttacher.Attach(playerRoot, "raccoon", playerMotor, animController);
+        var (playerRenderer, playerProcedural, playerBridge) = CharacterModelAttacher.Attach(playerRoot, "raccon_testing", playerMotor, animController);
         playerAgent.Configure(tagConfig, playerMotor, playerRenderer, isLocalPlayer: true, proceduralBody: playerProcedural,
-            bridge: playerBridge, animController: animController, modelResourceName: "raccoon");
+            bridge: playerBridge, animController: animController, modelResourceName: "raccon_testing");
         playerAgent.SetRoundController(roundController);
         roundController.RegisterAgent(playerAgent, isLocalPlayer: true);
         playerRoot.AddComponent<FootstepPlayer>().Configure(playerMotor, isLocalPlayer: true);
@@ -152,6 +152,12 @@ public sealed class TagArenaBootstrap : MonoBehaviour
                 // value/duration.
                 GameObject? body = marker.transform.Find("Body")?.gameObject;
                 GameObject? zone = marker.transform.Find("TrashCanZone")?.gameObject;
+                // Baked scenes can't deserialize custom-asmdef components (see PlaygroundBuilder's
+                // class remarks), so the arrow's bob animator is (re)attached live here — the same
+                // pattern as TrashCanInteractable itself. Guarded so an in-process build that DID
+                // keep the baked component doesn't end up with two bobs fighting over the position.
+                if (zone != null && zone.GetComponent<Game.MapGeometry.BinIndicatorBob>() == null)
+                    zone.AddComponent<Game.MapGeometry.BinIndicatorBob>();
                 marker.gameObject.AddComponent<TrashCanInteractable>()
                     .Initialize(marker.tier, marker.tier == 2 ? 5f : 2.5f, marker.tier == 2 ? 2 : 1, body, zone);
             }

@@ -5,9 +5,9 @@ using UnityEngine;
 namespace Game.Movement;
 
 /// <summary>Per-can state holder for a trash can pickup: tier/value/eat-duration plus round state
-/// (active/eaten/progress) and its visuals. The bin body + ground eat-zone disc are shown ONLY while
-/// this can is an active objective, so a bin appears only where there is a live objective — inactive
-/// and eaten cans hide entirely (body, zone, and the solid root collider).</summary>
+/// (active/eaten/progress) and its visuals. The bin body + floating arrow indicator are shown ONLY
+/// while this can is an active objective, so a bin appears only where there is a live objective —
+/// inactive and eaten cans hide entirely (body, zone, and the solid root collider).</summary>
 public sealed class TrashCanInteractable : MonoBehaviour
 {
     private GameObject? _body;

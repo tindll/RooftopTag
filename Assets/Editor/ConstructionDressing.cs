@@ -36,6 +36,8 @@ public static class ConstructionDressing
     private const string ConstructionBarrierPath = "Assets/Art/Construction/Props/construction_barrier_01.glb";
     private const string KenneyBarrierPath = "Assets/Art/Kenney/Roads/construction-barrier.glb";
     private const string KenneyConePath = "Assets/Art/Kenney/Roads/construction-cone.glb";
+    private const string KenneyLightPath = "Assets/Art/Kenney/Roads/construction-light.glb";
+    private const string KenneyBoxPath = "Assets/Art/Kenney/Cars/box.glb";
     // NOTE: the FBX files sit in a "fbx files" subfolder, not directly under Majadroid/ — verified
     // via AssetDatabase before wiring this path in.
     private const string CraneGroundPath = "Assets/Art/Construction/Majadroid/fbx files/Crane-On-Ground.fbx";
@@ -633,6 +635,183 @@ public static class ConstructionDressing
             placed++;
         }
         return placed;
+    }
+
+    // ======================================================================================
+    // GROUND LOTS — dress the EMPTY street-level blocks ringing the play cluster as construction
+    // sites. Those lots are the blocks KenneyBuildingPlacer skips (they overlap the building
+    // keep-out around the cluster), so they read as bare paved plinths right next to the playable
+    // towers (user: "blocks... that have nothing in them"). The player never reaches the street, so
+    // NOTHING here gets a collider — pure decor scattered on the pavement, off the carved cluster
+    // core (points inside playFootprint are skipped: that ground is void/slab, not paved).
+    // ======================================================================================
+
+    /// <summary>Scatters construction props (cargo containers, cranes, barriers, cones, worklights,
+    /// crates) across the empty ground-level lots ringing the play cluster. Call after
+    /// KenneyBuildingPlacer so the same keep-out identifies which blocks it left bare.</summary>
+    /// <param name="blocks">Every city block (KenneyCityBuilder CityGrid.Blocks, XZ Rects).</param>
+    /// <param name="lotKeepOut">The building placer's keep-out: blocks overlapping it are the empty lots.</param>
+    /// <param name="playFootprint">The road keep-out (carved cluster ground); prop points inside it are skipped.</param>
+    public static int DressGroundLots(
+        Transform parent, IReadOnlyList<Rect> blocks, List<Rect> lotKeepOut,
+        List<Rect> playFootprint, float streetY, int dressingLayer)
+    {
+        GameObject? container = LoadAsset(ContainerPath);
+        GameObject? crane = LoadAsset(CraneGroundPath);
+        GameObject? barrier = LoadAsset(KenneyBarrierPath);
+        GameObject? cone = LoadAsset(KenneyConePath);
+        GameObject? light = LoadAsset(KenneyLightPath);
+        GameObject? box = LoadAsset(KenneyBoxPath);
+
+        var group = new GameObject("ConstructionLots").transform;
+        group.SetParent(parent, false);
+
+        Material teal = GetOrBuildUrpLitMaterial("Container_Teal", new Color(0.30f, 0.48f, 0.50f), null);
+        Material rust = GetOrBuildUrpLitMaterial("Container_Rust", new Color(0.55f, 0.30f, 0.20f), null);
+        Texture? palette = AssetDatabase.LoadAssetAtPath<Texture2D>(CranePalettePath);
+        Material craneMat = GetOrBuildUrpLitMaterial("CraneLattice", new Color(0.85f, 0.82f, 0.75f), palette,
+            smoothness: 0.35f, emission: new Color(0.85f, 0.82f, 0.75f) * 0.08f);
+
+        var rng = new System.Random(SeedBase + 20);
+        const float cell = 5f;       // scatter grid: one prop candidate per ~5m cell
+        const int craneCap = 4;      // heavy FBX — cap across all lots
+        const int pointLightCap = 8; // real Lights are the perf cost, not the meshes
+        int placed = 0, cranesPlaced = 0, pointLights = 0;
+
+        foreach (Rect block in blocks)
+        {
+            // Only the lots the building placer left bare (overlap the cluster keep-out).
+            if (!OverlapsAny(block, lotKeepOut)) continue;
+
+            // ~40% of big-enough lots host an UNFINISHED modular building (bottom + 0-2 mids of one
+            // type, no roof cap) — a half-built tower on the site. Props then scatter AROUND it.
+            var buildingBlocks = new List<Rect>();
+            if (block.width > 10f && block.height > 10f && rng.Next(100) < 40)
+            {
+                var bc = new Vector2(block.center.x, block.center.y);
+                if (!InAny(bc, playFootprint))
+                {
+                    float fx = Mathf.Clamp(block.width * 0.55f, 8f, 14f);
+                    float fz = Mathf.Clamp(block.height * 0.55f, 8f, 14f);
+                    int floors = 1 + rng.Next(3); // 1-3 storeys
+                    GameObject? b = ModularBuildings.BuildUnfinishedLotBuilding(
+                        group, new Vector3(bc.x, 0f, bc.y), fx, fz, streetY, floors, SeedBase + 21 + placed);
+                    if (b != null)
+                    {
+                        // Footprint (+1m margin) blocks scatter props from spawning inside the walls.
+                        buildingBlocks.Add(new Rect(bc.x - fx * 0.5f - 1f, bc.y - fz * 0.5f - 1f, fx + 2f, fz + 2f));
+                        placed++;
+                    }
+                }
+            }
+
+            int cellsX = Mathf.Max(1, Mathf.FloorToInt(block.width / cell));
+            int cellsZ = Mathf.Max(1, Mathf.FloorToInt(block.height / cell));
+            float cw = block.width / cellsX, ch = block.height / cellsZ;
+            bool craneThisLot = false;
+
+            for (int cx = 0; cx < cellsX; cx++)
+            for (int cz = 0; cz < cellsZ; cz++)
+            {
+                float px = block.xMin + (cx + 0.5f) * cw + ((float)rng.NextDouble() - 0.5f) * cw * 0.5f;
+                float pz = block.yMin + (cz + 0.5f) * ch + ((float)rng.NextDouble() - 0.5f) * ch * 0.5f;
+                var p2 = new Vector2(px, pz);
+                if (InAny(p2, playFootprint)) continue; // carved cluster ground — no pavement to stand on
+                if (InAny(p2, buildingBlocks)) continue; // inside the unfinished building's walls
+
+                var xz = new Vector3(px, 0f, pz);
+                Quaternion rot = Quaternion.Euler(0f, YawSnap(rng), 0f);
+                int roll = rng.Next(100);
+
+                if (roll < 45)
+                {
+                    continue; // ~45% empty so lots read as sites, not junkyards
+                }
+                if (roll < 48 && crane != null && !craneThisLot && cranesPlaced < craneCap
+                    && block.width > 14f && block.height > 14f)
+                {
+                    PlaceLotProp(crane, group, xz, streetY, Mathf.Lerp(11f, 15f, (float)rng.NextDouble()), rot, craneMat);
+                    craneThisLot = true; cranesPlaced++; placed++;
+                }
+                else if (roll < 60 && container != null)
+                {
+                    PlaceLotProp(container, group, xz, streetY, 2.6f, rot, rng.Next(2) == 0 ? teal : rust);
+                    placed++;
+                }
+                else if (roll < 72 && barrier != null)
+                {
+                    PlaceLotProp(barrier, group, xz, streetY, 1.0f, rot, null);
+                    placed++;
+                }
+                else if (roll < 84 && cone != null)
+                {
+                    PlaceLotProp(cone, group, xz, streetY, 0.5f, rot, null);
+                    placed++;
+                }
+                else if (roll < 92 && box != null)
+                {
+                    // 1-3 stacked crates
+                    int stack = 1 + rng.Next(3);
+                    for (int s = 0; s < stack; s++)
+                        PlaceLotProp(box, group, new Vector3(px, s * 0.95f, pz), streetY, 0.9f, rot, null);
+                    placed++;
+                }
+                else if (light != null)
+                {
+                    GameObject inst = PlaceLotProp(light, group, xz, streetY, 3.0f, rot, null);
+                    if (pointLights < pointLightCap)
+                    {
+                        var lightGo = new GameObject("LotWorklight");
+                        lightGo.transform.SetParent(group, false);
+                        lightGo.transform.position = new Vector3(px, streetY + 2.7f, pz);
+                        Light l = lightGo.AddComponent<Light>();
+                        l.type = LightType.Point;
+                        l.color = new Color(1.0f, 0.6f, 0.3f);
+                        l.intensity = 4f;
+                        l.range = 12f;
+                        l.shadows = LightShadows.None;
+                        pointLights++;
+                    }
+                    placed++;
+                }
+            }
+        }
+
+        if (dressingLayer >= 0) SetLayerRecursively(group.gameObject, dressingLayer);
+        foreach (Renderer r in group.GetComponentsInChildren<Renderer>(true))
+            r.shadowCastingMode = ShadowCastingMode.Off;
+
+        Debug.Log($"CONSTRUCTION_LOTS: {placed} props across ground lots ({cranesPlaced} cranes, {pointLights} lights)");
+        return placed;
+    }
+
+    private static GameObject PlaceLotProp(GameObject asset, Transform group, Vector3 xz, float streetY,
+        float height, Quaternion rot, Material? rebuild)
+    {
+        GameObject inst = InstantiateAsset(asset, group, Vector3.zero, Quaternion.identity, 1f);
+        StripColliders(inst);
+        // xz.y carries an optional vertical offset (crate stacking); ground the base at streetY + that.
+        PlaceGroundedScaled(inst, new Vector3(xz.x, 0f, xz.z), streetY + xz.y, height, rot);
+        if (rebuild != null) RebuildRenderersUrpLit(inst, rebuild);
+        return inst;
+    }
+
+    private static float YawSnap(System.Random rng)
+    {
+        float[] q = { 0f, 90f, 180f, 270f };
+        return q[rng.Next(4)] + ((float)rng.NextDouble() - 0.5f) * 12f;
+    }
+
+    private static bool OverlapsAny(Rect r, List<Rect> rects)
+    {
+        foreach (Rect o in rects) if (r.Overlaps(o)) return true;
+        return false;
+    }
+
+    private static bool InAny(Vector2 p, List<Rect> rects)
+    {
+        foreach (Rect o in rects) if (o.Contains(p)) return true;
+        return false;
     }
 
     // ======================================================================================

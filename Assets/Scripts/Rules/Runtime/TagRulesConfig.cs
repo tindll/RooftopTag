@@ -70,14 +70,6 @@ public sealed class TagRulesConfig : ScriptableObject
     public float dodgeWindowFloor = 0.08f;   // D: window duration once dodgeWindowDurations runs out — never shrinks below this, so "miracle" dodges stay possible no matter how many you've already pulled off this round.
     public float dodgeSlowMoScale = 0.3f;    // D: Time.timeScale during an open dodge window (a heavier dip than the 0.35 tag slow-mo — this is a reaction test, not just juice).
     public float taggerWhiffLockout = 1f;    // E: on a successful dodge the Tagger who whiffed can't lunge again for this long (gated in TryLunge via the same _lungeCooldownRemaining as the runner cooldown).
-    // F: after a SUCCESSFUL dodge, no escape assist re-arms for this long (unscaled): no new reactive
-    // window, no net-flight window, and no proactive i-frames — a follow-up catch just lands (user
-    // request: back-to-back dodges within ~0.5s made a coordinated second tagger pointless). 2.5s is
-    // chosen so BOTH punishes exist: the whiffed tagger's own re-lunge (taggerWhiffLockout 1s + close
-    // distance ≈ 1.5-2s) and a pincer partner's follow-up (< 2.5s) both connect, while a clean escape
-    // that actually breaks contact (> 2.5s) has the clutch back for the next engagement. Deliberately
-    // above runnerRollCooldown (2s) so roll spam can't be timed to always sit inside fresh i-frames.
-    public float dodgeCooldownSeconds = 2.5f;
 
     /// <summary>Tag reach radius is a binary still-vs-moving check, not a continuous function of speed — sprinting or jumping shouldn't extend it beyond the same "moving" value.</summary>
     [Header("Net throw")]
@@ -86,10 +78,10 @@ public sealed class TagRulesConfig : ScriptableObject
     // the normal tag flow runs. Aimed at the LOCAL player, the flight time doubles as the clutch-dodge
     // reaction window (see RoundController's Dodge region / NetThrower).
     public float netThrowRange = 6f;       // max horizontal distance to acquire a target (a touch past catchRange)
-    public float netThrowCooldown = 2.5f;  // seconds between throws (the net's own rate limiter, independent of the lunge)
-    public float netWindupSeconds = 0.3f;  // wind-up before release: the net is raised, then hurled
+    public float netThrowCooldown = 2.0f;  // seconds between throws (the net's own rate limiter, independent of the lunge)
+    public float netWindupSeconds = 0.45f; // wind-up before release: the net is raised, then hurled (0.3 -> 0.45: the overhead-load telegraph was too fast to read at sprint speed)
     public float netFlightTime = 0.45f;    // ballistic flight from hand to landing point; also the local-player dodge-window length
-    public float netHitRadius = 0.9f;      // a bot target still within this of the landing point is caught (also the trap-dome hoop radius)
+    public float netHitRadius = 1.1f;      // a target still within this of the landing point is caught (0.9 -> 1.1: bumped catch rate, taggers were whiffing at close range). Purely a gameplay radius — the trap-dome VISUAL uses NetThrower.TrapDomeVisualRadius instead.
     public float netTrapDuration = 1.2f;   // struggle-under-the-dome time before the tag actually lands
     public bool netCarryVisible = true;    // show the handheld net in a Tagger's hand between throws
 

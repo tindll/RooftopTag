@@ -390,7 +390,9 @@ public sealed class TagAgent : MonoBehaviour
     // for now, the new one needs some work") — the well-tested Animator+ragdoll path. The quadruped
     // models ("rigged_raccoon", "raccoon_quad") and QuadrupedPresenter stay on disk for when the
     // quad gets its rework; switching back is this one string.
-    private static string ResourceForRole(Role role) => role == Role.Tagger ? "pest_control" : "raccoon";
+    // TEMP: runner model swapped "raccoon" -> "raccon_testing" for evaluation (user request 2026-07-20).
+    // Revert this string (and the two in TagArenaBootstrap) to go back.
+    private static string ResourceForRole(Role role) => role == Role.Tagger ? "pest_control" : "raccon_testing";
 
     /// <summary>
     /// Re-attaches the rigged model to match <paramref name="role"/> (Runner looks like a raccoon,
@@ -774,12 +776,8 @@ public sealed class TagAgent : MonoBehaviour
         {
             // C. Proactive i-frames: a tag that lands within the opening dodgeIFrames of the victim's
             // OWN committed dive is auto-dodged for FREE — no window budget consumed. They're already
-            // rolling clear, so there's nothing to trigger on them; the tagger just whiffs. SUPPRESSED
-            // during the post-dodge cooldown: the reactive-dodge escape roll is itself a dive, so
-            // without this gate a pincer partner's catch inside the next dodgeIFrames would whiff for
-            // free — exactly the back-to-back double-dodge the cooldown exists to kill.
-            if (other._motor.IsDiving && Time.time - other._diveStartTime < _config.dodgeIFrames
-                && !_roundController.DodgeOnCooldown)
+            // rolling clear, so there's nothing to trigger on them; the tagger just whiffs.
+            if (other._motor.IsDiving && Time.time - other._diveStartTime < _config.dodgeIFrames)
             {
                 WhiffLunge();
                 return;

@@ -28,6 +28,10 @@ public static class TagArenaMapGeometry
 {
     private static readonly Dictionary<string, Material> MaterialCache = new();
     private static readonly Dictionary<string, Material> RoleMaterialCache = new();
+    // Single transparent-orange material shared by every bin indicator arrow. Unity null check on reuse,
+    // never ??= — a domain reload / UnloadUnusedAssets can destroy this non-asset material while the C#
+    // wrapper stays live (see GetMaterial's cache-hit comment).
+    private static Material? _indicatorArrowMaterial;
 
     public static readonly Color GreyColor = new(0.55f, 0.55f, 0.55f);
     public static readonly Color BlueGrey = new(0.45f, 0.55f, 0.65f);
@@ -669,8 +673,8 @@ public static class TagArenaMapGeometry
 
     /// <summary>
     /// Trash can prop: a solid-collider BODY (cans are physical obstacles, so unlike
-    /// <see cref="BuildClimbPipeVisual"/> its collider is kept, not stripped) plus a flat ZONE disc
-    /// on the ground marking the eat radius — the "stay in the zone to eat" area made visible.
+    /// <see cref="BuildClimbPipeVisual"/> its collider is kept, not stripped) plus a floating,
+    /// bobbing arrow indicator pointing down at the bin — the "eat this one" objective telegraph.
     /// RoundController shows the body+zone only on the cans it activates as objectives (and hides them
     /// again when eaten), so a bin appears only where there is a live objective. The body prefers a
     /// mesh from Resources, bounds-scaled to a target height exactly like
@@ -752,31 +756,106 @@ public static class TagArenaMapGeometry
             body = can;
         }
 
-        GameObject zone = BuildEatZoneDisc(root.transform, pos);
+        GameObject zone = BuildIndicatorArrow(root.transform, pos, targetHeight);
         return (root, body, zone);
     }
 
-    // Eat-zone visual radius. Mirrors TagRulesConfig.eatRadius's default — this geometry has no config
-    // access (RoundController drives the actual eat check with its own config value), so keep the two
-    // in sync so the drawn zone matches the range that really counts as "eating".
-    private const float EatZoneRadius = 1.6f;
-
-    /// <summary>Flat emissive disc on the ground marking a can's eat radius — the "stay in the zone to
-    /// eat" area made visible, replacing the old floating glow box. Collider stripped (pure telegraph,
-    /// never physics).</summary>
-    private static GameObject BuildEatZoneDisc(Transform parent, Vector3 groundPos)
+    /// <summary>Floating, bobbing orange arrow pointing DOWN at an active bin — the
+    /// "eat this one" objective telegraph (replaces the old ground eat-zone disc). Kept named
+    /// "TrashCanZone" because TagArenaBootstrap and TrashCanInteractable find/toggle it by that name.
+    /// Bare GameObject with a procedural flat-shaded mesh (down-pyramid head + box shaft), no collider —
+    /// nothing physical to strip. Tip hovers <paramref name="binTopHeight"/>+0.35m above the roof so the
+    /// bob never clips the bin; a <see cref="BinIndicatorBob"/> drives the up/down motion.</summary>
+    private static GameObject BuildIndicatorArrow(Transform parent, Vector3 groundPos, float binTopHeight)
     {
-        GameObject zone = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-        zone.name = "TrashCanZone";
-        zone.transform.SetParent(parent, false);
-        // Unity's Cylinder is radius 0.5, 2m tall, origin-centred: scale x/z to the eat DIAMETER
-        // (radius/0.5 = radius*2) and y to a thin slab, lifted a hair off the roof so it never
-        // z-fights the surface it sits on.
-        zone.transform.position = groundPos + Vector3.up * 0.02f;
-        zone.transform.localScale = new Vector3(EatZoneRadius * 2f, 0.02f, EatZoneRadius * 2f);
-        zone.GetComponent<Renderer>().sharedMaterial = GetMaterial(SurfaceRole.Interactable);
-        StripCollider(zone);
-        return zone;
+        var arrow = new GameObject("TrashCanZone");
+        arrow.transform.SetParent(parent, false);
+        // Parent (root) already sits at groundPos, and the mesh tip is at local origin, so lifting the
+        // object to (binTop + 0.35) puts the tip that far above the bin top in world space.
+        arrow.transform.localPosition = Vector3.up * (binTopHeight + 0.35f);
+
+        arrow.AddComponent<MeshFilter>().sharedMesh = BuildArrowMesh();
+        arrow.AddComponent<MeshRenderer>().sharedMaterial = IndicatorArrowMaterial();
+        arrow.AddComponent<BinIndicatorBob>();
+        return arrow;
+    }
+
+    /// <summary>Opaque interactable orange for the arrow, cached in one static field (Unity null check
+    /// on reuse). Emission kept sub-1 HDR — the disc's full intensity tonemaps toward white-yellow and
+    /// the arrow stops reading as safety orange; 0.35 keeps the hue while still glowing above the
+    /// night ambience.</summary>
+    private static Material IndicatorArrowMaterial()
+    {
+        if (_indicatorArrowMaterial != null) return _indicatorArrowMaterial;
+
+        VisualThemeConfig t = Theme;
+        _indicatorArrowMaterial = EmissiveMaterial(t.interactableColor, t.interactableEmissiveIntensity * 0.35f);
+        return _indicatorArrowMaterial;
+    }
+
+    /// <summary>Procedural down-arrow mesh: a 4-sided pyramid head (tip at local origin, pointing down)
+    /// plus a square box shaft above it. ~0.9m tall overall. Every face gets its own vertices and a hard
+    /// normal so shading is flat; each face is wound so its geometric normal agrees with the outward
+    /// direction (Unity's front-face convention), keeping back-face culling correct.</summary>
+    private static Mesh BuildArrowMesh()
+    {
+        const float headHalf = 0.28f;   // head base 0.56m wide
+        const float baseY = 0.40f;      // head 0.40m tall (tip at y=0)
+        const float shaftHalf = 0.11f;  // shaft 0.22m square
+        const float topY = baseY + 0.52f; // shaft 0.52m tall -> 0.92m total
+
+        var verts = new List<Vector3>();
+        var norms = new List<Vector3>();
+        var tris = new List<int>();
+
+        Vector3 tip = Vector3.zero;
+        Vector3 b0 = new(-headHalf, baseY, -headHalf), b1 = new(headHalf, baseY, -headHalf);
+        Vector3 b2 = new(headHalf, baseY, headHalf), b3 = new(-headHalf, baseY, headHalf);
+
+        // Pyramid head sides (downward-tilted outward normals).
+        AddTri(verts, norms, tris, tip, b0, b1, new Vector3(0, -0.4f, -1));
+        AddTri(verts, norms, tris, tip, b1, b2, new Vector3(1, -0.4f, 0));
+        AddTri(verts, norms, tris, tip, b2, b3, new Vector3(0, -0.4f, 1));
+        AddTri(verts, norms, tris, tip, b3, b0, new Vector3(-1, -0.4f, 0));
+        // Head base cap (faces up; shaft footprint overlaps its centre).
+        AddQuad(verts, norms, tris, b0, b1, b2, b3, Vector3.up);
+
+        const float s = shaftHalf;
+        Vector3 c0 = new(-s, baseY, -s), c1 = new(s, baseY, -s), c2 = new(s, baseY, s), c3 = new(-s, baseY, s);
+        Vector3 d0 = new(-s, topY, -s), d1 = new(s, topY, -s), d2 = new(s, topY, s), d3 = new(-s, topY, s);
+        AddQuad(verts, norms, tris, c0, c1, c2, c3, Vector3.down);
+        AddQuad(verts, norms, tris, d0, d1, d2, d3, Vector3.up);
+        AddQuad(verts, norms, tris, c0, c1, d1, d0, Vector3.back);
+        AddQuad(verts, norms, tris, c1, c2, d2, d1, Vector3.right);
+        AddQuad(verts, norms, tris, c2, c3, d3, d2, Vector3.forward);
+        AddQuad(verts, norms, tris, c3, c0, d0, d3, Vector3.left);
+
+        var mesh = new Mesh { name = "BinIndicatorArrow" };
+        mesh.SetVertices(verts);
+        mesh.SetNormals(norms);
+        mesh.SetTriangles(tris, 0);
+        mesh.RecalculateBounds();
+        return mesh;
+    }
+
+    // Appends one flat-shaded triangle. Winding is flipped when needed so the front-face normal
+    // Cross(b-a, c-a) — Unity's convention — points along `outward`, so the outside stays visible.
+    private static void AddTri(List<Vector3> v, List<Vector3> n, List<int> t,
+                               Vector3 a, Vector3 b, Vector3 c, Vector3 outward)
+    {
+        int i = v.Count;
+        Vector3 nrm = outward.normalized;
+        v.Add(a); v.Add(b); v.Add(c);
+        n.Add(nrm); n.Add(nrm); n.Add(nrm);
+        if (Vector3.Dot(Vector3.Cross(b - a, c - a), outward) >= 0f) { t.Add(i); t.Add(i + 1); t.Add(i + 2); }
+        else { t.Add(i); t.Add(i + 2); t.Add(i + 1); }
+    }
+
+    private static void AddQuad(List<Vector3> v, List<Vector3> n, List<int> t,
+                                Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 outward)
+    {
+        AddTri(v, n, t, a, b, c, outward);
+        AddTri(v, n, t, a, c, d, outward);
     }
 
     /// <summary>

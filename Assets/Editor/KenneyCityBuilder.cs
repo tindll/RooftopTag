@@ -63,7 +63,8 @@ namespace Game.EditorTools
             int blockTiles,
             float tileMeters,
             int dressingLayer,
-            List<Rect>? keepOut = null)
+            List<Rect>? keepOut = null,
+            int seed = 90210)
         {
             // Round 8 (user: "the buildings in rooftop arena aren't inside blocks"): keepOut rects
             // (XZ, x=world X, y=world Z) carve the lattice — any road RUN crossing a rect is dropped
@@ -95,7 +96,7 @@ namespace Game.EditorTools
             // VARIED block sizes (blockTiles±1 tiles per column/row, seeded) — a uniform lattice read as
             // "squares and squares of roads" (user feedback); irregular blocks read as a real city where
             // the roads go AROUND the blocks instead of tiling a checkerboard.
-            var sizeRng = new System.Random(90210);
+            var sizeRng = new System.Random(seed);
             var colTiles = new int[blocksX];
             var rowTiles = new int[blocksZ];
             for (int i = 0; i < blocksX; i++) colTiles[i] = Mathf.Max(2, blockTiles + sizeRng.Next(-1, 2));

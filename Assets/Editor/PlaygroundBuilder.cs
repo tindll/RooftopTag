@@ -38,7 +38,11 @@ public static class PlaygroundBuilder
     private const int RooftopAgentCount = 11;
 
     [MenuItem("RooftopTag/Build Rooftop Arena")]
-    public static void BuildRooftopArena()
+    public static void BuildRooftopArena() => BuildRooftopArenaWithSeed(MapVariants.KenneyCityDefaultSeed);
+
+    /// <summary>Build with explicit seed for map variant testing. Seed affects street grid,
+    /// building placement, and construction lots; the rooftop cluster (RooftopArena) is identical.</summary>
+    public static void BuildRooftopArenaWithSeed(int cityGridSeed)
     {
         var movementConfig = ScriptableObject.CreateInstance<MovementConfig>();
         int playerLayer = EnsureLayer("Player");
@@ -95,7 +99,7 @@ public static class PlaygroundBuilder
         // generated strips in the visible near area. Lifted just above the old strips to hide them; the
         // ground slab (fall-landing collider) is untouched. Blocks/intersections it returns feed the
         // building + traffic passes (later phases).
-        BuildKenneyStreets(theme);
+        BuildKenneyStreets(theme, cityGridSeed);
 
         EditorSceneManager.MarkSceneDirty(scene);
         EditorSceneManager.SaveScene(scene, RooftopScenePath);
@@ -103,7 +107,7 @@ public static class PlaygroundBuilder
     }
 
     // Kenney modular street grid centred on the playable roof cluster's XZ bounds, at street level.
-    private static void BuildKenneyStreets(VisualThemeConfig theme)
+    private static void BuildKenneyStreets(VisualThemeConfig theme, int cityGridSeed)
     {
         float minX = float.MaxValue, maxX = float.MinValue, minZ = float.MaxValue, maxZ = float.MinValue;
         foreach (RooftopArena.Roof r in RooftopArena.Roofs)
@@ -126,7 +130,7 @@ public static class PlaygroundBuilder
         };
         // 8×8 blocks at 8m tiles → ~256m span: the modular street grid rings the ~120m play cluster.
         CityGrid grid = KenneyCityBuilder.BuildRoadGrid(
-            root.transform, center, theme.buildingBaseY + 0.2f, 8, 8, 3, 8f, dressing, roadKeepOut);
+            root.transform, center, theme.buildingBaseY + 0.2f, 8, 8, 3, 8f, dressing, roadKeepOut, cityGridSeed);
 
         // Fill the blocks OUTSIDE the play cluster with varied Kenney buildings (heights/footprints/palette,
         // ~40% warm-lit windows). Keep-out = the whole playable cluster (+margin): a decor tower rises ~60m
@@ -137,11 +141,17 @@ public static class PlaygroundBuilder
         {
             Rect.MinMaxRect(minX - keepMargin, minZ - keepMargin, maxX + keepMargin, maxZ + keepMargin),
         };
-        KenneyBuildingPlacer.PlaceBuildings(root.transform, grid.Blocks, theme.buildingBaseY, keepOut, 4242, dressing);
+        KenneyBuildingPlacer.PlaceBuildings(root.transform, grid.Blocks, theme.buildingBaseY, keepOut, cityGridSeed ^ 4242, dressing);
+
+        // The blocks the placer skipped (they overlap `keepOut`) are the bare paved lots ringing the
+        // play cluster — dress them as ground-level construction sites (containers, cranes, cones,
+        // barriers, worklights). roadKeepOut marks the carved cluster ground so props stay on pavement.
+        ConstructionDressing.DressGroundLots(
+            root.transform, grid.Blocks, keepOut, roadKeepOut, theme.buildingBaseY + 0.2f, dressing);
 
         // Kenney vehicles driving the grid: stop at red lights, turn at intersections, keep a street-death
         // impact trigger (same TrafficNetwork/CarDrifter/CarImpact logic proven on the old ring).
-        KenneyTrafficBuilder.BuildTraffic(root.transform, grid, theme.buildingBaseY, dressing);
+        KenneyTrafficBuilder.BuildTraffic(root.transform, grid, theme.buildingBaseY, cityGridSeed ^ 5555, dressing);
 
         // Solid dark building rows ringing the whole grid — the horizon: the map edge is hidden by
         // geometry instead of fog, replacing the legacy GLB skyline (gated off in CreateSilhouettes).
@@ -206,10 +216,10 @@ public static class PlaygroundBuilder
         marker.outwardDirection = outward;
     }
 
-    // Rooftop trash can: the shared visual (body + glow) plus an InteractableMarker (namespace-free,
-    // so built here not in Game.MapGeometry) instead of a live TrashCanInteractable — same
-    // custom-asmdef serialization constraint as BuildRoofLadder. The glow child is found by name
-    // ("TrashCanGlow", from BuildTrashCanVisual) when the bootstrap converts this marker at runtime.
+    // Rooftop trash can: the shared visual (body + arrow indicator) plus an InteractableMarker
+    // (namespace-free, so built here not in Game.MapGeometry) instead of a live TrashCanInteractable —
+    // same custom-asmdef serialization constraint as BuildRoofLadder. The indicator child is found by
+    // name ("TrashCanZone", from BuildTrashCanVisual) when the bootstrap converts this marker at runtime.
     private static void BuildRoofTrashCan(Vector3 pos, int tier)
     {
         (GameObject canRoot, _, _) = TagArenaMapGeometry.BuildTrashCanVisual(null, pos, tier);
