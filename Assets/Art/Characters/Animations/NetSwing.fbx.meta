@@ -437,37 +437,37 @@ ModelImporter:
       parentName: L_Clavicle
       position: {x: -0.00004461288, y: 0.09118497, z: -0.000009232547}
       rotation: {x: 0.031048104, y: 0.0020391787, z: -0.14673, w: -0.98868716}
-      scale: {x: 1.0000001, y: 1, z: 1}
+      scale: {x: 1.0000001, y: 0.99999994, z: 0.99999994}
     - name: L_Forearm
       parentName: L_Upperarm
       position: {x: 0.000010245039, y: 0.1385648, z: 0.0000074433055}
       rotation: {x: -0.029886207, y: 0.0012222106, z: 0.040843558, w: -0.9987177}
-      scale: {x: 1.0000002, y: 1, z: 1.0000001}
+      scale: {x: 1, y: 0.9999997, z: 0.9999998}
     - name: L_ForearmTwist01
       parentName: L_Forearm
       position: {x: 0.000000133028, y: -0.000062318715, z: 0.000000004359393}
       rotation: {x: 0.00000003166496, y: 0.000000053201788, z: 0.0000000029504001, w: 1}
-      scale: {x: 1.0000002, y: 1.0000002, z: 1.0000001}
+      scale: {x: 1, y: 0.99999994, z: 0.99999994}
     - name: L_ForearmTwist02
       parentName: L_ForearmTwist01
       position: {x: 0.000000106714396, y: 0.0622632, z: -3.187637e-10}
       rotation: {x: -0, y: -0, z: 9.172391e-17, w: 1}
-      scale: {x: 1.0000001, y: 1.0000004, z: 1.0000001}
+      scale: {x: 1, y: 1, z: 0.9999998}
     - name: L_Hand
       parentName: L_Forearm
       position: {x: 0.0000002037048, y: 0.124431394, z: -0.000004679262}
       rotation: {x: 0.07789321, y: 0.00000000768341, z: -0.000000016221746, w: -0.9969618}
-      scale: {x: 1.0000002, y: 1.0000001, z: 1.0000002}
+      scale: {x: 0.99999994, y: 0.99999994, z: 0.99999994}
     - name: L_UpperarmTwist01
       parentName: L_Upperarm
       position: {x: -0.00000006393384, y: -0.00006926956, z: -0.000000001904084}
       rotation: {x: 0.00000002235174, y: 0.000000029103827, z: -0.00000020542208, w: 1}
-      scale: {x: 1.0000001, y: 1.0000001, z: 1.0000002}
+      scale: {x: 0.99999994, y: 0.9999997, z: 0.99999994}
     - name: L_UpperarmTwist02
       parentName: L_UpperarmTwist01
       position: {x: 0.00000006641858, y: 0.06928964, z: 2.392539e-10}
-      rotation: {x: -0.0000000111758895, y: 0.000000037252907, z: 0.0000004485409, w: 1}
-      scale: {x: 1.0000002, y: 1, z: 1.0000001}
+      rotation: {x: -0.000000022351752, y: 0.00000000861474, z: 0.00000044761686, w: 1}
+      scale: {x: 1, y: 1.0000001, z: 1}
     - name: R_Clavicle
       parentName: Spine02
       position: {x: -0.019956669, y: 0.095079675, z: -0.0000000155075}
@@ -497,17 +497,17 @@ ModelImporter:
       parentName: R_Forearm
       position: {x: -0.00000009793033, y: -0.00006688833, z: -3.034444e-10}
       rotation: {x: -0.00000004470348, y: 0.00000012035167, z: -0.00000009725382, w: 1}
-      scale: {x: 1.0000001, y: 1.0000002, z: 1}
+      scale: {x: 1.0000001, y: 1.0000004, z: 1}
     - name: R_ForearmTwist02
       parentName: R_ForearmTwist01
       position: {x: -0.00000008953859, y: 0.06689669, z: -0.000000006882701}
       rotation: {x: -0, y: -0, z: -1.7252882e-15, w: 1}
-      scale: {x: 1.0000002, y: 1, z: 1.0000001}
+      scale: {x: 1.0000002, y: 1.0000001, z: 1.0000001}
     - name: R_Hand
       parentName: R_Forearm
       position: {x: -0.0000002026625, y: 0.13369079, z: -0.0000010936759}
       rotation: {x: -0.017384943, y: 0.000000075183316, z: -0.00000003140988, w: 0.9998489}
-      scale: {x: 1.0000002, y: 1.0000004, z: 1.0000001}
+      scale: {x: 1.0000001, y: 1.0000004, z: 1}
     - name: tripo_node_c3d1d093_7cb7_44ec_b563_8e0692cb07c9
       parentName: NetSwing(Clone)
       position: {x: -0, y: 0, z: 0}

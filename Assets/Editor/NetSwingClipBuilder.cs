@@ -145,7 +145,18 @@ public static class NetSwingClipBuilder
         (float weight, float dirBlend, float readyBlend, float sweep) = PhaseAt(t);
         float raise = (1f - dirBlend) * weight;            // torso "loaded" amount
         float scoop = dirBlend * (1f - readyBlend);        // torso "swung" amount, relaxing on recoil
-        Vector3 right = agent.right, up = agent.up, fwd = agent.forward;
+
+        // Axes from the SKELETON, not the root: this FBX's bind pose faces -X while the prefab
+        // root faces +Z (measured: shoulder line runs along +Z). Authoring against root axes put
+        // the whole swing 90° off — "forward" scooped across the character's RIGHT. The shoulder
+        // line is ground truth for where the model actually faces. Must be read BEFORE any bones
+        // move this frame (callers restore bind pose first, so this sees the bind skeleton).
+        Transform lSh = animator.GetBoneTransform(HumanBodyBones.LeftUpperArm);
+        Transform rSh = animator.GetBoneTransform(HumanBodyBones.RightUpperArm);
+        if (lSh == null || rSh == null) return;
+        Vector3 up = Vector3.up;
+        Vector3 right = Vector3.ProjectOnPlane(rSh.position - lSh.position, up).normalized;
+        Vector3 fwd = Vector3.Cross(right, up).normalized;
         Quaternion sweepRot = Quaternion.AngleAxis(sweep, up); // rotates the whole swing plane
 
         // Torso: spine points up (perpendicular to the pitch axis), so axis rotations are safe here.
@@ -174,7 +185,7 @@ public static class NetSwingClipBuilder
         // Net pole (right hand local +Y): behind at load, slams forward-down, back upright at ready.
         Vector3 poleLoad = (up * 0.55f - fwd * 1.0f).normalized;
         Vector3 poleScoop = (fwd * 0.9f - up * 0.5f).normalized;
-        Vector3 poleReady = (up * 1.0f + fwd * 0.25f + right * 0.2f).normalized; // upright, tilted off the face
+        Vector3 poleReady = (up * 1.0f + fwd * 0.2f + right * 0.4f).normalized; // upright, tilted clear of the face
 
         Vector3 upperDir = Vector3.Slerp(Vector3.Slerp(upperLoadR, upperScoop, dirBlend), upperReady, readyBlend);
         Vector3 lowerDir = Vector3.Slerp(Vector3.Slerp(lowerLoadR, lowerScoop, dirBlend), lowerReady, readyBlend);
