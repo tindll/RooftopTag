@@ -112,113 +112,150 @@ public static class NetSwingClipBuilder
 
     // ---------------------------------------------------------------- pose synthesis
 
-    // weight = how strongly the authored pose overrides bind pose. It stays FULL through the
-    // recoil: decaying it blended back toward the FBX's bind pose, which is a T-POSE — the clip
-    // visibly ended with arms splayed out sideways (reported as "arms go to his right"). Instead
-    // the recoil keeps weight 1 and blends the arc DIRECTION from the scoop into an authored
-    // ready pose (arms lowered in FRONT, pole back upright).
-    // dirBlend = position along the swing arc (0 = loaded, 1 = scoop);
-    // readyBlend = recoil progress from the scoop pose into the ready pose.
-    private static (float weight, float dirBlend, float readyBlend, float sweep) PhaseAt(float t)
+    // The clip is a path through FOUR keyposes — READY → LOAD → SCOOP → READY — at full pose
+    // authority throughout (bind pose is a T-pose and must never leak in). READY = arms in FRONT
+    // holding the pole upright; LOAD = both hands carry the pole up OVER THE RIGHT SHOULDER
+    // (batter-style); SCOOP = the whip lands the net low in front. Returns which segment t is in
+    // and the eased progress through it.
+    private enum Seg { Windup, Hold, Whip, Recoil }
+
+    private static (Seg seg, float u) PhaseAt(float t)
     {
         if (t < RaiseEnd)
         {
             float u = t / RaiseEnd;
-            float raise = 1f - (1f - u) * (1f - u);
-            return (raise, 0f, 0f, SweepStartDeg * raise);
+            return (Seg.Windup, 1f - (1f - u) * (1f - u)); // EaseOut load
         }
-        if (t < HoldEnd) return (1f, 0f, 0f, SweepStartDeg);
+        if (t < HoldEnd) return (Seg.Hold, 1f);
         if (t < WhipEnd)
         {
             float u = (t - HoldEnd) / (WhipEnd - HoldEnd);
-            float scoop = u * u;
-            return (1f, scoop, 0f, Mathf.Lerp(SweepStartDeg, SweepEndDeg, scoop));
+            return (Seg.Whip, u * u);                       // EaseIn whip
         }
         float v = (t - WhipEnd) / (ClipLength - WhipEnd);
-        float settle = 1f - (1f - v) * (1f - v);
-        return (1f, 1f, settle, Mathf.Lerp(SweepEndDeg, 0f, settle));
+        return (Seg.Recoil, 1f - (1f - v) * (1f - v));      // EaseOut settle
+    }
+
+    // One keypose: arm segment directions + pole direction + torso angles (pitch +fwd/-back,
+    // twist +right), all in skeleton space.
+    private readonly struct KeyPose
+    {
+        public readonly Vector3 UpperR, LowerR, Pole;
+        public readonly float SpinePitch, SpineTwist;
+        public KeyPose(Vector3 upperR, Vector3 lowerR, Vector3 pole, float spinePitch, float spineTwist)
+        { UpperR = upperR; LowerR = lowerR; Pole = pole; SpinePitch = spinePitch; SpineTwist = spineTwist; }
+
+        public static KeyPose Blend(KeyPose a, KeyPose b, float u) => new(
+            Vector3.Slerp(a.UpperR, b.UpperR, u), Vector3.Slerp(a.LowerR, b.LowerR, u),
+            Vector3.Slerp(a.Pole, b.Pole, u),
+            Mathf.Lerp(a.SpinePitch, b.SpinePitch, u), Mathf.Lerp(a.SpineTwist, b.SpineTwist, u));
     }
 
     // internal: NetSwingFbxExporter drives this directly (single source of truth for the pose math).
     internal static void ApplySwingPose(Animator animator, Transform agent, float t)
     {
-        (float weight, float dirBlend, float readyBlend, float sweep) = PhaseAt(t);
-        float raise = (1f - dirBlend) * weight;            // torso "loaded" amount
-        float scoop = dirBlend * (1f - readyBlend);        // torso "swung" amount, relaxing on recoil
-
         // Axes from the SKELETON, not the root: this FBX's bind pose faces -X while the prefab
         // root faces +Z (measured: shoulder line runs along +Z). Authoring against root axes put
-        // the whole swing 90° off — "forward" scooped across the character's RIGHT. The shoulder
-        // line is ground truth for where the model actually faces. Must be read BEFORE any bones
-        // move this frame (callers restore bind pose first, so this sees the bind skeleton).
+        // the whole swing 90° off. Must be read BEFORE any bones move this frame (callers restore
+        // bind pose first, so this sees the bind skeleton).
         Transform lSh = animator.GetBoneTransform(HumanBodyBones.LeftUpperArm);
         Transform rSh = animator.GetBoneTransform(HumanBodyBones.RightUpperArm);
         if (lSh == null || rSh == null) return;
         Vector3 up = Vector3.up;
         Vector3 right = Vector3.ProjectOnPlane(rSh.position - lSh.position, up).normalized;
         Vector3 fwd = Vector3.Cross(right, up).normalized;
-        Quaternion sweepRot = Quaternion.AngleAxis(sweep, up); // rotates the whole swing plane
 
-        // Torso: spine points up (perpendicular to the pitch axis), so axis rotations are safe here.
-        float spinePitch = -SpineArchDeg * raise + SpinePitchFwdDeg * scoop + 5f * readyBlend; // ends slightly hunched-ready
-        float spineTwist = SpineTwistLoadDeg * raise + sweep * 0.4f;
-        RotateBone(animator, HumanBodyBones.Spine, Quaternion.AngleAxis(spinePitch * 0.5f, right) * Quaternion.AngleAxis(spineTwist * 0.5f, up));
-        RotateBone(animator, HumanBodyBones.Chest, Quaternion.AngleAxis(spinePitch * 0.5f, right) * Quaternion.AngleAxis(spineTwist * 0.5f, up));
-        RotateBone(animator, HumanBodyBones.Neck, Quaternion.AngleAxis(-spinePitch * 0.7f, right)); // eyes on target
+        // Keyposes (directions normalized by KeyPose.Blend's Slerp inputs being unit-ish).
+        var ready = new KeyPose(
+            (fwd * 0.35f - up * 0.95f + right * 0.25f).normalized,  // right upper arm: down-front
+            (fwd * 0.7f - up * 0.6f).normalized,                    // forearm: reaching front
+            (up * 0.8f + fwd * 0.6f + right * 0.35f).normalized,    // pole leaning forward, hoop clear of the head
+            4f, 0f);
+        var load = new KeyPose(
+            (up * 0.75f + right * 0.6f - fwd * 0.3f).normalized,    // upper arm up over the RIGHT shoulder
+            (up * 0.7f + right * 0.35f - fwd * 0.65f).normalized,   // elbow cocks the pole behind the shoulder
+            (-fwd * 0.85f + up * 0.4f + right * 0.35f).normalized,  // pole points back over the right shoulder
+            -SpineArchDeg, SpineTwistLoadDeg);
+        var scoop = new KeyPose(
+            (fwd * 0.95f - up * 0.5f - right * 0.1f).normalized,    // swing lands ahead, drifting slightly left
+            (fwd * 1.0f - up * 0.35f - right * 0.05f).normalized,
+            (fwd * 0.85f - up * 0.5f - right * 0.15f).normalized,   // net slams down-forward
+            SpinePitchFwdDeg, -4f);
 
-        // Legs: bind pose points them down (also perpendicular to the pitch axis) — light stagger,
-        // settling to a soft-kneed ready stance.
-        RotateBone(animator, HumanBodyBones.RightUpperLeg, Quaternion.AngleAxis(14f * raise - 6f * scoop + 4f * readyBlend, right));
-        RotateBone(animator, HumanBodyBones.LeftUpperLeg, Quaternion.AngleAxis(-12f * raise + 4f * scoop + 4f * readyBlend, right));
-        RotateBone(animator, HumanBodyBones.RightLowerLeg, Quaternion.AngleAxis(-10f * raise - 6f * readyBlend, right));
-        RotateBone(animator, HumanBodyBones.LeftLowerLeg, Quaternion.AngleAxis(-8f * raise - 6f * scoop - 6f * readyBlend, right));
+        (Seg seg, float u) = PhaseAt(t);
+        KeyPose pose = seg switch
+        {
+            Seg.Windup => KeyPose.Blend(ready, load, u),
+            Seg.Hold => load,
+            Seg.Whip => KeyPose.Blend(load, scoop, u),
+            _ => KeyPose.Blend(scoop, ready, u),
+        };
 
-        // ---- Arms: direction targets in agent space. The arc runs load → scoop (dirBlend), then
-        // scoop → READY (readyBlend): arms lowered in FRONT of the body, pole back near upright —
-        // close to the in-game carry, and critically NOT the T-pose the bind would give.
-        Vector3 upperLoadR = (up * 1.0f - fwd * 0.55f + right * 0.25f).normalized;
-        Vector3 upperScoop = (fwd * 1.0f - up * 0.55f).normalized;
-        Vector3 upperReady = (fwd * 0.2f - up * 1.0f + right * 0.35f).normalized; // right hand settles at the right hip
-        Vector3 lowerLoadR = (up * 0.8f - fwd * 0.9f + right * 0.1f).normalized;
-        Vector3 lowerScoop = (fwd * 1.0f - up * 0.35f).normalized;
-        Vector3 lowerReady = (fwd * 0.45f - up * 0.85f + right * 0.15f).normalized;
-        // Net pole (right hand local +Y): behind at load, slams forward-down, back upright at ready.
-        Vector3 poleLoad = (up * 0.55f - fwd * 1.0f).normalized;
-        Vector3 poleScoop = (fwd * 0.9f - up * 0.5f).normalized;
-        Vector3 poleReady = (up * 1.0f + fwd * 0.2f + right * 0.4f).normalized; // upright, tilted clear of the face
+        // Torso: spine points up (perpendicular to both axes used), so axis rotations are safe.
+        RotateBone(animator, HumanBodyBones.Spine, Quaternion.AngleAxis(pose.SpinePitch * 0.5f, right) * Quaternion.AngleAxis(pose.SpineTwist * 0.5f, up));
+        RotateBone(animator, HumanBodyBones.Chest, Quaternion.AngleAxis(pose.SpinePitch * 0.5f, right) * Quaternion.AngleAxis(pose.SpineTwist * 0.5f, up));
+        RotateBone(animator, HumanBodyBones.Neck, Quaternion.AngleAxis(-pose.SpinePitch * 0.7f, right)); // eyes on target
 
-        Vector3 upperDir = Vector3.Slerp(Vector3.Slerp(upperLoadR, upperScoop, dirBlend), upperReady, readyBlend);
-        Vector3 lowerDir = Vector3.Slerp(Vector3.Slerp(lowerLoadR, lowerScoop, dirBlend), lowerReady, readyBlend);
-        Vector3 poleDir = (sweepRot * Vector3.Slerp(Vector3.Slerp(poleLoad, poleScoop, dirBlend), poleReady, readyBlend)).normalized;
+        // Legs: light stagger keyed off the torso amounts (load = weight back, scoop = weight front).
+        float loadAmt = Mathf.InverseLerp(4f, -SpineArchDeg, pose.SpinePitch);   // 0 ready → 1 loaded
+        float scoopAmt = Mathf.InverseLerp(4f, SpinePitchFwdDeg, pose.SpinePitch);
+        RotateBone(animator, HumanBodyBones.RightUpperLeg, Quaternion.AngleAxis(14f * loadAmt - 6f * scoopAmt + 4f, right));
+        RotateBone(animator, HumanBodyBones.LeftUpperLeg, Quaternion.AngleAxis(-12f * loadAmt + 4f * scoopAmt + 4f, right));
+        RotateBone(animator, HumanBodyBones.RightLowerLeg, Quaternion.AngleAxis(-10f * loadAmt - 6f, right));
+        RotateBone(animator, HumanBodyBones.LeftLowerLeg, Quaternion.AngleAxis(-8f * loadAmt - 6f * scoopAmt - 6f, right));
 
-        // Right arm drives the swing.
-        AimSegment(animator, HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, sweepRot * upperDir, weight);
-        AimSegment(animator, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand, sweepRot * lowerDir, weight);
+        // ---- Right arm: aim segments, then FIX THE BEND PLANE. FromToRotation is minimal-rotation
+        // and leaves whatever roll the previous pose had — across frames the elbow wandered and the
+        // arms read as flailing/folding/twisting. StabilizeBendPlane rolls the upper arm about its
+        // own axis so the elbow always points to the same authored side, every frame.
+        Vector3 elbowHintR = (-up * 0.6f + right * 0.8f).normalized; // right elbow: out and down
+        AimSegment(animator, HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, pose.UpperR, 1f);
+        StabilizeBendPlane(animator, HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand, elbowHintR);
+        AimSegment(animator, HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand, pose.LowerR, 1f);
 
-        // Hands get FULL orientations, not minimal rotations — FromToRotation kept the bind pose's
-        // roll, which left both palms facing OUTWARD. LookRotation pins the pole axis (hand +Y)
-        // AND the palm normal: palms face each other across the pole (right palm toward the
-        // character's left, left palm back toward the right).
-        Vector3 sweptRight = (sweepRot * right).normalized;
-        OrientHand(animator, HumanBodyBones.RightHand, poleDir, -sweptRight, weight);
+        Vector3 poleDir = pose.Pole;
+        OrientHand(animator, HumanBodyBones.RightHand, poleDir, -right, 1f);
 
-        // Left hand GRABS the pole above the right hand: 2-pass CCD pulls the wrist onto the pole
-        // line (direction aiming alone left the hands visibly apart at the top of the swing).
+        // Left hand GRABS the pole above the right hand: 2-pass CCD onto the pole line, with its
+        // own bend-plane fix (left elbow points out-down on the LEFT side).
         Transform? rHand = animator.GetBoneTransform(HumanBodyBones.RightHand);
         if (rHand != null)
         {
             Vector3 grip = rHand.position + poleDir * GripSeparation;
+            Vector3 elbowHintL = (-up * 0.6f - right * 0.8f).normalized;
             for (int pass = 0; pass < 2; pass++)
             {
                 Transform? lShoulder = animator.GetBoneTransform(HumanBodyBones.LeftUpperArm);
                 Transform? lElbow = animator.GetBoneTransform(HumanBodyBones.LeftLowerArm);
                 Transform? lWrist = animator.GetBoneTransform(HumanBodyBones.LeftHand);
                 if (lShoulder == null || lElbow == null || lWrist == null) break;
-                AimSegment(animator, HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, grip - lShoulder.position, weight);
-                AimSegment(animator, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand, grip - lElbow.position, weight);
+                AimSegment(animator, HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, grip - lShoulder.position, 1f);
+                StabilizeBendPlane(animator, HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand, elbowHintL);
+                AimSegment(animator, HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand, grip - lElbow.position, 1f);
             }
-            OrientHand(animator, HumanBodyBones.LeftHand, poleDir, sweptRight, weight);
+            OrientHand(animator, HumanBodyBones.LeftHand, poleDir, right, 1f);
         }
+    }
+
+    /// <summary>Rolls the upper bone about its own aim axis so the bend plane (upper × lower) faces
+    /// <paramref name="elbowHint"/> — a constant authored side for the elbow. Kills the frame-to-frame
+    /// twist wander FromToRotation leaves behind (it controls direction, never roll).</summary>
+    private static void StabilizeBendPlane(Animator animator, HumanBodyBones upperId, HumanBodyBones lowerId, HumanBodyBones endId, Vector3 elbowHint)
+    {
+        Transform? upper = animator.GetBoneTransform(upperId);
+        Transform? lower = animator.GetBoneTransform(lowerId);
+        Transform? end = animator.GetBoneTransform(endId);
+        if (upper == null || lower == null || end == null) return;
+
+        Vector3 axis = (lower.position - upper.position).normalized;          // upper-arm aim axis
+        Vector3 curElbowDir = Vector3.ProjectOnPlane(end.position - lower.position, axis);
+        Vector3 wantElbowDir = Vector3.ProjectOnPlane(elbowHint, axis);
+        if (curElbowDir.sqrMagnitude < 1e-6f || wantElbowDir.sqrMagnitude < 1e-6f) return;
+
+        // The forearm continues past the elbow, so the elbow "points" opposite the forearm's
+        // off-axis component — roll so that component lands opposite the hint.
+        float angle = Vector3.SignedAngle(curElbowDir, -wantElbowDir, axis);
+        upper.rotation = Quaternion.AngleAxis(angle, axis) * upper.rotation;
     }
 
     /// <summary>Fully orients a hand: local +Y (the pole axis — how NetVisual.BuildNet mounts) onto

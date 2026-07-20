@@ -33,6 +33,16 @@ public static class NetSwingFbxExporter
             Animator animator = rig.GetComponentInChildren<Animator>();
             if (animator == null) { Debug.LogError("NetSwingFbxExporter: no Animator"); return; }
 
+            // Attach the actual net to the right hand so the exported FBX previews the swing WITH
+            // the thing being swung. It rides the hand bone as a static child; collider cleanup is
+            // immediate because BuildNet's own Destroy calls are play-mode-deferred.
+            Transform? hand = animator.GetBoneTransform(HumanBodyBones.RightHand);
+            if (hand != null)
+            {
+                Game.Rules.NetVisual.BuildNet(hand);
+                foreach (Collider col in rig.GetComponentsInChildren<Collider>(true)) Object.DestroyImmediate(col);
+            }
+
             // Collect every transform under the rig with its relative path (curve binding paths)
             // plus the bind pose, restored before posing each frame (poses must not accumulate).
             var bones = new List<(Transform t, string path)>();
