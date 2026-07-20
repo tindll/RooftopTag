@@ -148,7 +148,7 @@ public static class ModularBuildings
     }
 
     /// <summary>Round 9: the same decimate+posterize pipeline, exposed for one-off prop GLBs
-    /// (e.g. Assets/plank.glb). Cached in-memory and on disk like the building modules.</summary>
+    /// (e.g. Assets/Art/Construction/Props/plank.glb). Cached in-memory and on disk like the building modules.</summary>
     public static (Mesh mesh, Material material)? ProcessProp(string assetPath, string cacheKey, int targetTris, Color tint)
     {
         if (PropCache.TryGetValue(cacheKey, out (Mesh mesh, Material material) hit) &&

@@ -112,7 +112,7 @@ public static class ConstructionDressing
         var rng = new System.Random(SeedPlanks);
 
         (Mesh mesh, Material material)? plankProp =
-            ModularBuildings.ProcessProp("Assets/plank.glb", "plank", 3000, new Color(0.95f, 0.90f, 0.84f));
+            ModularBuildings.ProcessProp("Assets/Art/Construction/Props/plank.glb", "plank", 3000, new Color(0.95f, 0.90f, 0.84f));
 
         // RampSurface objects are built by RooftopArena.BuildRamp for every Ramp link; scanning by
         // name (rather than walking a known root) matches the pattern SceneStyler.CreateGlbPipes
@@ -480,7 +480,7 @@ public static class ConstructionDressing
         // budget: 4.8k tris) — the model IS the worklight, a real point light sits at its HEAD (top
         // of the scaled bounds), and it's a solid physics element like the containers.
         (Mesh mesh, Material material)? lightProp =
-            ModularBuildings.ProcessProp("Assets/light.glb", "worklight", 5000, new Color(0.92f, 0.92f, 1.0f));
+            ModularBuildings.ProcessProp("Assets/Art/Construction/Props/light.glb", "worklight", 5000, new Color(0.92f, 0.92f, 1.0f));
         const float lightHeight = 2.2f; // real site-floodlight height; still vaultable at 1.1? no — solid obstacle, mantleable
         int desired = 16 + rng.Next(3); // 16-18
         int placed = 0, pointLights = 0;
