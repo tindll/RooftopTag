@@ -42,18 +42,16 @@ public static class ModularBuildings
 
     private const float BottomStorey = 4.0f;  // ground floor is taller, like the concept
     private const float MiddleStorey = 3.0f;
-    private const float TopBelowDeck = 3.0f;  // the top module's own storey under its deck plane
 
     private static readonly string[] Types = { "A", "B", "C", "D" };
     private static readonly (string folder, string prefix)[] Tiers =
-        { ("bottom", "bot"), ("middle", "mid"), ("top", "top") };
+        { ("bottom", "bot"), ("middle", "mid") };
 
     private sealed class Module
     {
         public Mesh Mesh = null!;
         public Material Material = null!;
         public Bounds Bounds;
-        public float DeckLocalY; // meaningful for top modules only
     }
 
     // Per-module cache. Unity null check on every hit (never a bare TryGetValue return) — see
@@ -92,7 +90,7 @@ public static class ModularBuildings
 
     private static string SourcePath(string prefix, string type)
     {
-        string folder = prefix == "bot" ? "bottom" : prefix == "mid" ? "middle" : "top";
+        string folder = prefix == "bot" ? "bottom" : "middle";
         return $"{SourceRoot}/{folder}/{prefix}_type{type}.glb";
     }
 
@@ -141,7 +139,6 @@ public static class ModularBuildings
             Mesh = mesh,
             Material = mat,
             Bounds = mesh.bounds,
-            DeckLocalY = prefix == "top" ? DominantUpFaceY(mesh) : mesh.bounds.max.y,
         };
         ModuleCache[key] = module;
         return module;
@@ -259,33 +256,6 @@ public static class ModularBuildings
         return tex;
     }
 
-    /// <summary>Highest up-facing plane covering at least 20% of the footprint — the top module's
-    /// walkable deck inside its parapet ring. Same histogram approach the Kenney shell pass used.</summary>
-    private static float DominantUpFaceY(Mesh mesh)
-    {
-        Bounds b = mesh.bounds;
-        Vector3[] verts = mesh.vertices;
-        int[] tris = mesh.triangles;
-        const int bins = 100;
-        var area = new float[bins];
-        for (int t = 0; t < tris.Length; t += 3)
-        {
-            Vector3 v0 = verts[tris[t]], v1 = verts[tris[t + 1]], v2 = verts[tris[t + 2]];
-            Vector3 n = Vector3.Cross(v1 - v0, v2 - v0);
-            if (n.y <= n.magnitude * 0.7f) continue;
-            float cy = (v0.y + v1.y + v2.y) / 3f;
-            int bin = Mathf.Clamp((int)((cy - b.min.y) / Mathf.Max(1e-5f, b.size.y) * bins), 0, bins - 1);
-            area[bin] += n.magnitude * 0.5f;
-        }
-        float footprint = b.size.x * b.size.z;
-        for (int bin = bins - 1; bin >= 0; bin--)
-        {
-            if (area[bin] >= footprint * 0.20f)
-                return b.min.y + (bin + 0.5f) / bins * b.size.y;
-        }
-        return b.max.y;
-    }
-
     // ==================================================================================
     // Stacking
     // ==================================================================================
@@ -298,7 +268,7 @@ public static class ModularBuildings
 
         // Round 8 (user: the module tops are "waaay too much visual clutter"): towers are capped by
         // a FLAT grey deck slab instead of the ragged top modules — so a type only needs its bottom
-        // and middle tiers now. The top GLBs stay imported/processed for a possible later comeback.
+        // and middle tiers now. The top GLBs are gone (see git history for a later comeback).
         var completeTypes = new List<string>();
         foreach (string t in Types)
         {

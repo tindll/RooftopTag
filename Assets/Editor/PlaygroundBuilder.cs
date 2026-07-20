@@ -89,9 +89,6 @@ public static class PlaygroundBuilder
         BuildTagArenaBootstrap(player, cameraRig, cam, yawPivot, botRoots, groundMask, groundMask, forcePlayerAsRunner: true);
 
         var theme = ScriptableObject.CreateInstance<VisualThemeConfig>();
-        // Old generated box cars OFF — the Kenney vehicles (BuildKenneyStreets → KenneyTrafficBuilder)
-        // drive the new modular grid instead. carCount<=0 makes SceneStyler.CreateCars a no-op.
-        theme.carCount = 0;
         SceneStyler.Apply(theme, sun);
 
         // Modular Kenney street grid (CC0 decor) at street level, centred on the play cluster — real 3D
@@ -154,7 +151,7 @@ public static class PlaygroundBuilder
         KenneyTrafficBuilder.BuildTraffic(root.transform, grid, theme.buildingBaseY, cityGridSeed ^ 5555, dressing);
 
         // Solid dark building rows ringing the whole grid — the horizon: the map edge is hidden by
-        // geometry instead of fog, replacing the legacy GLB skyline (gated off in CreateSilhouettes).
+        // geometry instead of fog, replacing the legacy GLB skyline (that generator has been removed).
         float gMinX = float.MaxValue, gMaxX = float.MinValue, gMinZ = float.MaxValue, gMaxZ = float.MinValue;
         foreach (Vector3 n in grid.Intersections)
         {

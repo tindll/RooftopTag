@@ -2178,9 +2178,8 @@ public sealed class RoundController : MonoBehaviour
         if (elapsed < 0f || elapsed >= SpinnerDeniedWindow) return;
 
         // Denominator is the cooldown the local player's role actually carries: Runners run on
-        // runnerRollCooldown (2s), Taggers on lungeCooldown (0). Without this the spinner fill divided
-        // by the Tagger's 0 and read as instantly-full for the raccoon's real 2s roll cooldown.
-        float roleCooldown = _localPlayerAgent.Role == Role.Runner ? _config.runnerRollCooldown : _config.lungeCooldown;
+        // runnerRollCooldown, Taggers have none (dive-lock is their limiter, so 0 here).
+        float roleCooldown = _localPlayerAgent.Role == Role.Runner ? _config.runnerRollCooldown : 0f;
         float fill = Mathf.Clamp01(1f - _localPlayerAgent.LungeCooldownRemaining / Mathf.Max(roleCooldown, 0.0001f));
         bool ready = _localPlayerAgent.LungeCooldownRemaining <= 0f;
 

@@ -475,12 +475,12 @@ public sealed class TagAgent : MonoBehaviour
             return;
         }
 
-        // Role-split lunge tuning (A + B): a Runner's lunge redirects to runnerDiveSpeed (a real net
+        // Role-split lunge tuning: a Runner's lunge redirects to runnerDiveSpeed (a real net
         // escape burst) and carries a real runnerRollCooldown; a Tagger keeps diveSpeed and the
-        // dive-lock-only limiter (lungeCooldown is 0). Everything else about the fire is identical.
+        // dive-lock as its only limiter (no cooldown). Everything else about the fire is identical.
         FireLunge(
             Role == Role.Runner ? _config.runnerDiveSpeed : _config.diveSpeed,
-            Role == Role.Runner ? _config.runnerRollCooldown : _config.lungeCooldown);
+            Role == Role.Runner ? _config.runnerRollCooldown : 0f);
     }
 
     /// <summary>The actual lunge fire, factored out of <see cref="TryLunge"/> so the reactive dodge
@@ -839,9 +839,9 @@ public sealed class TagAgent : MonoBehaviour
         Color color = IsInGrace
             ? _config.conversionGraceColor
             : Role == Role.Tagger ? _config.taggerColor : _config.runnerColor;
-        float emissive = IsInGrace
-            ? _config.graceEmissiveIntensity
-            : Role == Role.Tagger ? _config.taggerEmissiveIntensity : _config.runnerEmissiveIntensity;
+        // Only conversion grace glows; outside grace the emission is zero so a rigged model's own
+        // texture stays untouched (no role tint/glow).
+        float emissive = IsInGrace ? _config.graceEmissiveIntensity : 0f;
         // Capsule: full recolor. Rigged model: emission-only glow so the character's texture survives.
         if (_proceduralBody) _materialInstance.color = color;
         _materialInstance.SetColor(EmissionColorId, color * emissive);

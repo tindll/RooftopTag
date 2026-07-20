@@ -118,7 +118,7 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// levels: it is doing double duty as the roofs' fill AND as the sole thing making the street-death
     /// sequence watchable. Night is sold here by HUE (purple sun-bounce -> cool blue) and by the black sky
     /// and popping windows around it — not by driving this toward zero, which would take the street with
-    /// it. Do not lower this without raising roadColor/sidewalkColor to match.</summary>
+    /// it. Do not lower this without raising sidewalkColor to match.</summary>
     public Color ambientSky = new Color32(0x40, 0x4E, 0x82, 0xFF);
     /// <summary>#C97B5A -> #3A3446, ~40% of the old luminance — the largest ambient cut in the re-theme,
     /// and the one that does the most work. This lights VERTICAL surfaces (normals at the horizon), i.e.
@@ -519,43 +519,19 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// Also reused for cranes and the fire-escape props, which want to be dark shapes after dark anyway.</summary>
     public Color silhouetteColor = new Color32(0x1E, 0x1C, 0x28, 0xFF);
     /// <summary>How many DISTINCT haze tints the backdrop skyline is allowed — the draw-call knob, not a
-    /// layout one. Buildings now land in BSP blocks (SceneStyler.BuildBackdropNetwork), not on concentric
-    /// rings, so their distance-from-centre t is continuous; quantising t into this many bands is what
-    /// keeps TagArenaMapGeometry.GetFacadeMaterial's (tint, intensity) cache yielding exactly this many
-    /// shared materials instead of one per building. 4 was the old ring count and reproduces the old
+    /// layout one. Buildings' distance-from-centre t is continuous; quantising t into this many bands is
+    /// what keeps TagArenaMapGeometry.GetFacadeMaterial's (tint, intensity) cache yielding exactly this
+    /// many shared materials instead of one per building. 4 was the old ring count and reproduces the old
     /// gradient exactly; raising it buys smoother atmospheric perspective at one draw call each.</summary>
     public int skylineHazeBandCount = 4;
-    /// <summary>The backdrop skyline still occupies this annulus around the play area: a BSP block whose
-    /// centre falls outside [inner, outer] gets no building. Per-band colour is pushed toward
-    /// <see cref="fogColor"/> by <see cref="skylineHazeBlend"/> across it, for atmospheric perspective.</summary>
-    // Raised 72 -> 155: the Kenney city grid now owns everything out to ~130m from the cluster centre
-    // (varied blocks + its own buildings), and old skyline towers placed inside that span stood ON the
-    // new roads with cars clipping through them (user-reported). The old backdrop generator now only
-    // fills the fogged ring BEYOND the Kenney city.
-    public float skylineInnerRadius = 155f;
+    /// <summary>Outer edge of the backdrop ground slab / keep-out sizing (see BackdropBounds): the slab's
+    /// square extent is sized from this plus groundEdgeMargin so its edge dies in fog well past anything
+    /// placed near it. Per-band colour is pushed toward <see cref="fogColor"/> by
+    /// <see cref="skylineHazeBlend"/> across it, for atmospheric perspective.</summary>
     // Pulled 340 -> 240 with the heavier fog (fogDensity 0.007): the 240-340 ring sat at 95-99% fog, so
     // dropping it is nearly invisible but culls its buildings' draw calls, and it compresses the
     // near->far fill gradient into the band you can actually see, for a denser-reading near city.
     public float skylineOuterRadius = 240f;
-    /// <summary>Chance a qualifying BSP block gets a building, at <see cref="skylineInnerRadius"/> and at
-    /// <see cref="skylineOuterRadius"/> respectively — this is what replaces the old per-ring count and it
-    /// preserves the same radial character: the near city stays sparse and legible, the far city piles up
-    /// into a denser wall that dissolves in the fog. The annulus holds ~490 blocks big enough to build in,
-    /// so these two land 134 buildings in it — the ring code placed 128, and matching it is deliberate:
-    /// the skyline's density was already tuned against the fog. Pushing Far past ~0.9 makes the horizon
-    /// read as one solid unbroken slab rather than a skyline.</summary>
-    // Density raised from 0.21/0.53 (~134 buildings, tuned to match the old ring code against the OLD
-    // fog) as part of the living-metropolis pass: a denser near/mid skyline reads busier from the
-    // rooftops, and the heavier near-fog (see fogDensity) both hides the far edge and culls the extra
-    // far buildings, so the net cost stays in hand. Far kept well under the ~0.9 "solid slab" ceiling.
-    [Range(0f, 1f)] public float skylineBlockFillNear = 0.36f;
-    [Range(0f, 1f)] public float skylineBlockFillFar = 0.68f;
-    public float skylineHeightMin = 7f;
-    // Max raised 40 -> 52: a few taller landmark towers give the skyline vertical variety instead of a
-    // uniform mid-rise band.
-    public float skylineHeightMax = 52f;
-    public float skylineWidthMin = 6f;
-    public float skylineWidthMax = 18f;
     [Range(0f, 1f)] public float skylineHazeBlend = 0.75f;
     /// <summary>Skyline blocks carry the SAME window grid as the playable buildings — without it the
     /// windowed play area met an unwindowed horizon, which is the break the feel-check reported. Still
@@ -666,211 +642,17 @@ public sealed class VisualThemeConfig : ScriptableObject
     /// real floors rather than at an arbitrary rhythm.</summary>
     public float propFireEscapeSlatSpacing = 1.4f;
 
-    [Header("Street cars (cosmetic drifting props at street level)")]
-    public int carCount = 10;
-    public float carSpeedMin = 3f;
-    public float carSpeedMax = 7f;
-    public Vector3 carSize = new(2.1f, 1.4f, 4.4f);
-    [Range(0f, 0.6f)] public float carSizeJitter = 0.25f;
-    /// <summary>Muted small-vehicle colors, cycled deterministically so the cars aren't clones.</summary>
-    public Color[] carColors =
-    {
-        new Color32(0x8A, 0x3B, 0x32, 0xFF), // dark red
-        new Color32(0x3F, 0x55, 0x66, 0xFF), // steel blue
-        new Color32(0xA8, 0x94, 0x6F, 0xFF), // tan
-        new Color32(0xC8, 0xC4, 0xBC, 0xFF), // off-white
-        new Color32(0x40, 0x44, 0x4A, 0xFF), // dark grey
-        new Color32(0x6B, 0x6A, 0x3F, 0xFF), // olive
-    };
-    /// <summary>Shared dark colour for every car's wheels (submesh 1 of the car mesh) — one material
-    /// for all cars regardless of body colour, so wheels cost nothing extra per colour variant.</summary>
-    public Color carWheelColor = new Color32(0x15, 0x17, 0x1A, 0xFF);
-    public float carWheelRadius = 0.35f;
-    public float carWheelWidth = 0.28f;
-    /// <summary>Cabin height as a fraction of the body's own height (<see cref="carSize"/>.y).</summary>
-    [Range(0.1f, 0.9f)] public float carCabinHeightFraction = 0.55f;
-    /// <summary>Cabin length as a fraction of the body's own length (<see cref="carSize"/>.z).</summary>
-    [Range(0.1f, 0.9f)] public float carCabinLengthFraction = 0.55f;
-
-    /// <summary>Forward launch speed (m/s) a car hands the ragdoll's Hips on impact, along the car's
-    /// own travel direction. This is a VELOCITY DELTA, not a force — mass-independent (see
-    /// CharacterRagdoll.Activate) — so it reads literally: the body leaves at this many m/s.
-    ///
-    /// Tuning knobs live here, in the theme, rather than in TagRulesConfig, and that is correct on the
-    /// merits rather than merely convenient: by the time a car can touch you, RoundController has
-    /// already decided you lost the round (you crossed FallResetY on the way down). The impulse only
-    /// drives the ragdoll, which is PRESENTATION of that outcome — it changes no rule. It is also the
-    /// only assembly a car can read: CarImpact lives in Game.MapGeometry, which cannot see Game.Rules.
-    ///
-    /// Comedy is the goal here, not physical plausibility: ~14 is well past what a 7 m/s car would
-    /// really impart, and it should launch rather than nudge.</summary>
-    public float carImpactForwardImpulse = 14f;
-    /// <summary>Upward component (m/s) of the same impulse — this is the half that makes the body
-    /// TUMBLE instead of skidding along the asphalt. Same units/reasoning as
-    /// <see cref="carImpactForwardImpulse"/>.</summary>
-    public float carImpactUpImpulse = 7f;
-    /// <summary>Metres the impact trigger is inflated past <see cref="carSize"/> on every axis, so a
-    /// car passing alongside an agent still connects rather than needing to strike the body dead-on.
-    /// Slop, deliberately: a near-miss that visibly clips someone and does nothing reads as a bug.
-    /// This volume can never affect movement — it is a TRIGGER, on the mask-excluded "Ragdoll" layer,
-    /// 22m below the lowest playable surface (see SceneStyler.CreateCars).</summary>
-    public float carTriggerMargin = 0.3f;
-
-    [Header("Traffic (lane network + signals, RooftopArena only)")]
-    /// <summary>Roughly one car per this many metres of LANE (each street has one lane per direction),
-    /// summed over the whole network — density is layout-derived, not a fixed count. Smaller = busier
-    /// streets and more draw calls. See SceneStyler.CreateCars / BuildTrafficGraph.</summary>
-    public float carSpacing = 15f;
-    /// <summary>Lanes shorter than this (metres) route through-traffic but spawn no parked car — a stub
-    /// between two adjacent junctions would otherwise pin a car between two stop lines.</summary>
-    public float carMinLaneSpawnLength = 7f;
-    /// <summary>Full traffic-light period (seconds): X-travel lanes hold green for the first half of the
-    /// cycle at each junction, Z-travel lanes the second half. TrafficNetwork.IsGreen is a pure function
-    /// of Time.time, so this needs no per-light state.</summary>
-    public float trafficLightCycle = 9f;
-    /// <summary>All-red clearance (seconds) trimmed off the end of each half-cycle so a junction empties
-    /// before the cross direction pulls away.</summary>
-    public float trafficLightClearance = 0.8f;
-    /// <summary>Metres the stop line sits before a junction centre — where a car halts on a red.</summary>
-    public float carStopMargin = 3.0f;
-    /// <summary>Max lateral offset (metres) of a lane centre from its street centre (capped at a quarter
-    /// of the road width). Separates the two directions onto opposite halves of the asphalt.</summary>
-    public float carLaneOffsetMax = 1.7f;
-    /// <summary>Car acceleration pulling away from a stop (m/s^2).</summary>
-    public float carAccel = 6f;
-    /// <summary>Car braking deceleration approaching a red (m/s^2).</summary>
-    public float carDecel = 16f;
-    /// <summary>Height (metres) of a backdrop traffic-light post's pole. The lit bulb sits on top; from
-    /// the rooftops the pole is nearly invisible and the glowing bulb is what reads.</summary>
-    public float trafficPostHeight = 5.5f;
-    /// <summary>Edge length (metres) of the emissive signal bulb — sized to read as a glowing dot from
-    /// 20m+ above, not a realistic 0.3m lens.</summary>
-    public float trafficBulbSize = 1.0f;
-    /// <summary>Dark pole/mast colour (the non-glowing structure).</summary>
-    public Color trafficPostColor = new Color32(0x0E, 0x0F, 0x12, 0xFF);
-    /// <summary>Bulb colour while this post's axis is GREEN (go).</summary>
-    public Color trafficLightGreen = new Color32(0x35, 0xE0, 0x55, 0xFF);
-    /// <summary>Bulb colour while this post's axis is RED (stop).</summary>
-    public Color trafficLightRed = new Color32(0xF0, 0x2A, 0x22, 0xFF);
-    /// <summary>Bulb colour during the all-red clearance gap between phases — shown as AMBER, which is
-    /// exactly when a real signal is amber.</summary>
-    public Color trafficLightYellow = new Color32(0xFF, 0xBF, 0x33, 0xFF);
-    /// <summary>HDR emission multiplier on the lit bulb. Kept modest: too high and bloom clips the bulb's
-    /// core to white and the red/green reading is lost — the colour has to survive the glow.</summary>
-    public float trafficLightEmission = 2.6f;
-
-    /// <summary>Legacy flat road strips + BSP backdrop-road quads (SceneStyler.CreateRoads). OFF since the
-    /// Kenney modular street grid replaced them — the ground slab (fall-landing collider) is always kept.
-    /// Re-enable only to compare against the old look.</summary>
-    public bool legacyRoadStrips = false;
-    /// <summary>Legacy GLB-model backdrop skyline (SceneStyler.CreateSilhouettes, building1-4.glb). OFF:
-    /// the horizon is now KenneyBuildingPlacer.PlacePerimeterWall's solid dark building rows — uniform
-    /// with the near city, and the map edge is hidden by geometry instead of fog (user request). The
-    /// PLAYABLE cluster's GLB shells are untouched by this flag.</summary>
-    public bool legacyGlbSkyline = false;
-
-    [Header("Streets (road strips + sidewalk ground slab, RooftopArena only)")]
-    /// <summary>Road width is NOT a knob — it is per-segment layout data living next to the
-    /// coordinates it constrains (see SceneStyler.StreetSegments), because the map genuinely has two
-    /// kinds of street: narrow interior alleys threading the roof grid's real gaps, and wide open
-    /// perimeter avenues. A single global width can only be wrong for one of them.
-    ///
-    /// This is the one street value that IS tuning: strips at least this wide are painted with the
-    /// generated lane-marking texture; anything narrower gets plain asphalt. Real alleys have no
-    /// lane markings, and a dashed CENTRE line on a strip barely wider than the 2.1m cars would read
-    /// as a one-lane alley wearing two-lane markings.</summary>
-    public float roadMarkingMinWidth = 4.0f;
-    /// <summary>#23252A -> #2F3239 and #3A3B40 -> #4E5056: a flat x1.35 on both, hue untouched (each keeps
-    /// its original slight cool cast — this is a scale, not a re-tint).
-    ///
-    /// This is the street-death constraint, and it is a real one: the sequence where a car hits a fallen
-    /// player and StreetDeathCam follows the ragdoll plays out down at y=-25, so the street has to be
-    /// WATCHABLE, not merely present. These tones were already dark by design, and the night took away
-    /// both of the things that were lighting them — the road gets no direct moon at all (the canyon is
-    /// shadowed at 34deg; see sunElevationDegrees) and its only remaining light, ambientSky, fell to ~66%.
-    /// Left alone the street would have gone to void exactly when the camera cuts to it.
-    ///
-    /// x1.35 is sized to cancel that 66% almost exactly, landing the street at roughly its sunset
-    /// brightness rather than brighter — the goal is a legible dark street, not a lit one. Note the two
-    /// other things quietly holding this up: roadMarkingColor (#C8C4B4) is near-white and now the
-    /// brightest thing on the tarmac, which is both free and correct since real lane markings are
-    /// retroreflective; and postContrast came down 8 -> 4 to stop the grade re-crushing what this lifts.
-    /// Retune this and ambientSky together — they are one knob wearing two hats.</summary>
-    public Color roadColor = new Color32(0x2F, 0x32, 0x39, 0xFF);
+    [Header("Streets (sidewalk ground slab, RooftopArena only)")]
     public Color sidewalkColor = new Color32(0x4E, 0x50, 0x56, 0xFF);
-    /// <summary>Near-white lane paint. UNCHANGED, and now load-bearing: real markings are
-    /// retroreflective, so paint staying bright while the tarmac around it goes dark is what a night
-    /// street actually looks like — and it hands the street-death camera a free high-contrast reference
-    /// for the ragdoll to read against. See roadColor.</summary>
-    public Color roadMarkingColor = new Color32(0xC8, 0xC4, 0xB4, 0xFF);
-    /// <summary>Marking stripe width as a fraction of the road's own width (edge lines AND the centre
-    /// dash share this width) — a fraction, not metres, so one shared marking texture serves every
-    /// segment width without the stripes going disproportionately thick or thin.</summary>
-    [Range(0.01f, 0.3f)] public float roadMarkingWidth = 0.12f;
-    /// <summary>How far the solid edge lines sit in from each road edge, as a fraction of the road's
-    /// own width — same unit convention as <see cref="roadMarkingWidth"/>.</summary>
-    [Range(0f, 0.3f)] public float roadEdgeLineInset = 0.08f;
-    /// <summary>Metres of road per dash+gap cycle of the centre line. The road texture paints the
-    /// dash over the first half of its V axis and leaves the second half blank; each strip's mesh
-    /// UVs then tile V by (segment length / this value), so the texture never needs per-segment
-    /// variants.</summary>
-    public float roadDashPeriod = 4.0f;
-    public int roadTexturePixels = 128;
     /// <summary>The ground slab sits this far below the road strips' top surface — not zero, so the
     /// two coplanar flat surfaces don't z-fight; not large, so the tiny lip stays invisible.</summary>
     public float roadSurfaceLift = 0.02f;
 
-    [Header("Backdrop street network (BSP-subdivided road geometry on the ground slab)")]
-    /// <summary>Width of a TOP-LEVEL backdrop road; every deeper split multiplies it by
-    /// <see cref="backdropWidthFalloff"/> down to <see cref="backdropAlleyWidth"/>. This is the knob that
-    /// makes the network read as a real city rather than a mesh of identical lines: the first splits are
-    /// avenues, the last are alleys, and hierarchy is what the eye reads as "city" for free.
-    ///
-    /// The three widths are chosen to STRADDLE <see cref="roadMarkingMinWidth"/> (4.0), which is what
-    /// makes the depth hierarchy visible and not merely dimensional: depths 0-2 (9.0 / 6.5 / 4.7m) clear
-    /// it and get painted lane markings, depth 3+ (3.4m, then 2.5m) fall under and paint as bare asphalt
-    /// alleys — the exact split the real strips already use, applied to the backdrop.</summary>
-    public float backdropAvenueWidth = 9f;
-    /// <summary>Floor for the width falloff. Matches the real interior StreetSegments' 2.5m — a backdrop
-    /// alley and a real alley are then literally the same width, so the eye can't find the seam.</summary>
-    public float backdropAlleyWidth = 2.5f;
-    /// <summary>Per-depth width multiplier. 0.72 spends ~3 splits crossing roadMarkingMinWidth (see
-    /// <see cref="backdropAvenueWidth"/>) and reaches the alley floor by depth 4 — so a 960m ground rect,
-    /// which bottoms out around depth 5-6, spends most of its splits at the marked widths near the top and
-    /// alleys at the leaves. Pushing this toward 1 flattens the hierarchy back into a uniform grid.</summary>
-    public float backdropWidthFalloff = 0.72f;
-    /// <summary>Recursion stops when a region can no longer be split into two blocks at least this wide —
-    /// the ONLY termination rule (each split provably removes >= this much from the split axis, so no
-    /// max-depth guard is needed). It is therefore also the smallest city block: 22m is a hair over the
-    /// map's own 13m module plus a road, and it lands leaf blocks in the 22-45m range — big enough to
-    /// hold a 6-18m skyline building (see skylineWidthMin/Max) plus its
-    /// <see cref="backdropBuildingInset"/> on both sides.</summary>
-    public float backdropMinBlockSize = 22f;
-    /// <summary>How far off-centre a split may land, as a fraction of the region's own span — this is the
-    /// variety knob, and the reason the network is not "squares on squares". At 0 every split halves its
-    /// region and the result is a perfect grid of identical blocks (which is exactly what the tiled grid
-    /// texture this replaced looked like, and exactly the complaint). 0.8 spreads the split uniformly over
-    /// the middle 80% of the span, so block size and aspect vary wildly at every depth and long arterials
-    /// fall out of the top-level splits. Clamped against backdropMinBlockSize, so it can never starve a
-    /// child region.</summary>
-    [Range(0f, 1f)] public float backdropSplitJitter = 0.8f;
-    /// <summary>Probability a split takes the region's LONGER axis. A bias, not a rule: always taking the
-    /// longer side gives tidy near-square blocks everywhere (regular, boring); never doing it lets regions
-    /// degenerate into slivers. 0.8 keeps blocks block-shaped while the 20% minority roll is what produces
-    /// the occasional long, narrow block — and the long streets beside it.</summary>
-    [Range(0.5f, 1f)] public float backdropLongSideBias = 0.8f;
-    /// <summary>XZ margin added to RooftopArena.Roofs' combined bounds to form the backdrop keep-out: no
-    /// backdrop road is drawn inside it, because the real strips and real buildings serve there. Small on
-    /// purpose — the backdrop must come right up to the play area's edge, since a wide gap would read as a
-    /// bald ring of sidewalk around the city. It does NOT have to clear the real strips: those are
-    /// subtracted separately and exactly, by their own corridors (SceneStyler.EmitClipped's blockers), so
-    /// this margin only has to keep the backdrop off the ground the playable masses themselves stand on.</summary>
+    [Header("Backdrop keep-out (ground slab sizing, RooftopArena only)")]
+    /// <summary>XZ margin added to RooftopArena.Roofs' combined bounds to form the backdrop keep-out.
+    /// Small on purpose — the backdrop must come right up to the play area's edge, since a wide gap
+    /// would read as a bald ring of sidewalk around the city.</summary>
     public float backdropKeepOutMargin = 2f;
-    /// <summary>How far inside its BSP block a backdrop building must stay, on every side. This is the
-    /// knob that replaces the old 13m grid snap and it exists for the same reason: a building that
-    /// overhangs its block sits in the middle of a street. Not zero — a box flush with the block edge is
-    /// flush with the road's edge line, which reads as a building growing out of the tarmac.</summary>
-    public float backdropBuildingInset = 2f;
 
     /// <summary>How far the ground slab's edge runs PAST <see cref="skylineOuterRadius"/> — the slab is
     /// sized from the skyline, not from the roofs (it is only CENTRED on them), because its edge has to
@@ -994,13 +776,13 @@ public sealed class VisualThemeConfig : ScriptableObject
     public float bloomThreshold = 1.0f;
     /// <summary>0.18 -> 0.12. A vignette darkens the frame's edges, which is a cheap focus trick against a
     /// bright scene and a tax against a dark one — at night it is subtracting from frames that have little
-    /// to give, and it lands hardest on the street-death camera (already the darkest shot in the game, see
-    /// roadColor). Kept nonzero because it still pulls the eye to centre-frame; just no longer free.</summary>
+    /// to give, and it lands hardest on the street-death camera (already the darkest shot in the game).
+    /// Kept nonzero because it still pulls the eye to centre-frame; just no longer free.</summary>
     public float vignetteIntensity = 0.12f;
     /// <summary>8 -> 4. Contrast pivots around mid-grey: it pushes values above the pivot up and values
     /// BELOW it down. A sunset frame lived mostly above the pivot, so +8 was almost pure punch. A night
     /// frame lives almost entirely below it, so the identical +8 becomes a crush — it would dig the whole
-    /// scene toward black and take the street with it, undoing roadColor's x1.35 lift in the grade after
+    /// scene toward black and take the street with it, undoing the sidewalk's x1.35 lift in the grade after
     /// the lighting had already paid for it. 4 keeps some snap without fighting the theme.</summary>
     public float postContrast = 4f;
     /// <summary>Unchanged at -5. Left alone deliberately: pulling saturation further for "night looks

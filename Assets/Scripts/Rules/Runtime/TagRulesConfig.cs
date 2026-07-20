@@ -45,11 +45,9 @@ public sealed class TagRulesConfig : ScriptableObject
     public float conversionGraceDuration = 2.5f;
 
     [Header("Lunge")]
-    // The lunge is now a COMMITTED DIVE owned by CharacterMotor.BeginDive: it redirects existing
-    // momentum forward, locks the player in briefly, and never nets speed. The dive-lock is the rate
-    // limiter, so there is no cooldown timer any more.
-    public float lungeCooldown = 0f;   // dormant: the dive-lock (see CharacterMotor.BeginDive) is the limiter now, not a timer. Kept at 0 so the existing cooldown gate/HUD plumbing is a harmless no-op.
-    // Committed dive tuning (consumed by TagAgent.TryLunge -> CharacterMotor.BeginDive):
+    // The lunge is a COMMITTED DIVE owned by CharacterMotor.BeginDive; the dive-lock is the Tagger's
+    // only rate limiter (no cooldown timer). Committed dive tuning (consumed by
+    // TagAgent.TryLunge -> CharacterMotor.BeginDive):
     public float diveSpeed = 9f;          // horizontal speed the dive redirects momentum to (sprint is 7); arriving faster is preserved instead
     public float diveDuration = 0.8f;     // locked-in dive window; also the tagger contact-tag window (kept == CharacterAnimatorBridge.DiveHoldSeconds so the roll animation and the lock end together)
     public float diveRecovery = 0.35f;    // ease speed back down to pre-dive speed over this — zero net momentum gain
@@ -105,13 +103,6 @@ public sealed class TagRulesConfig : ScriptableObject
     public Color taggerColor = new Color32(0xFF, 0x3D, 0x2E, 0xFF);
     public Color runnerColor = new Color32(0xFF, 0xE9, 0xC4, 0xFF);
     public Color conversionGraceColor = new(0.9f, 0.7f, 0.1f);
-    /// <summary>Emission multiplier for Taggers. Zeroed for the "chase me" rooftop mode per
-    /// feel-test feedback — bots are rigged (non-procedural) pest_control models, so with this at 0
-    /// TagAgent.UpdateColor leaves the model's own texture untouched (no red tint/glow at all).
-    /// Was 0.5 (silhouette-at-range red glow); left the field here rather than deleting it in case
-    /// the glow comes back for a future mode.</summary>
-    public float taggerEmissiveIntensity = 0f;
-    public float runnerEmissiveIntensity = 0f;
     public float graceEmissiveIntensity = 1.2f;
     public float gracePulseHz = 2.5f;
 
