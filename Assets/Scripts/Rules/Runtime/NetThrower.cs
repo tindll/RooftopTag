@@ -58,6 +58,11 @@ public sealed class NetThrower : MonoBehaviour
     /// <summary>The tagger this net belongs to — RoundController reads it to route whiff/tag back.</summary>
     internal TagAgent Owner => _agent;
 
+    /// <summary>0 (just thrown) to 1 (ready) throw-cooldown progress for the HUD's persistent cooldown
+    /// ring (RoundController.DrawActionCooldownRings). 1 whenever nothing is on cooldown.</summary>
+    public float CooldownProgress =>
+        _config.netThrowCooldown > 0f ? Mathf.Clamp01(1f - _cooldownRemaining / _config.netThrowCooldown) : 1f;
+
     internal void Initialize(TagAgent agent, TagRulesConfig config)
     {
         _agent = agent;

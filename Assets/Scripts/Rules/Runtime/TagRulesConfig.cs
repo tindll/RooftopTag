@@ -140,4 +140,15 @@ public sealed class TagRulesConfig : ScriptableObject
         "DALE", "UNIT 3", "AGENT PIGEON", "BARRY FROM PEST CONTROL", "THE INSPECTOR", "GARY, PROBABLY",
         "CONTRACTOR #7", "MIDGE", "SENIOR TECHNICIAN KEVIN", "THE SUPERVISOR", "UNIT 12", "DOUG (TEMP)",
     };
+
+    /// <summary>Names for the raccoon (Runner) side of the same roster — the player is hunting raccoons,
+    /// not filing paperwork with them, so "YOU CAUGHT DALE" is wrong for a victim who was still a Runner
+    /// when caught. Handed out in the same registration-order/wrapping scheme as <see cref="botNames"/>
+    /// (see RoundController.NextRaccoonName); every agent gets one of EACH pool at registration and
+    /// TagAgent.DisplayName picks between them by current role.</summary>
+    public string[] raccoonNames =
+    {
+        "BANDIT", "TRASH PANDA", "SCRAPPER", "MASK", "NIBBLES", "ROCKET",
+        "RINGTAIL", "DUMPSTER KING", "WHISKERS", "SLINKY", "CHONK", "MOONPIE",
+    };
 }

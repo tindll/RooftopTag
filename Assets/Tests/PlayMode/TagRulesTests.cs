@@ -37,10 +37,11 @@ public sealed class TagRulesTests
     }
 
     [UnityTest]
-    public IEnumerator Tag_OnContact_ConvertsRunnerToTaggerWithGrace()
+    public IEnumerator Lunge_IntoRunner_DoesNotTag_NetIsTheOnlyCatch()
     {
-        // Contact-tagging is only live for a brief window right after a lunge (the "dive" tackle),
-        // and only for the first runner touched — the tagger must lunge to open that window.
+        // RULE: the lunge is a pure movement dash for every tagger (bots included) — it never opens a
+        // tag window, not even when it drives the tagger straight into a runner. The thrown net
+        // (NetThrower -> ExecuteTag) is the only way to convert a runner now.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
 
@@ -58,21 +59,21 @@ public sealed class TagRulesTests
         Debug.Log($"METRIC contact_diag lunge: isDiving={taggerMotor.IsDiving} speed={taggerMotor.CurrentSpeed:F2} pos={taggerGo.transform.position} fwd={taggerGo.transform.forward} timeScale={Time.timeScale}");
 
         // The dive (9 m/s) needs ~0.15s to cover the 1.2m to the runner — give it a comfortable
-        // margin while staying well inside the 0.8s contact-tag window.
+        // margin while confirming the (now nonexistent) old 0.8s contact-tag window would have fired.
         yield return new WaitForSeconds(0.4f);
         Debug.Log($"METRIC contact_diag after: isDiving={taggerMotor.IsDiving} speed={taggerMotor.CurrentSpeed:F2} taggerPos={taggerGo.transform.position} runnerPos={runnerAgent.transform.position} runnerRole={runnerAgent.Role}");
 
-        Assert.AreEqual(Role.Tagger, runnerAgent.Role, "Runner should be converted to Tagger on contact during the tagger's lunge window.");
-        Assert.IsTrue(runnerAgent.IsInGrace, "Newly-converted tagger should be in conversion grace.");
+        Assert.AreEqual(Role.Runner, runnerAgent.Role, "Diving into a runner must never convert them — only a thrown net can.");
+        Assert.IsFalse(runnerAgent.IsInGrace, "No conversion grace should start — the lunge collision landed no tag.");
     }
 
     [UnityTest]
     public IEnumerator Runner_CanLunge_ButOpensNoTagWindowAndTagsNobody()
     {
         // The lunge is available to Runners too, as a pure movement/escape dash — a committed dive
-        // (CharacterMotor.BeginDive) that redirects momentum forward. A Runner's dive must never be
-        // able to tag: it redirects speed while leaving the contact-tag window closed, so colliding
-        // with another Runner mid-dive tags nobody. It also locks the character in — a second lunge
+        // (CharacterMotor.BeginDive) that redirects momentum forward. The lunge never opens a tag
+        // window for ANY role now (the thrown net is the only catch mechanic), so colliding with
+        // another Runner mid-dive tags nobody. It also locks the character in — a second lunge
         // while already diving is a no-op (the dive-lock is the rate limiter).
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
@@ -110,33 +111,34 @@ public sealed class TagRulesTests
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
 
-        // B sits in A's forward (+Z) dive path — spawn-overlap contact can't be relied on once the
-        // spawn-swallow wait lets physics depenetrate the capsules (see Tag_OnContact test).
+        // B sits in A's forward (+Z) path, though contact no longer matters for tagging — kept for
+        // scene-shape consistency with the neighbouring tests.
         (_, _, TagAgent a, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f));
         (GameObject bGo, _, TagAgent b, _) = CreateTagAgent(new Vector3(0f, 1.1f, 1.2f));
         (GameObject cGo, _, TagAgent c, _) = CreateTagAgent(new Vector3(0f, 1.1f, 10f));
 
         a.SetRole(Role.Tagger, startGrace: false);
-        b.SetRole(Role.Runner, startGrace: false);
+        // Precondition established directly (the lunge can no longer land a tag at all — the net is
+        // the only catch mechanic) rather than by lunging A into B: put B straight into
+        // Tagger-with-grace, exactly the state a fresh conversion would leave it in.
+        b.SetRole(Role.Tagger, startGrace: true);
         c.SetRole(Role.Runner, startGrace: false);
         // Wait out the spawn-click swallow window (see SpawnLungeSwallowSeconds) before lunging.
         yield return new WaitForSeconds(0.3f);
-        a.TryLunge();
 
-        yield return new WaitForSeconds(0.4f); // dive time to cover the 1.2m + contact resolution
-        Assert.AreEqual(Role.Tagger, b.Role, "Precondition: B should have just been tagged.");
-        Assert.IsTrue(b.IsInGrace, "Precondition: B should be in grace.");
+        Assert.AreEqual(Role.Tagger, b.Role, "Precondition: B should be a Tagger.");
+        Assert.IsTrue(b.IsInGrace, "Precondition: B should be in conversion grace.");
 
         // Move C into contact with B while B is still in its conversion grace, then have B attempt
-        // to lunge (the only way a contact-tag window can open). TryLunge itself is gated on
-        // IsInGrace, so this should be a complete no-op — no window opens, and no cooldown is even
-        // spent — not just "didn't happen to tag."
+        // to lunge. TryLunge itself is gated on IsInGrace, so this should be a complete no-op — no
+        // cooldown even spent — not just "didn't happen to tag" (the lunge can't tag anyone anyway,
+        // in or out of grace, but this test's real subject is the grace gate on TryLunge itself).
         cGo.GetComponent<Rigidbody>().position = bGo.transform.position + new Vector3(0.3f, 0f, 0f);
         b.TryLunge();
         yield return new WaitForFixedUpdate();
         yield return new WaitForFixedUpdate();
 
-        Assert.AreEqual(Role.Runner, c.Role, "A tagger still in conversion grace should not be able to lunge-tag anyone.");
+        Assert.AreEqual(Role.Runner, c.Role, "A tagger still in conversion grace should not be able to lunge at all.");
         Assert.AreEqual(0f, b.LungeCooldownRemaining, "Lunge attempted during grace should be a full no-op, not just fail to tag.");
     }
 
@@ -629,15 +631,17 @@ public sealed class TagRulesTests
     }
 
     [UnityTest]
-    public IEnumerator ParkourBotInput_RunnerCampingPipeTop_GetsDivedOn()
+    public IEnumerator ParkourBotInput_RunnerCampingPipeTop_GetsCaughtByNet()
     {
         // Cliff-avoidance and the pre-lunge landing check must not let a runner hang untouchable near
-        // a lip: the edge-stalk behavior and the hanging-target lunge exception exist so a tagger
-        // can creep to the edge and dive a hanging target.
+        // a lip: the edge-stalk behavior exists so a tagger can creep to the edge and get a shot at a
+        // hanging target.
         //
         // The runner hangs on a ladder (the same interactable a VoidPipe is) just below the lip; the
-        // tagger must creep to the edge and dive. The tag lands via the dive's contact window — the
-        // tagger sails into the void afterwards, which is an accepted trade (fall recovery/respawn).
+        // tagger creeps to the edge and throws a net (NetThrower.TryThrow, called every tick by the
+        // bot AI) — the ONLY thing that can catch the runner now. The lunge the bot also fires at a
+        // hanging target within lungeRange is pure movement (it never tags), so this test no longer
+        // depends on it landing anything; it's exercised here only as approach behavior.
         _sceneRoot = new GameObject("TestScene");
         CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f)); // roof: top y=0, lip at x=10
 
@@ -697,7 +701,7 @@ public sealed class TagRulesTests
                   $"tagger_pos=({botGo.transform.position.x:0.0},{botGo.transform.position.y:0.0}) runner_y={runnerGo.transform.position.y:0.0}");
 
         Assert.IsTrue(everOnLadder, "Runner never attached to the pipe — the camp never happened, so this run proves nothing.");
-        Assert.IsTrue(tagged, "Runner camped the pipe top for 15s untouched — taggers must edge-stalk to the lip and dive at a hanging target.");
+        Assert.IsTrue(tagged, "Runner camped the pipe top for 15s untouched — taggers must edge-stalk to the lip and net a hanging target.");
     }
 
     [UnityTest]

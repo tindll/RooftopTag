@@ -275,7 +275,9 @@ public sealed class RoundController : MonoBehaviour
         _spawnStates[agent] = (agent.transform.position, agent.transform.rotation);
         _killCam ??= gameObject.AddComponent<KillCamRecorder>();
         _killCam.Register(agent);
-        agent.DisplayName = isLocalPlayer ? "YOU" : NextBotName();
+        agent.SetDisplayNames(
+            isLocalPlayer ? "YOU" : NextRaccoonName(),
+            isLocalPlayer ? "YOU" : NextBotName());
         if (isLocalPlayer)
         {
             _localPlayerAgent = agent;
@@ -301,12 +303,23 @@ public sealed class RoundController : MonoBehaviour
     // rounds rather than resetting per round (StartRound doesn't re-register) — which agent holds
     // which name only has to be stable, not zero-based.
     private int _botsNamed;
+    private int _raccoonsNamed; // separate counter/pool for the Runner-side names (see NextRaccoonName)
 
     private string NextBotName()
     {
         string[] names = _config.botNames;
         if (names == null || names.Length == 0) return "PEST CONTROL"; // config stripped of names — still never blank
         return names[_botsNamed++ % names.Length];
+    }
+
+    // Runner-side counterpart to NextBotName, same registration-order/wrapping scheme but its own pool
+    // and counter — every agent gets one of EACH at registration (TagAgent.SetDisplayNames), so the two
+    // counters advance independently.
+    private string NextRaccoonName()
+    {
+        string[] names = _config.raccoonNames;
+        if (names == null || names.Length == 0) return "RACCOON"; // config stripped of names — still never blank
+        return names[_raccoonsNamed++ % names.Length];
     }
 
     /// <summary>Local-player-involved tag juice: dip to slow-mo. No-op if the pause menu currently owns
@@ -1097,8 +1110,11 @@ public sealed class RoundController : MonoBehaviour
                 && _localPlayerAgent.Role == Role.Tagger
                 && _lastTagTagger == _localPlayerAgent && _lastTagVictim != null)
             {
+                // RunnerName, not DisplayName: ExecuteTag already converted the victim to Tagger before
+                // this runs (ExecuteTag's SetRole happens before RecordTag), so DisplayName would now
+                // read the post-conversion pest-control name for someone who was a raccoon when caught.
                 _killCamPlayback.Play(_lastTagTagger, _lastTagVictim,
-                    $"YOU CAUGHT {_lastTagVictim.DisplayName}", () => EndRound("Taggers win! All runners tagged."));
+                    $"YOU CAUGHT {_lastTagVictim.RunnerName}", () => EndRound("Taggers win! All runners tagged."));
                 return;
             }
             EndRound("Taggers win! All runners tagged.");
@@ -1295,6 +1311,7 @@ public sealed class RoundController : MonoBehaviour
         DrawMinimap();
         DrawLungeSpinner();
         DrawThrowPrompt();
+        DrawActionCooldownRings();
     }
 
     // Top-center HUD capsule: [SCORE PIPS][TIMER][BINS] merged into one GameUIStyle.Panel strip
@@ -1339,10 +1356,11 @@ public sealed class RoundController : MonoBehaviour
         if (urgent) color = _config.taggerColor;
 
         // Pips only mid-match (free-roam/headless self-play have no match, see MatchActive); bins only
-        // on a cans round and only for the local Runner (ShouldShowRunnerBinRow). Both sides reserve
-        // the WIDER of the two so the timer stays centered whichever side (or neither) actually draws.
+        // on a cans round (ShouldShowBinRow) — shown to BOTH roles, since the bin count is the Taggers'
+        // loss condition too, not just the Runners' win condition. Both sides reserve the WIDER of the
+        // two so the timer stays centered whichever side (or neither) actually draws.
         bool showPips = MatchActive;
-        bool showBins = ShouldShowRunnerBinRow();
+        bool showBins = ShouldShowBinRow();
         float sideWidth = Mathf.Max(showPips ? PipsRowWidth : 0f, showBins ? RunnerBinRowWidth() : 0f);
 
         float capsuleWidth = TimerColumnWidth + HudCapsulePad * 2f + (sideWidth > 0f ? (sideWidth + HudCapsulePad) * 2f : 0f);
@@ -1373,11 +1391,9 @@ public sealed class RoundController : MonoBehaviour
         if (showBins) DrawRunnerBinRow(new Rect(timerRect.xMax + HudCapsulePad, capsule.y, sideWidth, capsule.height));
     }
 
-    private bool ShouldShowRunnerBinRow()
-    {
-        if (_activeCans.Count == 0 && _trashPoints == 0) return false;
-        return _localPlayerAgent == null || _localPlayerAgent.Role == Role.Runner;
-    }
+    // Both roles see it: Runners track their own win condition, Taggers track how close the raccoons are
+    // to eating their way to a win (the same reason DrawTrashObjective's tagger-side banner exists).
+    private bool ShouldShowBinRow() => _activeCans.Count != 0 || _trashPoints != 0;
 
     private float RunnerBinRowWidth()
     {
@@ -1446,9 +1462,11 @@ public sealed class RoundController : MonoBehaviour
         GUI.matrix = savedMatrix;
     }
 
-    // Tagger-side-only now — the Runner-side bin row moved into DrawTimer's shared capsule above.
-    // Warns while any Runner is mid-eat, sliding/fading in via the same DrawBanner envelope as
-    // "YOU'RE IT" and the countdown, so all three read as one visual language.
+    // Tagger-side-only banner — the persistent bin-count row lives in DrawTimer's shared capsule above
+    // (shown to both roles, see ShouldShowBinRow); this is just the transient "someone's actively eating
+    // right now" warning, Tagger-only since a Runner doesn't need telling that a fellow raccoon is eating.
+    // Slides/fades in via the same DrawBanner envelope as "YOU'RE IT" and the countdown, so all three
+    // read as one visual language.
     private void DrawTrashObjective()
     {
         if (_activeCans.Count == 0 && _trashPoints == 0) return;
@@ -2438,6 +2456,76 @@ public sealed class RoundController : MonoBehaviour
 
         GUI.color = new Color(1f, 1f, 1f, alpha);
         GUI.DrawTexture(rect, _throwPromptIconTex);
+        GUI.color = Color.white;
+    }
+
+    // ---------------------------------------------------------------- Persistent action cooldown rings
+    //
+    // Ambient always-on readouts for the lunge and net-throw cooldowns — unlike DrawLungeSpinner above
+    // (which only flashes for SpinnerDeniedWindow after a denied press), these show for the WHOLE time an
+    // action is actually recharging, self-hiding the instant it's ready. Deliberately NOT screen-center:
+    // that spot is already claimed by the lunge spinner and the dodge ring, and DesignHeight * 0.5f + 70
+    // by the right-click catch prompt (DrawThrowPrompt) — piling a third readout on top of those would be
+    // a collision, not a cluster. Low-center, side by side, is clear of all three and still reads as "your
+    // two action slots" at a glance. Reuses the lunge spinner's cached ring frames (_lungeSpinnerFrames)
+    // and the dodge/throw-prompt mouse glyphs (_dodgeMouseIconTex left-lit for LMB/lunge,
+    // _throwPromptIconTex right-lit for RMB/net) rather than building yet another texture — same ring
+    // shape and glyph family, just quieter tinting since this is a passive readout, not an alert.
+
+    private const float ActionRingOnScreenSize = 28f; // smaller than the lunge spinner's 34 — corner-of-eye, not urgent
+    private const float ActionRingGap = 40f;           // center-to-center spacing between the lunge/net pair
+    private const float ActionRingBottomMargin = 64f;  // design units up from the bottom edge
+    private const float ActionRingIconScale = 0.55f;   // glyph sized relative to ActionRingOnScreenSize
+
+    private void DrawActionCooldownRings()
+    {
+        if (_lungeSpinnerFrames == null || _localPlayerAgent == null) return;
+
+        float centerX = GameUIStyle.DesignWidth * 0.5f;
+        float centerY = GameUIStyle.DesignHeight - ActionRingBottomMargin;
+
+        // Lunge: both roles have one (Tagger tag-dive / Runner escape dash), so no role gate — mirrors
+        // DrawLungeSpinner's own "no role gate" note.
+        DrawActionRing(centerX - ActionRingGap * 0.5f, centerY, _localPlayerAgent.LungeCooldownProgress, _dodgeMouseIconTex);
+
+        // Net throw: only a Tagger's NetThrower ever actually fires (see NetThrower.CanThrow's Role
+        // check), so a Runner has nothing to read here — hide it entirely rather than show a
+        // permanently-ready ring for an action they can't use.
+        NetThrower? net = _localPlayerAgent.Net;
+        if (_localPlayerAgent.Role == Role.Tagger && net != null)
+            DrawActionRing(centerX + ActionRingGap * 0.5f, centerY, net.CooldownProgress, _throwPromptIconTex);
+    }
+
+    /// <summary>One ring of the pair: a quiet accent-tinted fill arc (reusing BuildSpinnerArcTexture's
+    /// frames from _lungeSpinnerFrames) around a small mouse-glyph icon, self-hiding once
+    /// <paramref name="progress"/> reaches 1 (ready) so there's nothing on screen when both actions are
+    /// off cooldown.</summary>
+    private void DrawActionRing(float centerX, float centerY, float progress, Texture2D? icon)
+    {
+        if (progress >= 1f) return;
+
+        int frameIndex = Mathf.Clamp(Mathf.RoundToInt(progress * (SpinnerFrameCount - 1)), 0, SpinnerFrameCount - 1);
+        Rect rect = GameUIStyle.Scaled(new Rect(
+            centerX - ActionRingOnScreenSize * 0.5f, centerY - ActionRingOnScreenSize * 0.5f,
+            ActionRingOnScreenSize, ActionRingOnScreenSize));
+
+        // Faint full-ring backdrop, same trick as DrawLungeSpinner, so the fill arc reads against
+        // something even near 0 progress.
+        GUI.color = new Color(GameUIStyle.Text.r, GameUIStyle.Text.g, GameUIStyle.Text.b, 0.15f);
+        GUI.DrawTexture(rect, _lungeSpinnerFrames[SpinnerFrameCount - 1]);
+
+        // Quieter than the denied-press spinner's 0.9 alpha — this is a passive readout, not a flag to
+        // pay attention to.
+        GUI.color = new Color(GameUIStyle.Accent.r, GameUIStyle.Accent.g, GameUIStyle.Accent.b, 0.7f);
+        GUI.DrawTexture(rect, _lungeSpinnerFrames[frameIndex]);
+        GUI.color = Color.white;
+
+        if (icon == null) return;
+        float iconW = ActionRingOnScreenSize * ActionRingIconScale;
+        float iconH = iconW * (DodgeMouseIconTexHeight / (float)DodgeMouseIconTexWidth); // preserve the glyph's aspect
+        Rect iconRect = GameUIStyle.Scaled(new Rect(centerX - iconW * 0.5f, centerY - iconH * 0.5f, iconW, iconH));
+        GUI.color = new Color(1f, 1f, 1f, 0.85f);
+        GUI.DrawTexture(iconRect, icon);
         GUI.color = Color.white;
     }
 }

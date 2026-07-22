@@ -9,13 +9,14 @@ using UnityEngine.InputSystem;
 namespace Game.Rules;
 
 /// <summary>
-/// Per-agent tag state: role, conversion grace, lunge, and contact-based tag detection. Works
-/// identically for the human player and bots — only <see cref="Configure"/>'s isLocalPlayer flag
-/// changes whether it reads its own lunge input (bots call <see cref="TryLunge"/> from AI logic
-/// instead), matching the "bots use the same abilities, no cheating" architecture constraint.
-/// Also owns a few small presentation touches (lunge arms, a tag "boop", a local-player-only
-/// debug reach ring) — kept here rather than split into a separate presentation class since the
-/// role-color telegraph already lives on this component and these are similarly small.
+/// Per-agent tag state: role, conversion grace, and the lunge. Works identically for the human
+/// player and bots — only <see cref="Configure"/>'s isLocalPlayer flag changes whether it reads its
+/// own lunge input (bots call <see cref="TryLunge"/> from AI logic instead), matching the "bots use
+/// the same abilities, no cheating" architecture constraint. The lunge is a movement dash for both
+/// roles and tags nobody: <see cref="NetThrower"/>'s thrown net is the only catch, resolving through
+/// <see cref="ExecuteTag"/>. Also owns a few small presentation touches (lunge arms, a tag "boop") —
+/// kept here rather than split into a separate presentation class since the role-color telegraph
+/// already lives on this component and these are similarly small.
 /// </summary>
 public sealed class TagAgent : MonoBehaviour
 {
@@ -78,20 +79,19 @@ public sealed class TagAgent : MonoBehaviour
     private InputAction? _lungeAction;
     private InputAction? _tagAction;
     private float _lungeCooldownRemaining;
+    // Denominator for LungeCooldownProgress — set alongside _lungeCooldownRemaining wherever it's armed
+    // (FireLunge's cooldown param, WhiffLunge's taggerWhiffLockout), so the progress ring's fill fraction
+    // is always relative to whichever cooldown actually fired.
+    private float _lungeCooldownDuration;
     private float _graceRemaining;
 
     // Swallow a lunge press only for this long after spawn — kills the leaked main-menu PLAY /
     // R-restart leftButton click on the round's first frame WITHOUT blocking the lunge for the whole
-    // round-start grace (which made the movement dash unavailable for ~3s, felt bad). An actual TAG
-    // still can't land during grace: OnCollisionEnter re-checks IsPastStartGrace independently.
+    // round-start grace (which made the movement dash unavailable for ~3s, felt bad). The lunge can
+    // never land a tag at all now (see FireLunge), so there is no separate "actual TAG" gate to worry
+    // about re-checking here.
     private const float SpawnLungeSwallowSeconds = 0.25f;
     private float _spawnTime = float.NegativeInfinity;
-
-    // Contact tagging is enabled only during the committed-dive window after a lunge (armed to
-    // _config.diveDuration), and only for the first runner touched — a dive that connects tags, but
-    // merely brushing someone otherwise does not.
-    private float _lungeTagWindowRemaining;
-    private bool _lungeTagUsed;
 
     // Time.time the current committed dive fired at — the clock for the local player's proactive
     // dodge i-frames (see PerformTag). Meaningful only for the local player, but set on every lunge
@@ -117,13 +117,43 @@ public sealed class TagAgent : MonoBehaviour
 
     public Role Role { get; private set; } = Role.Runner;
 
-    /// <summary>Name shown when this agent catches the player ("CAUGHT BY DALE" on the kill cam).
-    /// Assigned in RoundController.RegisterAgent from TagRulesConfig.botNames; never empty in a
-    /// registered round, but defaults to a usable string for agents built outside one (tests).</summary>
-    public string DisplayName { get; set; } = "SOMEONE";
+    // Two stable name pools, one per role — assigned once at registration (see SetDisplayNames) and never
+    // rewritten again, so a mid-round Runner->Tagger conversion changes which one DisplayName reads but
+    // never invalidates either. Defaults keep DisplayName usable for agents built outside a round (tests).
+    private string _runnerName = "SOMEONE";
+    private string _pestControlName = "SOMEONE";
+
+    /// <summary>Name shown for this agent's CURRENT role: raccoon flavour ("BANDIT") while a Runner, the
+    /// deadpan pest-control roster ("DALE") once converted to Tagger. Read live rather than baked at
+    /// spawn — a netted runner becomes a tagger mid-round and must caption as one from that frame on
+    /// (kill-cam "CAUGHT BY {name}" / "YOU CAUGHT {name}", the end-screen _caughtByName). Callers that
+    /// need the name an agent had at a specific past moment (e.g. the victim of the round-winning catch,
+    /// who converts to Tagger before the win message reads their name) should use <see cref="RunnerName"/>
+    /// instead — see RoundController.RecordTag's remarks.</summary>
+    public string DisplayName => Role == Role.Tagger ? _pestControlName : _runnerName;
+
+    /// <summary>The stable raccoon-pool name regardless of current role — for callers captioning an event
+    /// that happened while this agent WAS a Runner (a catch converts the victim to Tagger before the kill
+    /// cam reads their name), so a post-conversion role flip can't retroactively rename the moment.</summary>
+    public string RunnerName => _runnerName;
+
+    /// <summary>Assigns both stable per-round names — one call at registration, never touched again (see
+    /// the DisplayName remarks on why role-swap must never rename an already-registered agent).</summary>
+    public void SetDisplayNames(string runnerName, string pestControlName)
+    {
+        _runnerName = runnerName;
+        _pestControlName = pestControlName;
+    }
 
     public bool IsInGrace => _graceRemaining > 0f;
     public float LungeCooldownRemaining => Mathf.Max(0f, _lungeCooldownRemaining);
+    /// <summary>0 (just fired) to 1 (ready) lunge-cooldown progress for the HUD's persistent cooldown
+    /// ring (RoundController.DrawActionCooldownRings) — denominator tracks whichever cooldown actually
+    /// got armed (Runner's runnerRollCooldown, or a Tagger's post-whiff taggerWhiffLockout), so it reads
+    /// correctly for both without the caller needing to know which one fired. 1 (self-hides) whenever
+    /// nothing is on cooldown, e.g. a Tagger who hasn't whiffed.</summary>
+    public float LungeCooldownProgress =>
+        _lungeCooldownDuration > 0f ? Mathf.Clamp01(1f - _lungeCooldownRemaining / _lungeCooldownDuration) : 1f;
     public CharacterMotor Motor => _motor;
 
     /// <summary>The net-throw component (the ranged catch, replacing the old hand-tag) — created on this
@@ -312,9 +342,6 @@ public sealed class TagAgent : MonoBehaviour
         if (_lungeCooldownRemaining > 0f)
             _lungeCooldownRemaining -= Time.deltaTime;
 
-        if (_lungeTagWindowRemaining > 0f)
-            _lungeTagWindowRemaining -= Time.deltaTime;
-
         TickNetTrap();
 
         // Procedural capsule arm gestures — skipped for animated models (the Animator poses the arms).
@@ -407,25 +434,25 @@ public sealed class TagAgent : MonoBehaviour
     }
 
     /// <summary>
-    /// Any role may lunge — it is a movement/escape dash, not a tag attempt in itself. Only a
-    /// Tagger's lunge can actually tag: the contact-tag window below is armed only when
-    /// <c>Role == Role.Tagger</c>, so a Runner's dash never opens it (and <see cref="OnCollisionEnter"/>
-    /// and <see cref="TryTagInRange"/> independently re-check <c>Role == Role.Tagger</c> too, as
-    /// defense in depth).
+    /// Any role may lunge — it is PURELY a movement/escape dash, for both Runner and Tagger, and it
+    /// NEVER lands a tag by itself, not even for a Tagger. The thrown net (<see cref="NetThrower"/>,
+    /// via <see cref="ExecuteTag"/>) is the only way to convert a runner. A committed dive that
+    /// carries a Tagger into a Runner still just... carries them into a Runner — no conversion. Do
+    /// NOT "restore" a contact-tag window here as a bug fix; it was deliberately removed.
     /// </summary>
     public void TryLunge()
     {
         // Frozen time = kill cam (F9/tag replay) or pause/end-screen. Input callbacks aren't
-        // timeScale-gated, so without this a lunge fired during a freeze would arm the motor/contact-tag
-        // window against stale or paused state.
+        // timeScale-gated, so without this a lunge fired during a freeze would kick off the dive/motor
+        // state against stale or paused state.
         if (Time.timeScale == 0f) return;
 
         // Swallow only the spawn-frame click, not the whole round-start grace: the local player's lunge
         // is bound to <Mouse>/leftButton, so the main-menu PLAY click (or an R-restart click) leaks a
         // leftButton press that fires TryLunge on the round's first frame. A brief post-spawn swallow
         // eats that leaked click while leaving the movement dash available immediately after, instead
-        // of blocking lunging for the whole start grace. A real TAG still can't land in grace —
-        // OnCollisionEnter re-checks it.
+        // of blocking lunging for the whole start grace. The lunge can't land a tag at all now (only the
+        // net can), so there's nothing further to re-gate here.
         if (Time.time - _spawnTime < SpawnLungeSwallowSeconds) return;
 
         // Lunge is a separate InputAction — it bypasses the motor's input filter entirely, so the
@@ -435,12 +462,12 @@ public sealed class TagAgent : MonoBehaviour
         // The dive locks the character in for its whole active window (CharacterMotor.IsDiving), and
         // that lock — not a cooldown timer — is the rate limiter now. Block re-entry while it runs so
         // neither player nor bot can stack dives (BeginDive also no-ops, this just short-circuits the
-        // arm gesture / audio / tag-window re-arm too).
+        // arm gesture / audio re-fire too).
         if (_motor.IsDiving) return;
 
         // Any role may lunge — it's a movement/escape dash (a committed dive for a Runner as much as a
-        // Tagger). Only a Tagger's lunge arms the contact-tag window below, so a Runner's dash can
-        // never tag anyone. Both roles still pass through the cooldown/grace gates here.
+        // Tagger). Neither role's lunge can tag anyone — the net is the only catch mechanic. Both
+        // roles still pass through the cooldown/grace gates here.
         if (IsInGrace || _lungeCooldownRemaining > 0f)
         {
             // Cooldown-only denial — record it so the HUD spinner can flash. A grace-window denial
@@ -469,11 +496,12 @@ public sealed class TagAgent : MonoBehaviour
         // is the rate limiter for Taggers; Runners layer the runnerRollCooldown on top.
         _motor.BeginDive(diveSpeed, _config.diveDuration, _config.diveRecovery, _config.diveSteeringScale);
         _lungeCooldownRemaining = cooldown;
+        _lungeCooldownDuration = cooldown; // 0 for a Tagger's normal fire — clears any stale whiff duration
         _diveStartTime = Time.time; // start of the proactive dodge i-frame window
 
         // Finishing-move variant, decided at fire time: a Tagger's committed dive AT a catchable victim
         // (nearest opponent within catchRange AND ahead) plays the DivingCatch clip instead of the generic
-        // roll. Animation ONLY — BeginDive and the contact-tag window below are identical either way.
+        // roll. ANIMATION ONLY — it never tags anyone; BeginDive fires identically either way.
         _lungeIsCatch = Role == Role.Tagger && IsLungeCatch();
         Lunged?.Invoke(); // drives the dive-roll / diving-catch animation on the model (no-op for the capsule fallback)
         GameAudio.Play(GameAudio.WhooshLunge, transform.position);
@@ -487,11 +515,10 @@ public sealed class TagAgent : MonoBehaviour
             PlayArmAnimation(ArmRestDeg, ArmLungeDeg, outDuration: 0.08f, backDuration: 0.45f);
         _diveElapsed = 0f; // start the body-pitch dive (see LateUpdate)
 
-        if (Role == Role.Tagger)
-        {
-            _lungeTagWindowRemaining = _config.diveDuration; // arm contact-tag for exactly the dive's locked-in window
-            _lungeTagUsed = false;
-        }
+        // RULE: the lunge is a movement dash ONLY, for both roles — it never opens a tag window, no
+        // matter who or what it connects with. The thrown net (NetThrower -> ExecuteTag) is the ONLY
+        // catch mechanic in the game. This used to arm a contact-tag window here for Taggers; it was
+        // removed on purpose. Do not re-add it.
     }
 
     /// <summary>Reactive-dodge escape (E): forces the Runner's roll burst as part of resolving a
@@ -504,14 +531,14 @@ public sealed class TagAgent : MonoBehaviour
         FireLunge(_config.runnerDiveSpeed, _config.runnerRollCooldown);
     }
 
-    /// <summary>The whiff (E): a Tagger whose tag was dodged loses its contact-tag window and is locked
-    /// out of lunging again for taggerWhiffLockout via the same _lungeCooldownRemaining gate the runner
-    /// cooldown uses. Called on the tagger for both proactive (i-frame) and reactive (window) dodges.</summary>
+    /// <summary>The whiff (E): a Tagger whose net throw was dodged is locked out of lunging again for
+    /// taggerWhiffLockout via the same _lungeCooldownRemaining gate the runner cooldown uses. Called on
+    /// the tagger for both proactive (i-frame) and reactive (window) dodges. (Named for the old
+    /// lunge-tag whiff; now called from the net's whiff paths instead — the lockout is the same.)</summary>
     public void WhiffLunge()
     {
-        _lungeTagWindowRemaining = 0f;
-        _lungeTagUsed = true;
         _lungeCooldownRemaining = _config.taggerWhiffLockout;
+        _lungeCooldownDuration = _config.taggerWhiffLockout;
     }
 
     /// <summary>Routes a fired lunge to the CURRENT bridge's dive animation — the tagger's finishing
@@ -597,19 +624,6 @@ public sealed class TagAgent : MonoBehaviour
         return Vector3.Dot(transform.forward, toTarget.normalized) > 0.5f;
     }
 
-    // Contact tag — active ONLY during the lunge window, and only the first runner touched per lunge.
-    private void OnCollisionEnter(Collision collision)
-    {
-        if (_lungeTagWindowRemaining <= 0f || _lungeTagUsed) return;
-        if (Role != Role.Tagger || IsInGrace) return;
-        if (!collision.gameObject.TryGetComponent(out TagAgent other)) return;
-        if (other.Role != Role.Runner || other.IsInGrace) return;
-        if (_roundController != null && !_roundController.IsPastStartGrace) return;
-
-        _lungeTagUsed = true;
-        PerformTag(other);
-    }
-
     private void LateUpdate()
     {
         // Animated models pose themselves — the procedural body-pitch and landing squash below would
@@ -669,48 +683,12 @@ public sealed class TagAgent : MonoBehaviour
         }
     }
 
-    /// <summary>Explicit ranged tag attempt (right click / left trigger), tagging the nearest opposing agent if it's within <see cref="CurrentReachRadius"/> — no physical collision required.</summary>
     /// <summary>Relays this agent's eating state to its animator bridge each frame (RoundController
     /// drives it from the trash-can channel). Null-safe: a headless agent may have no bridge.</summary>
     public void SetEating(bool eating) => _bridge?.SetEating(eating);
 
-    public void TryTagInRange()
-    {
-        // Frozen time = kill cam (F9/tag replay) or pause/end-screen. Input callbacks aren't
-        // timeScale-gated, so without this a right-click during a freeze would land a REAL tag against
-        // 2.5s-stale replayed (or paused) positions.
-        if (Time.timeScale == 0f) return;
-
-        if (Role != Role.Tagger || IsInGrace) return;
-
-        // The reach animation plays on every attempt, not just a successful one — it's feedback
-        // that the tag input registered, same as swinging at empty air still swings. Skipped while
-        // hanging (see TryLunge) so it doesn't sweep the held hang pose back to rest mid-swing.
-        if (_motor.CurrentState is not (MotorState.OnSwing or MotorState.OnLadder))
-            PlayArmAnimation(ArmRestDeg, ArmTagReachDeg, outDuration: 0.08f, backDuration: 0.22f);
-
-        if (_roundController == null || !_roundController.IsPastStartGrace) return;
-
-        TagAgent? nearest = _roundController.FindNearestOpposingAgent(this);
-        if (nearest == null || nearest.IsInGrace) return;
-
-        // "Actually catching you" checks, applied to the player's right-click identically — same
-        // chokepoint, same fairness. Three gates:
-        // 1) HORIZONTAL reach, with a separate vertical band, so a tag can't land on someone directly
-        //    above/below (a different roof) while looking nowhere near them.
-        // 2) The reach values (see TagRulesConfig) leave only a small margin of daylight between two
-        //    0.4-radius bodies at the moment of the tag.
-        // 3) LINE OF SIGHT — no tagging through a thin wall or roof lip; chest-to-chest linecast
-        //    must reach the target (or hit nothing but the participants).
-        Vector3 delta = nearest.transform.position - transform.position;
-        if (Vector3.ProjectOnPlane(delta, Vector3.up).magnitude > CurrentReachRadius()) return;
-        if (!HasTagLineOfSight(nearest)) return; // vertical band + chest-to-chest LOS (see helper)
-
-        PerformTag(nearest);
-    }
-
-    /// <summary>The vertical-band + line-of-sight gate shared by the ranged hand-tag (<see cref="TryTagInRange"/>)
-    /// and the net throw (<see cref="NetThrower"/>): the target must be within
+    /// <summary>The vertical-band + line-of-sight gate the net throw (<see cref="NetThrower"/>) applies
+    /// before it will commit: the target must be within
     /// <see cref="TagRulesConfig.tagReachVerticalTolerance"/> of our height (so a tag/net can't land on
     /// someone a roof-level above or below) AND reachable by a chest-to-chest linecast that hits nothing
     /// solid but the two of us. Extracted so the net doesn't duplicate it.</summary>
@@ -729,18 +707,17 @@ public sealed class TagAgent : MonoBehaviour
         return true;
     }
 
-    // Tagging is an explicit ranged attempt only (player: right click, via TryTagInRange; bots call
-    // TryTagInRange from their AI). Physical body contact deliberately does NOT tag — merely brushing
-    // or landing on a runner must never tag them with no input.
+    // The thrown net is the ONLY catch mechanic (player: right click, via NetThrower.TryThrow; bots
+    // call the same TryThrow from their AI). Neither physical body contact nor a lunge/dive tags a
+    // runner — merely brushing, landing on, or diving into someone must never convert them.
 
     private void PerformTag(TagAgent other)
     {
         // Race guard: once the round has ended (e.g. the local player was just tagged elsewhere this
-        // same frame), Time.timeScale=0 stops FixedUpdate/physics going forward, but any Update calls
-        // already queued for THIS frame (another bot's TryTagInRange, a still-in-flight
-        // OnCollisionEnter) still run before that takes effect. Bail before any of it — role
-        // conversion, the WasTagged event, and the boop SFX — so a same-frame tag can't land (and
-        // spam audio) after the round is already over.
+        // same frame), Time.timeScale=0 stops FixedUpdate/physics going forward, but any Update/FixedUpdate
+        // calls already queued for THIS frame (another bot's net resolving, a still-in-flight trap) still
+        // run before that takes effect. Bail before any of it — role conversion, the WasTagged event, and
+        // the boop SFX — so a same-frame tag can't land (and spam audio) after the round is already over.
         if (_roundController != null && _roundController.IsRoundOver) return;
 
         // CLUTCH DODGE — LOCAL HUMAN PLAYER ONLY. Bots never get i-frames or a dodge window: this is a
@@ -800,12 +777,6 @@ public sealed class TagAgent : MonoBehaviour
                 AudioSource.PlayClipAtPoint(GetConvertedClip(), other.transform.position);
         }
     }
-
-    /// <summary>
-    /// Binary still-vs-moving check per feedback — deliberately NOT a continuous function of
-    /// speed, so sprinting or jumping doesn't extend reach beyond the same "moving" value.
-    /// </summary>
-    private float CurrentReachRadius() => _motor.CurrentSpeed > 0.15f ? _config.tagReachMoving : _config.tagReachStill;
 
     private void UpdateColor()
     {
