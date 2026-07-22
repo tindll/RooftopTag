@@ -40,6 +40,31 @@ d.sourceObjects = arr;
 mount.data = d;
 ```
 
+## Spike findings (Task 1, completed — read before Task 2)
+
+The gate passed: a `Rig` + `TwoBoneIKConstraint` built entirely in code, followed by
+`RigBuilder.Build()` at runtime, pins the hand to its target at **0.0000 m** on the live rig. Two
+findings from the spike change the code below:
+
+1. **Bone local space is scaled ~167×** on the `pest_control` rig (`chest.lossyScale ≈ 167.7`, while
+   the agent root is 1.0). A `localPosition` of `0.35` lands the socket **65 m** away. Socket offsets
+   must therefore be authored in **agent-space metres** and assigned as a **world** position/rotation
+   once at build time; Unity back-computes the local values and the socket then rides the chest
+   normally. `MakeSocket` below does this — do not "simplify" it back to `localPosition`.
+2. **Constraint weights are synced into the animation job by `RigBuilder`'s own per-frame update.**
+   Setting `ik.weight` in `Tick()` each frame is correct and works in normal play. What does *not*
+   work is changing a weight and then forcing evaluation via a manual `animator.Update()` — that
+   bypasses the sync and the job keeps its previous weight. Only relevant to test harnesses, but it
+   invalidates any verification written that way.
+
+**Open question for Task 2, to settle empirically:** bone `lossyScale` differs per model
+(`pest_control`/`Spine01` measured 167×, while `NetThrower`'s comment records the hand bone at ~1.74×
+on the Mixamo rig). `NetAnchor` parents under the rig root, not the hand, so it inherits the
+CharacterModel scale rather than the bone scale — the net may render at the wrong size. Check the
+net's on-screen size in Task 2 Step 7 and, if wrong, set `NetAnchor.localScale` to compensate and
+record the measured value. `NetThrower.SpawnProjectile` copies `lossyScale`, so the thrown clone
+follows whatever is fixed here.
+
 ## File Structure
 
 | File | Responsibility |
@@ -250,8 +275,11 @@ public sealed class NetRigController : MonoBehaviour
                            ?? animator.GetBoneTransform(HumanBodyBones.Spine);
         if (chest == null) return;
 
-        Transform carrySocket = MakeSocket(chest, "CarrySocket", CarryLocalPos, CarryLocalEuler);
-        Transform backSocket = MakeSocket(chest, "BackSocket", BackLocalPos, BackLocalEuler);
+        Transform agent = animator.transform.root;
+        _chest = chest;
+        _agent = agent;
+        Transform carrySocket = MakeSocket(chest, agent, "CarrySocket", CarryLocalPos, CarryLocalEuler);
+        Transform backSocket = MakeSocket(chest, agent, "BackSocket", BackLocalPos, BackLocalEuler);
 
         var rigGO = new GameObject("NetRig");
         rigGO.transform.SetParent(animator.transform, false);
@@ -282,12 +310,17 @@ public sealed class NetRigController : MonoBehaviour
         builder.Build();
     }
 
-    private static Transform MakeSocket(Transform parent, string name, Vector3 localPos, Vector3 localEuler)
+    // Offsets are AGENT-SPACE METRES, not bone-local: this rig's bone local space is scaled ~167x, so
+    // a localPosition of 0.35 would put the socket 65m away (measured — see the plan's spike findings).
+    // Assigning world pose once at build lets Unity back-compute the local values; the socket then
+    // rides the chest normally from there.
+    private static Transform MakeSocket(Transform parent, Transform agent, string name,
+        Vector3 agentSpaceOffset, Vector3 agentSpaceEuler)
     {
         var go = new GameObject(name);
         go.transform.SetParent(parent, false);
-        go.transform.localPosition = localPos;
-        go.transform.localRotation = Quaternion.Euler(localEuler);
+        go.transform.position = parent.position + agent.TransformDirection(agentSpaceOffset);
+        go.transform.rotation = agent.rotation * Quaternion.Euler(agentSpaceEuler);
         return go.transform;
     }
 }
@@ -688,10 +721,17 @@ Add constants and fields:
 In `Build`, after the mount is created and before `builder.Build()`:
 
 ```csharp
-        var gripLower = MakeSocket(NetAnchor, "GripLower", new Vector3(0f, GripLowerY, 0f), Vector3.zero);
-        var gripUpper = MakeSocket(NetAnchor, "GripUpper", new Vector3(0f, GripUpperY, 0f), Vector3.zero);
-        Transform hintL = MakeSocket(chest, "ElbowHintL", ElbowHintLLocal, Vector3.zero);
-        Transform hintR = MakeSocket(chest, "ElbowHintR", ElbowHintRLocal, Vector3.zero);
+        // Grips ride the net, so they are authored along the ANCHOR's own local +Y (the pole axis) —
+        // NetAnchor is not a scaled bone, so plain localPosition is correct here.
+        var gripLower = new GameObject("GripLower").transform;
+        gripLower.SetParent(NetAnchor, false);
+        gripLower.localPosition = new Vector3(0f, GripLowerY, 0f);
+        var gripUpper = new GameObject("GripUpper").transform;
+        gripUpper.SetParent(NetAnchor, false);
+        gripUpper.localPosition = new Vector3(0f, GripUpperY, 0f);
+
+        Transform hintL = MakeSocket(chest, agent, "ElbowHintL", ElbowHintLLocal, Vector3.zero);
+        Transform hintR = MakeSocket(chest, agent, "ElbowHintR", ElbowHintRLocal, Vector3.zero);
 
         _rightHandIK = MakeHandIK(rigGO.transform, "RightHandIK",
             animator.GetBoneTransform(HumanBodyBones.RightUpperArm),
@@ -794,12 +834,16 @@ Add fields and keypose constants:
     private Transform? _throwSocket;
     private OverrideTransform? _torsoLean;
     private OverrideTransform? _headCounter;
+
+    // Cached at Build — the throw socket is driven in world space each frame against these.
+    private Transform? _chest;
+    private Transform? _agent;
 ```
 
 In `Build`, add the throw socket as a third mount source and the two torso constraints. The socket is created **before** the mount so it can be added to `sources`:
 
 ```csharp
-        _throwSocket = MakeSocket(chest, "ThrowSocket", ReadyPos, ReadyEuler);
+        _throwSocket = MakeSocket(chest, agent, "ThrowSocket", ReadyPos, ReadyEuler);
 ```
 
 and extend the source list:
@@ -917,14 +961,18 @@ Insert at the top of `Tick`, before the stow blend is advanced:
         var (arc, throwBlend) = AdvanceThrow(deltaTime);
         _throwBlend = throwBlend;
 
-        if (_throwSocket != null)
+        if (_throwSocket != null && _chest != null && _agent != null)
         {
             float u = Mathf.Clamp01(arc);          // ready → load
             float v = Mathf.Clamp01(arc - 1f);     // load → scoop
-            _throwSocket.localPosition = Vector3.Lerp(Vector3.Lerp(ReadyPos, LoadPos, u), ScoopPos, v);
-            _throwSocket.localRotation = Quaternion.Slerp(
+            Vector3 offset = Vector3.Lerp(Vector3.Lerp(ReadyPos, LoadPos, u), ScoopPos, v);
+            Quaternion rot = Quaternion.Slerp(
                 Quaternion.Slerp(Quaternion.Euler(ReadyEuler), Quaternion.Euler(LoadEuler), u),
                 Quaternion.Euler(ScoopEuler), v);
+            // WORLD-space, for the same reason MakeSocket is: the parent bone is ~167x scaled, so
+            // writing agent-space metres into localPosition would throw the socket metres off.
+            _throwSocket.position = _chest.position + _agent.TransformDirection(offset);
+            _throwSocket.rotation = _agent.rotation * rot;
 
             float pitch = Mathf.Lerp(Mathf.Lerp(4f, -ThrowArchBackDeg, u), ThrowPitchFwdDeg, v);
             float twist = Mathf.Lerp(Mathf.Lerp(0f, ThrowTwistLoadDeg, u), -4f, v);
