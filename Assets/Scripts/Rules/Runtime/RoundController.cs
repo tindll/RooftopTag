@@ -1513,13 +1513,22 @@ public sealed class RoundController : MonoBehaviour
             rowY += 26f;
         }
 
-        // Verdict: "YOU ESCAPED" / "CAUGHT" (round-level), or the match-level headline once the
-        // match itself is decided — pop-in punch + a short upward slide, both driven by openT.
+        // Verdict: "YOU ESCAPED" / "CAUGHT" (round-level runner copy), "ALL CAUGHT" / "THEY ESCAPED"
+        // (round-level tagger copy), or the match-level headline once the match itself is decided —
+        // pop-in punch + a short upward slide, both driven by openT.
         // "CAUGHT" only fits a loss with a catcher; a street fall has none (_caughtByName is set
-        // exclusively by PlayerCaught) and reads as "YOU DIED" instead.
+        // exclusively by PlayerCaught) and reads as "YOU DIED" instead. Ordering matters: a Tagger
+        // who ran out the clock has _playerLost == false AND an empty _caughtByName, so _playerLost
+        // must be checked before falling back to the catcher-name branch, or that case would
+        // misread as "YOU DIED".
+        bool localIsRunner = _localPlayerAgent == null || _localPlayerAgent.Role == Role.Runner;
         string verdict = matchEnd
             ? (playerWonMatch ? $"MATCH WON {_matchPlayerWins}-{_matchBotWins}" : $"MATCH LOST {_matchPlayerWins}-{_matchBotWins}")
-            : (localWon ? "YOU ESCAPED" : (string.IsNullOrEmpty(_caughtByName) ? "YOU DIED" : "CAUGHT"));
+            : localWon
+                ? (localIsRunner ? "YOU ESCAPED" : "ALL CAUGHT")
+                : _playerLost
+                    ? (string.IsNullOrEmpty(_caughtByName) ? "YOU DIED" : "CAUGHT")
+                    : "THEY ESCAPED"; // a Tagger who ran out the clock; a Runner can't reach here (timer expiry IS their win)
         bool verdictWon = matchEnd ? playerWonMatch : localWon;
         Color verdictColor = verdictWon ? GameUIStyle.AccentBright : _config.taggerColor;
         int verdictSize = matchEnd ? GameUIStyle.Title : GameUIStyle.Display;
@@ -1548,8 +1557,10 @@ public sealed class RoundController : MonoBehaviour
         if (!matchEnd)
         {
             string subline = localWon
-                ? "survived the timer"
-                : (!string.IsNullOrEmpty(_caughtByName) ? $"caught by {_caughtByName}" : "the street broke your fall");
+                ? (localIsRunner ? "survived the timer" : "every runner in the net")
+                : _playerLost
+                    ? (!string.IsNullOrEmpty(_caughtByName) ? $"caught by {_caughtByName}" : "the street broke your fall")
+                    : "the runners outlasted the clock";
             GUIStyle sublineStyle = GameUIStyle.Label(GameUIStyle.Body, TextAnchor.MiddleCenter);
             sublineStyle.normal.textColor = new Color(GameUIStyle.TextDim.r, GameUIStyle.TextDim.g, GameUIStyle.TextDim.b, Mathf.Clamp01(openT * 2f));
             GUI.Label(GameUIStyle.Scaled(new Rect(panel.x, rowY, panel.width, 22f)), subline, sublineStyle);
