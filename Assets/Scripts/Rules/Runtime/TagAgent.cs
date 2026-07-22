@@ -495,6 +495,13 @@ public sealed class TagAgent : MonoBehaviour
         // roles still pass through the cooldown/grace gates here.
         if (IsInGrace || _lungeCooldownRemaining > 0f)
         {
+            // A DODGE IS NEVER BLOCKED BY THE ROLL COOLDOWN. While a dodge window is open this press is
+            // the dodge — RoundController.TickDodgeWindow reads the same InputAction and resolves it,
+            // and TriggerDodgeEscape fires the escape roll with no cooldown gate. The press already
+            // saved you, so flashing the "denied" cue at the same moment just reads as the dodge having
+            // failed. Stay silent and let the dodge speak for itself.
+            if (_roundController != null && _roundController.DodgeWindowActive) return;
+
             // Cooldown-only denial — record it so the HUD spinner can flash. A grace-window denial
             // isn't "waiting on cooldown", so it stays silent.
             if (!IsInGrace && _lungeCooldownRemaining > 0f)
@@ -596,6 +603,10 @@ public sealed class TagAgent : MonoBehaviour
     /// <summary>Caught under a thrown net: freeze this agent's control for <paramref name="duration"/> and
     /// struggle (model-child wiggle, ticked in <see cref="Update"/>), after which the tag lands
     /// (NetThrower's delayed ExecuteTag). Presentation-only apart from the input freeze.</summary>
+    /// <summary>True while a net trap is holding this agent. Read by <see cref="NetThrower.ResolveHit"/>
+    /// so a second net can't drop a second dome (and a second delayed tag) on an already-caught victim.</summary>
+    internal bool IsNetTrapped => _netTrapRemaining > 0f;
+
     internal void BeginNetTrap(float duration)
     {
         _netTrapRemaining = duration;
@@ -865,6 +876,14 @@ public sealed class TagAgent : MonoBehaviour
         // have ended (timer expiry at slow-mo, another tag) between deferral and this landing.
         if (_roundController != null && _roundController.IsRoundOver) return;
 
+        // ...and re-check grace, for the same reason one layer deeper. A net's catch is delayed by
+        // netTrapDuration on a StartCoroutine that nothing cancels, so a trap begun in the round you
+        // just lost can still fire ExecuteTag AFTER the restart — by which point IsRoundOver is false
+        // again and the victim is a freshly respawned player. That landed a second loss the instant you
+        // respawned. Anyone in grace (respawned, or just converted) is untaggable, so one guard here
+        // covers every caller rather than trusting each deferred path to cancel itself.
+        if (other.IsInGrace) return;
+
         if (_config.mode == GameMode.Tag)
         {
             // TAG MODE — the SWAP, and the one genuinely new rule in the mode: the victim becomes IT
@@ -889,6 +908,16 @@ public sealed class TagAgent : MonoBehaviour
             // and the headless self-play harness, which has no local player at all) keeps the normal
             // Runner->Tagger infection cascade — the tagger STAYS a tagger.
             other.SetRole(Role.Tagger, startGrace: true);
+        }
+        else
+        {
+            // PEST CONTROL, local player: they have just LOST. Freeze them. The net trap releases its
+            // own input lock the moment it expires (TickNetTrap), and the tag lands immediately after —
+            // which left the caught player free to run around underneath the kill cam and the end
+            // screen. The lock is cleared again by StartRound's countdown on the next round, so this
+            // cannot strand anyone. Bots are deliberately NOT locked here: they convert to Tagger above
+            // and carry on playing, and nothing would ever unlock them.
+            other.SetInputLocked(true);
         }
         other.WasTagged?.Invoke(other, this);
         AudioSource.PlayClipAtPoint(GetBoopClip(), other.transform.position);

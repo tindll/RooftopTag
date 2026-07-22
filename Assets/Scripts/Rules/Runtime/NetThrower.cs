@@ -293,6 +293,15 @@ public sealed class NetThrower : MonoBehaviour
     // HIT: trap dome over the victim, freeze + struggle for netTrapDuration, THEN the normal tag flow.
     private void ResolveHit(TagAgent victim)
     {
+        // Already under someone else's dome? Treat this as a miss. Two nets landing on one victim gave
+        // two domes and two delayed ExecuteTag calls — the second landing after the round had already
+        // been lost and restarted. Only one catch may ever resolve on a victim.
+        if (victim.IsNetTrapped)
+        {
+            ResolveMiss();
+            return;
+        }
+
         // ponytail: the projectile lands at the PREDICTED _landPos while the dome spawns on the victim
         // (<= netHitRadius apart), so the swap can skip up to 1.1m. Accepted untested — the 0.8m dome
         // should swallow most of it. If it ever reads as a teleport, drift the flight visual toward the

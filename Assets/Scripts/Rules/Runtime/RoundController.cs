@@ -128,10 +128,16 @@ public sealed class RoundController : MonoBehaviour
     // it defers to the pause menu exactly as the tag slow-mo does (never stomps a frozen timeScale).
     private TagAgent? _pendingDodgeTagger;
     private TagAgent? _pendingDodgeVictim;
-    // Non-null while the open dodge window is a NET THROW'S flight (the local player was the target).
-    // Resolution then routes back to the net — flat-land + already-applied whiff on a dodge, trap dome +
-    // delayed ExecuteTag on a no-dodge — instead of the instant ExecuteTag a hand-tag window does.
-    private NetThrower? _pendingNet;
+    // Every net currently in flight AT the local player. Resolution routes back to each — flat-land +
+    // already-applied whiff on a dodge, trap dome + delayed ExecuteTag on a no-dodge — instead of the
+    // instant ExecuteTag a hand-tag window does.
+    //
+    // A LIST, not one net: two taggers can have nets in the air at the same time. This used to hold one,
+    // and a second net arriving mid-window was dropped on the floor — it never joined the window, so it
+    // was undodgeable and landed its own separate catch. That is the "double caught" bug: you dodge the
+    // first, eat the second regardless, and both taggers resolve a capture on you. Now every in-flight
+    // net joins the open window and shares its outcome, and at most ONE of them may ever land the tag.
+    private readonly System.Collections.Generic.List<NetThrower> _pendingNets = new();
     private float _dodgeWindowEndUnscaled = -1f;
     private float _dodgeWindowDuration; // total duration of the currently-open window — DrawDodgeRing's remaining-fraction fill divides by this
     private int _dodgeUsesThisRound; // successful reactive dodges so far this round — shrinks each new window (reset in StartRound)
@@ -359,9 +365,13 @@ public sealed class RoundController : MonoBehaviour
     /// so resolution can route back to it). Absorbs a second simultaneous request like TryBeginDodgeWindow.</summary>
     private bool BeginDodgeWindowInternal(TagAgent tagger, TagAgent victim, float duration, NetThrower? net)
     {
+        // Register the net BEFORE the already-open check, so a second net thrown while a window is
+        // running joins it and shares its outcome instead of being silently dropped and landing
+        // an undodgeable catch of its own.
+        if (net != null && !_pendingNets.Contains(net)) _pendingNets.Add(net);
+
         if (DodgeWindowActive) return true;
 
-        _pendingNet = net;
         _pendingDodgeTagger = tagger;
         _pendingDodgeVictim = victim;
         _dodgeWindowDuration = duration; // remembered so DrawDodgeRing can compute a remaining-fraction fill
@@ -410,10 +420,10 @@ public sealed class RoundController : MonoBehaviour
     {
         TagAgent? tagger = _pendingDodgeTagger;
         TagAgent? victim = _pendingDodgeVictim;
-        NetThrower? net = _pendingNet;
+        var nets = new System.Collections.Generic.List<NetThrower>(_pendingNets);
         _pendingDodgeTagger = null;
         _pendingDodgeVictim = null;
-        _pendingNet = null;
+        _pendingNets.Clear();
         _dodgeWindowEndUnscaled = -1f;
         _dodgeDesatTarget = 0f; // fade the desaturation back out
 
@@ -427,12 +437,21 @@ public sealed class RoundController : MonoBehaviour
         {
             _dodgeUsesThisRound++;       // this reactive dodge consumes one budget use → next window is shorter
             victim.TriggerDodgeEscape(); // roll clear at runner speed
-            tagger.WhiffLunge();         // the tagger whiffs + eats the lockout
-            net?.OnDodged();             // net slams the empty ground where it was thrown (whiff already applied above)
+            // One dodge evades EVERY net in the air, and every thrower eats the whiff. Dodging one of two
+            // simultaneous nets only to be caught by the other is not a reaction test, it is a coin flip.
+            tagger.WhiffLunge();
+            foreach (NetThrower n in nets)
+            {
+                if (n.Owner != tagger) n.Owner.WhiffLunge();
+                n.OnDodged();            // slams the empty ground where it was thrown
+            }
         }
-        else if (net != null)
+        else if (nets.Count > 0)
         {
-            net.OnHitConfirmed();        // no dodge — drop the trap dome, then the net lands the tag (owns the flow from here)
+            // No dodge — exactly ONE net may land the catch. The rest hit the deck. Letting every net
+            // confirm meant two trap domes and two ExecuteTag calls on one victim.
+            nets[0].OnHitConfirmed();
+            for (int i = 1; i < nets.Count; i++) nets[i].OnDodged();
         }
         else
         {
@@ -446,8 +465,8 @@ public sealed class RoundController : MonoBehaviour
     /// round boundary (R mid-window, round ends mid-window).</summary>
     private void CancelDodgeWindow()
     {
-        _pendingNet?.OnDodged(); // release any in-flight net back to Idle so it can't stick across a round boundary
-        _pendingNet = null;
+        foreach (NetThrower n in _pendingNets) n.OnDodged(); // release every in-flight net back to Idle so none sticks across a round boundary
+        _pendingNets.Clear();
         _pendingDodgeTagger = null;
         _pendingDodgeVictim = null;
         _dodgeWindowEndUnscaled = -1f;
@@ -643,7 +662,10 @@ public sealed class RoundController : MonoBehaviour
     private void OnNetThrownAtPlayer(NetThrower net, TagAgent victim)
     {
         if (_config == null || _localPlayerAgent == null || victim != _localPlayerAgent) return;
-        if (IsRoundOver || DodgeWindowActive) return;
+        if (IsRoundOver) return;
+        // NOT gated on DodgeWindowActive any more: bailing here left a second simultaneous net with no
+        // window and no external owner, so it self-resolved into an undodgeable second catch.
+        // BeginDodgeWindowInternal folds it into the open window instead.
         net.MarkExternalResolution();
         BeginDodgeWindowInternal(net.Owner, victim, _config.netFlightTime, net);
     }
