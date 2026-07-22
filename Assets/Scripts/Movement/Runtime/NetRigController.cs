@@ -17,9 +17,27 @@ namespace Game.Movement;
 /// </summary>
 public sealed class NetRigController : MonoBehaviour
 {
+    // World scale the net renders at, INDEPENDENT of the rig it hangs off. NetAnchor sits under the
+    // CharacterModel, which is scaled ~1.74x to make a ~1m Tripo export into a 1.8m character — and
+    // that scale used to reach the net through the hand bone too. Measured: the net came out 1.83m
+    // tall against a 1.33m head-to-foot bone span, i.e. as tall as the man carrying it. NetVisual
+    // builds a 1.15m pole at scale 1, so the anchor cancels the model scale and re-applies this.
+    private const float NetDisplayScale = 1.15f;
+
     // Local poses relative to the chest bone. Tuning knobs — expect a pass by eye.
-    private static readonly Vector3 CarryLocalPos = new(0.10f, -0.05f, 0.30f);
-    private static readonly Vector3 CarryLocalEuler = new(-15f, 0f, 20f);
+    // Kept CLOSE to the body: pushing the net forward of the chest reads as "held out in front"
+    // rather than carried, which is the whole complaint this feature exists to fix.
+    // The anchor IS the right-hand grip, so it sits at RIGHT HIP height, not chest height — at chest
+    // height both hands bunch up under the chin and the arms read as folded across the body. From the
+    // hip the pole leans across to the left so the upper (left-hand) grip lands mid-chest centre,
+    // which is the natural diagonal a person carries a long tool in.
+    // MEASURED on this rig, and the reason earlier values failed: the bone Unity maps to Chest
+    // (Spine01) sits at WAIST height — the shoulders are +0.33m ABOVE it, and the whole arm is only
+    // 0.47m. Offsets that look "slightly below the chest" therefore land near the knees, far outside
+    // arm reach, and the IK silently gives up with the hand left wherever the clip put it.
+    // This places the lower grip ~0.34m from the right shoulder, comfortably inside that 0.47m.
+    private static readonly Vector3 CarryLocalPos = new(0.23f, 0.03f, 0.12f);
+    private static readonly Vector3 CarryLocalEuler = new(-8f, 0f, 40f);
     private static readonly Vector3 BackLocalPos = new(-0.05f, -0.05f, -0.22f);
     private static readonly Vector3 BackLocalEuler = new(0f, 0f, 55f);
 
@@ -40,8 +58,14 @@ public sealed class NetRigController : MonoBehaviour
 
     // Grip points as children of NetAnchor, so they travel with the net for free — this is what
     // removes all per-frame grip math. Local +Y is the pole axis (how NetVisual.BuildNet mounts).
-    private const float GripLowerY = 0f;
-    private const float GripUpperY = 0.38f;   // was ThrowGripSeparation — left hand grips above the right
+    // Measured on the imported net_model.glb: the mesh spans anchor-local Y -0.55 (pole butt) to
+    // +0.83 (hoop). BOTH grips must sit on the lower SHAFT — the original 0 / +0.38 pair put the left
+    // hand up inside the hoop and bag, which is why the arms folded across the chest.
+    // The ANCHOR itself is the right-hand grip, so the pose above places it directly; the left hand
+    // rides 0.41 local (~0.47m world) further up the shaft, which with the 40-degree lean separates
+    // the hands mostly VERTICALLY and puts the upper grip ~0.22m from the left shoulder.
+    private const float GripLowerY = 0f;      // right hand — at the anchor
+    private const float GripUpperY = 0.41f;   // left hand, a forearm's length up the shaft
     private static readonly Vector3 ElbowHintLLocal = new(-0.45f, -0.35f, 0.10f);
     private static readonly Vector3 ElbowHintRLocal = new(0.45f, -0.35f, 0.10f);
 
@@ -87,6 +111,15 @@ public sealed class NetRigController : MonoBehaviour
     {
         if (!animator.isHuman) return;
 
+        // This component is REUSED across model swaps (the rig GameObjects die with the old model,
+        // the component on the agent root does not), so a swap that lands mid-throw would carry a
+        // Hold phase into the fresh rig and pin the net at the scoop pose forever. Fresh rig, fresh
+        // blend state.
+        _throwPhase = ThrowPhase.None;
+        _throwTimer = 0f;
+        _throwBlend = 0f;
+        _stowBlend = 0f;
+
         Transform? chest = animator.GetBoneTransform(HumanBodyBones.Chest)
                            ?? animator.GetBoneTransform(HumanBodyBones.Spine);
         if (chest == null) return;
@@ -109,6 +142,12 @@ public sealed class NetRigController : MonoBehaviour
         // the hand bone did — NetThrower.SpawnProjectile copies lossyScale off the carried net.
         var anchorGO = new GameObject("NetAnchor");
         anchorGO.transform.SetParent(rigGO.transform, false);
+        // Cancel the inherited model scale and re-apply the net's own display scale, so the prop's
+        // size stops depending on how much the character mesh had to be scaled to reach 1.8m.
+        // NetThrower.SpawnProjectile copies lossyScale off the carried net, so the thrown clone
+        // inherits this too and does not change size as it leaves the hand.
+        float inherited = rigGO.transform.lossyScale.x;
+        anchorGO.transform.localScale = Vector3.one * (inherited > 0.0001f ? NetDisplayScale / inherited : 1f);
         _netAnchor = anchorGO.transform;
 
         var mountGO = new GameObject("NetMount");
@@ -222,6 +261,9 @@ public sealed class NetRigController : MonoBehaviour
     private const float ThrowWhipSeconds = 0.12f;
     private const float ThrowRecoilSeconds = 0.3f;
     private const float ThrowBlendInFrac = 0.3f;
+    // Safety cap on a throw that is never released. Comfortably longer than any real windup+hold
+    // (netWindupSeconds is 0.45), so it never truncates a legitimate throw.
+    private const float MaxThrowSeconds = 3f;
 
     private ThrowPhase _throwPhase = ThrowPhase.None;
     private float _throwWindup = 0.45f;
@@ -267,6 +309,14 @@ public sealed class NetRigController : MonoBehaviour
                 if (u >= 1f) _throwPhase = ThrowPhase.Hold;
                 return (1f + u * u, 1f);
             }
+            // Hold waits for ReleaseThrow, which normally arrives the instant NetThrower's windup
+            // expires. Cap it anyway: while parked here the mount is pinned to the throw socket, which
+            // holds the net out in FRONT of the tagger, so ANY caller that fails to release strands
+            // the prop there permanently. One guard here covers every such path rather than trusting
+            // each one to clean up.
+            case ThrowPhase.Hold when _throwTimer > MaxThrowSeconds:
+                _throwPhase = ThrowPhase.None;
+                return (0f, 0f);
             case ThrowPhase.Hold:
                 return (2f, 1f);
             case ThrowPhase.Release when _throwTimer <= ThrowRecoilSeconds:

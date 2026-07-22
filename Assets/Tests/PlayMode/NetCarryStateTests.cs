@@ -72,8 +72,14 @@ public class NetCarryStateTests
         Assert.AreEqual(0.9f, r0, 1e-4f);
 
         var (l1, r1) = NetCarryState.HandWeights(0.35f, 0.9f);
-        Assert.AreEqual(0f, l1, 1e-4f, "off hand lets go as soon as the stow starts");
+        Assert.AreEqual(0f, l1, 1e-4f, "off hand is fully released by OffHandReleaseFrac");
         Assert.AreEqual(0.9f, r1, 1e-4f, "right hand still carries the net over the shoulder");
+
+        // The off hand RAMPS out rather than snapping. Agents clip Vaulting/Mantling constantly while
+        // parkouring, and a cliff edge at any stowBlend > 0 made the two-hand carry flicker to one-hand.
+        var (lMid, _) = NetCarryState.HandWeights(0.10f, 0.9f);
+        Assert.Greater(lMid, 0.5f, "a brief stow transient must not drop the off hand off the pole");
+        Assert.Less(lMid, 0.9f, "but it is already on its way out");
 
         var (_, r2) = NetCarryState.HandWeights(0.85f, 0.9f);
         Assert.Less(r2, 0.9f, "right hand eases off over the last 30%");

@@ -346,6 +346,10 @@ public sealed class NetThrower : MonoBehaviour
     {
         DestroyProjectile();
         if (_trapDome != null) { Destroy(_trapDome); _trapDome = null; }
+        // Hand the swing back too. Without this the rig stays parked at the scoop keypose — which
+        // holds the net out in FRONT of the tagger — for the rest of the agent's life, because the
+        // rig's Hold phase waits on a release that an aborted throw never sends.
+        _agent.DriveThrowRelease();
         _state = ThrowState.Idle;
         _targetAgent = null;
         _resolutionExternal = false;

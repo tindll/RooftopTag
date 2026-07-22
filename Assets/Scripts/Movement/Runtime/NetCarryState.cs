@@ -40,14 +40,23 @@ public static class NetCarryState
         return ((1f - stowBlend) * rest, stowBlend * rest, throwBlend);
     }
 
-    /// <summary>Hand IK weights across the stow. The off hand lets go at once; the right hand holds
-    /// full grip through the gesture and then releases.</summary>
+    /// <summary>Fraction of the stow blend over which the OFF hand lets go. It ramps rather than
+    /// snapping to zero: agents cross Vaulting/Mantling constantly while parkouring, and a cliff edge
+    /// at any stowBlend > 0 dropped the left hand off the pole on every one of those transients, so a
+    /// two-hand carry visibly flickered to one-hand while just running around.</summary>
+    public const float OffHandReleaseFrac = GestureFrac * 0.5f;
+
+    /// <summary>Hand IK weights across the stow. The off hand lets go first and is fully released by
+    /// <see cref="OffHandReleaseFrac"/>; the right hand keeps full grip through the gesture — so the
+    /// net drags it over the shoulder — and only then releases.</summary>
     public static (float left, float right) HandWeights(float stowBlend, float carryWeight)
     {
         if (stowBlend <= 0f) return (carryWeight, carryWeight);
-        float release = stowBlend <= GestureFrac
+
+        float left = 1f - stowBlend / OffHandReleaseFrac;
+        float right = stowBlend <= GestureFrac
             ? 1f
             : 1f - (stowBlend - GestureFrac) / (1f - GestureFrac);
-        return (0f, carryWeight * Mathf.Clamp01(release));
+        return (carryWeight * Mathf.Clamp01(left), carryWeight * Mathf.Clamp01(right));
     }
 }
