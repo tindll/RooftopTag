@@ -23,7 +23,13 @@ public sealed class TagRulesConfig : ScriptableObject
     /// bot beyond the tagger count is benched rather than left as a fellow runner (see AssignRoles).
     /// Free-roam is 0 chasers via the menu.</summary>
     public int taggerCount = 10;
-    public int runnerCount = 1;
+
+    /// <summary>Caps the number of Runners in Tagger mode (menu's "Runners" row) so co-taggers and
+    /// runners can be picked independently instead of runners always soaking up whatever's left of
+    /// the roster. 0 means UNCAPPED — every non-tagger bot becomes a Runner, exactly today's
+    /// behavior. Headless self-play, the debug TagArena scene, and chase-me mode all leave this 0.
+    /// Only takes effect with forcePlayerAsTagger (see AssignRoles); chase-me benching is unrelated.</summary>
+    public int runnerCount = 0;
 
     /// <summary>Guarantees the local player is always assigned Tagger (useful while feel-testing tagger-specific mechanics like the lunge). Flip off for a "real" fully-random round.</summary>
     public bool forcePlayerAsTagger = false;

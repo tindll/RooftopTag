@@ -62,11 +62,22 @@ public sealed class TagArenaBootstrap : MonoBehaviour
     /// </summary>
     public void ApplyTaggerCount(int newTaggerCount) => _tagConfig.taggerCount = newTaggerCount;
 
+    /// <summary>Current runner cap (Tagger mode's "Runners" row) — mirrors the shared runtime config so the main menu can read the live value when re-showing.</summary>
+    public int RunnerCount => _tagConfig.runnerCount;
+
+    /// <summary>
+    /// Caps the number of Runners in Tagger mode (0 = uncapped, today's behavior) so co-taggers and
+    /// runners can be picked independently; see AssignRoles' new bench branch. No immediate re-roll
+    /// here, same as <see cref="ApplyTaggerCount"/> — the caller follows with StartRound().
+    /// </summary>
+    public void ApplyRunnerCount(int newRunnerCount) => _tagConfig.runnerCount = newRunnerCount;
+
     /// <summary>Whether the local player will be pinned Tagger next round — the main menu reads it to
     /// show the live value when re-showing (same pattern as TaggerCount/UnlimitedTime).</summary>
     public bool PlayerIsTagger => _tagConfig.forcePlayerAsTagger;
 
-    /// <summary>Total live agents (player + spawned bots) — the menu's Runners row maps through this.</summary>
+    /// <summary>Total live agents (player + spawned bots) — the menu clamps its Runners row through
+    /// this so co-taggers + runners never exceed the roster.</summary>
     public int RosterSize => _bots.Count + 1;
 
     /// <summary>Pins the local player's role for the next StartRound. Runner keeps chase-me semantics

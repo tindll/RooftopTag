@@ -26,6 +26,10 @@ public sealed class MainMenuOverlay : MonoBehaviour
     // Runner + 0 chasers, exactly as before.
     private static readonly int[] RunnerCounts = { 1, 3, 5, 10 };
 
+    // Bot co-taggers hunting alongside the player, selected independently of Runners (see Play()).
+    // 0 = solo hunt, the mirror of today's default.
+    private static readonly int[] CoTaggerCounts = { 0, 1, 2, 3 };
+
     // Card geometry, design-space (GameUIStyle.Scale takes it to real pixels @1080p/1440p/ultrawide).
     // Left column, not centered. Height is computed per open state: the CONTROLS dropdown is the
     // one thing that changes row count at runtime, so the card grows by exactly its rows when
@@ -33,7 +37,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
     private const float CardX = 90f;
     private const float CardY = 110f;
     private const float CardWidth = 460f;
-    private const float CardBaseHeight = 440f; // +1 row (46 + 10 gap) for the Play-as role row
+    private const float CardBaseHeight = 440f; // fits Runner mode's 4 rows (Play as/Difficulty/Chasers/Time)
     private const float CardPad = 28f;
     private const float SlideInDuration = 0.35f;
 
@@ -41,6 +45,10 @@ public sealed class MainMenuOverlay : MonoBehaviour
     private const float RebindRowHeight = 34f;
     private const float RebindRowGap = 6f;
     private const int RebindRowCount = 6; // Jump, Slide, Sprint, Interact, Lunge, Tag
+
+    // One DrawOptionRow's height (46 rowHeight + 10 gap) — Tagger mode adds a Co-taggers row on top
+    // of Runner mode's row count (see DrawCard's cardHeight, same mechanism as _controlsExpanded).
+    private const float OptionRowHeight = 46f + 10f;
 
     private TagArenaBootstrap _bootstrap = null!;
     private RoundController _roundController = null!;
@@ -61,7 +69,8 @@ public sealed class MainMenuOverlay : MonoBehaviour
 
     private int _chaserIndex;
     private bool _playAsTagger;
-    private int _runnerIndex = 3; // RunnerCounts[3] = 10 -> solo hunt, mirror of the chase-me default
+    private int _runnerIndex = 3; // RunnerCounts[3] = 10 -> mirror of the chase-me default
+    private int _coTaggerIndex; // CoTaggerCounts[0] = 0 -> solo hunt by default
     private bool _unlimitedTime;
     private bool _controlsExpanded; // CONTROLS dropdown, collapsed by default
     private float _openedAtUnscaled;
@@ -134,7 +143,9 @@ public sealed class MainMenuOverlay : MonoBehaviour
         Color prevColor = GUI.color;
         GUI.color = new Color(1f, 1f, 1f, t); // fades in alongside the slide
 
-        float cardHeight = CardBaseHeight + (_controlsExpanded ? RebindRowCount * (RebindRowHeight + RebindRowGap) : 0f);
+        float cardHeight = CardBaseHeight
+            + (_playAsTagger ? OptionRowHeight : 0f) // Tagger mode's extra Co-taggers row
+            + (_controlsExpanded ? RebindRowCount * (RebindRowHeight + RebindRowGap) : 0f);
         GameUIStyle.Panel(new Rect(x, CardY, CardWidth, cardHeight));
 
         float contentX = x + CardPad;
@@ -146,6 +157,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
 
         y = DrawRoleRow(contentX, y, contentWidth);
         y = DrawDifficultyRow(contentX, y, contentWidth);
+        if (_playAsTagger) y = DrawCoTaggerRow(contentX, y, contentWidth);
         y = DrawChaserRow(contentX, y, contentWidth);
         y = DrawTimeRow(contentX, y, contentWidth);
         y += 12f;
@@ -199,10 +211,11 @@ public sealed class MainMenuOverlay : MonoBehaviour
             () => _playAsTagger = !_playAsTagger,
             () => _playAsTagger = !_playAsTagger);
 
-    // Chasers/Runners semantics differ by mode (see docs/plans/player-as-tagger.md "Design decisions"):
-    // in chase-me (Runner) it's bot hunters and surplus bots get benched; as Tagger, taggerCount
-    // includes the player at roster index 0 and nothing benches, so the row is reframed as prey
-    // count ("Runners") and mapped through RosterSize in Play().
+    // Chasers/Runners semantics differ by mode: in chase-me (Runner) "Chasers" is bot hunters and
+    // surplus bots get benched (RoundController.AssignRoles' forceRunner branch); as Tagger, this row
+    // is the player's independently-picked Runner count, benching any bot beyond
+    // taggerCount+runnerCount (AssignRoles' forceTagger branch) — see DrawCoTaggerRow for the other
+    // half of the pair.
     private float DrawChaserRow(float x, float y, float width) => _playAsTagger
         ? DrawOptionRow(x, y, width, "Runners", RunnerCounts[_runnerIndex].ToString(),
             () => _runnerIndex = (_runnerIndex - 1 + RunnerCounts.Length) % RunnerCounts.Length,
@@ -210,6 +223,13 @@ public sealed class MainMenuOverlay : MonoBehaviour
         : DrawOptionRow(x, y, width, "Chasers", ChaserCounts[_chaserIndex].ToString(),
             () => _chaserIndex = (_chaserIndex - 1 + ChaserCounts.Length) % ChaserCounts.Length,
             () => _chaserIndex = (_chaserIndex + 1) % ChaserCounts.Length);
+
+    // Tagger-mode-only row: bot co-taggers hunting alongside the player. Player + co-taggers together
+    // are ApplyTaggerCount's argument (Play() adds 1 for the player themself).
+    private float DrawCoTaggerRow(float x, float y, float width) =>
+        DrawOptionRow(x, y, width, "Co-taggers", CoTaggerCounts[_coTaggerIndex].ToString(),
+            () => _coTaggerIndex = (_coTaggerIndex - 1 + CoTaggerCounts.Length) % CoTaggerCounts.Length,
+            () => _coTaggerIndex = (_coTaggerIndex + 1) % CoTaggerCounts.Length);
 
     private float DrawTimeRow(float x, float y, float width) =>
         // Only two values, so both arrows do the same toggle — keeps the row visually consistent
@@ -261,11 +281,23 @@ public sealed class MainMenuOverlay : MonoBehaviour
     {
         KeyRebinder.Cancel(); // never leave a rebind listen running behind live gameplay
         _bootstrap.ApplyPlayerRole(_playAsTagger);
-        // Tagger mode: the row is prey count; taggerCount includes the player (AssignRoles inserts them
-        // at index 0), so taggers = roster - runners. Max guard covers hypothetical smaller scenes.
-        _bootstrap.ApplyTaggerCount(_playAsTagger
-            ? Mathf.Max(1, _bootstrap.RosterSize - RunnerCounts[_runnerIndex])
-            : ChaserCounts[_chaserIndex]);
+        if (_playAsTagger)
+        {
+            // The player themself is one of the taggers (AssignRoles inserts them at index 0), so
+            // taggerCount = player + selected co-taggers.
+            int taggerCount = 1 + CoTaggerCounts[_coTaggerIndex];
+            // Taggers + runners can't exceed the roster (12: 11 scene bots + the player). Clamp the
+            // runner request down to whatever's left so it's always satisfiable rather than silently
+            // benching more than the player asked for.
+            int runnerCount = Mathf.Min(RunnerCounts[_runnerIndex], _bootstrap.RosterSize - taggerCount);
+            _bootstrap.ApplyTaggerCount(taggerCount);
+            _bootstrap.ApplyRunnerCount(runnerCount);
+        }
+        else
+        {
+            _bootstrap.ApplyTaggerCount(ChaserCounts[_chaserIndex]);
+            _bootstrap.ApplyRunnerCount(0); // uncapped -> fully restores today's chase-me behavior
+        }
         _bootstrap.ApplyUnlimitedTime(_unlimitedTime);
         _open = false;
         Time.timeScale = 1f;

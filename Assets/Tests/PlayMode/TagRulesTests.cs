@@ -736,6 +736,55 @@ public sealed class TagRulesTests
     }
 
     [UnityTest]
+    public IEnumerator AssignRoles_ForcePlayerAsTaggerWithRunnerCap_BenchesSurplusBot()
+    {
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
+
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.forcePlayerAsRunner = false;
+        config.forcePlayerAsTagger = true;
+        config.taggerCount = 2;  // player + 1 bot co-tagger
+        config.runnerCount = 1;  // caps runners independently -> the 3rd bot must be benched
+
+        (_, _, TagAgent player, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f), config);
+        (_, _, TagAgent botA, _) = CreateTagAgent(new Vector3(3f, 1.1f, 0f), config);
+        (_, _, TagAgent botB, _) = CreateTagAgent(new Vector3(6f, 1.1f, 0f), config);
+        (_, _, TagAgent botC, _) = CreateTagAgent(new Vector3(9f, 1.1f, 0f), config);
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        controller.Configure(config);
+        player.SetRoundController(controller);
+        botA.SetRoundController(controller);
+        botB.SetRoundController(controller);
+        botC.SetRoundController(controller);
+        controller.RegisterAgent(player, isLocalPlayer: true);
+        controller.RegisterAgent(botA, isLocalPlayer: false);
+        controller.RegisterAgent(botB, isLocalPlayer: false);
+        controller.RegisterAgent(botC, isLocalPlayer: false);
+
+        yield return null; // RoundController.Start() -> StartRound() -> AssignRoles()
+
+        Assert.AreEqual(Role.Tagger, player.Role, "forcePlayerAsTagger must pin the local player to Tagger.");
+
+        var bots = new[] { botA, botB, botC };
+        int taggerBots = 0, runnerBots = 0, benchedBots = 0;
+        foreach (TagAgent bot in bots)
+        {
+            if (!bot.gameObject.activeSelf) { benchedBots++; continue; }
+            if (bot.Role == Role.Tagger) taggerBots++;
+            else runnerBots++;
+        }
+
+        // Roles among bots are shuffled -> assert on counts, not on which specific bot got which role.
+        Assert.AreEqual(1, taggerBots, "taggerCount=2 (player + 1) must produce exactly one bot Tagger.");
+        Assert.AreEqual(1, runnerBots, "runnerCount=1 must produce exactly one bot Runner.");
+        Assert.AreEqual(1, benchedBots, "The surplus bot beyond taggerCount+runnerCount must be benched, not left as an extra Runner.");
+    }
+
+    [UnityTest]
     public IEnumerator NetThrow_LandsOnBotRunner_ConvertsAfterTrap()
     {
         // The human tagger's throw path is byte-identical to a bot's (TagAgent input just calls

@@ -745,6 +745,16 @@ public sealed class RoundController : MonoBehaviour
             // surplus into fellow runners. Every agent passes through SetActive here, so raising the count again re-activates the
             // benched bots on the next round. Outside chase-me nothing benches (bench stays false).
             bool bench = forceRunner && !isPlayer && !isTagger;
+
+            // Tagger mode (forceTagger): the menu now picks co-taggers AND runners independently, so
+            // any bot beyond taggerCount+runnerCount must also be BENCHED rather than left as a fellow
+            // Runner — otherwise the two counts can't both be honored. runnerCount == 0 means
+            // "uncapped" (today's behavior: every non-tagger bot is a Runner), so this only engages
+            // when the menu actually picked a runner cap. !isPlayer is redundant with the index guard
+            // (the player sits at index 0 < effectiveTaggerCount in tagger mode) but kept explicit —
+            // the local player must never be benched. Same reactivation-next-round guarantee as above.
+            if (forceTagger && _config.runnerCount > 0 && !isPlayer)
+                bench = i >= effectiveTaggerCount + _config.runnerCount;
             agent.gameObject.SetActive(!bench);
             if (bench) continue;
 
