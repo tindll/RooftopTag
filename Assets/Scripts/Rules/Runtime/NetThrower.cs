@@ -63,9 +63,6 @@ public sealed class NetThrower : MonoBehaviour
     public float CooldownProgress =>
         _config.netThrowCooldown > 0f ? Mathf.Clamp01(1f - _cooldownRemaining / _config.netThrowCooldown) : 1f;
 
-    /// <summary>Seconds since this cooldown was armed. The HUD shows only ONE cooldown ring — the one
-    /// belonging to the most recent input — and picks it by whichever elapsed time is smallest.</summary>
-    public float CooldownElapsed => Mathf.Max(0f, _config.netThrowCooldown - _cooldownRemaining);
 
     internal void Initialize(TagAgent agent, TagRulesConfig config)
     {
@@ -83,9 +80,20 @@ public sealed class NetThrower : MonoBehaviour
     /// press the button. A bot calls this every tick, though, so for a bot a null target still keeps the
     /// net in hand — commit it anyway and every bot tagger hurls nets at empty air continuously, burning
     /// the cooldown right when a real target comes in range.</summary>
+    /// <summary>Time.time of the last throw press REFUSED because the net was still recharging. The HUD
+    /// ring only appears after such a press — see RoundController.DrawActionCooldownRings. Local player
+    /// only: bots call TryThrow every tick, so recording theirs would mean nothing.</summary>
+    public float LastDeniedThrowTime { get; private set; } = float.NegativeInfinity;
+
     public void TryThrow()
     {
-        if (!CanThrow()) return;
+        if (!CanThrow())
+        {
+            // Cooldown-only denial. Every other CanThrow gate (wrong role, grace, countdown, mid-dive)
+            // is a "you can't do this right now" that a recharge ring would misexplain.
+            if (_cooldownRemaining > 0f && _agent.IsLocalPlayer) LastDeniedThrowTime = Time.time;
+            return;
+        }
 
         TagAgent? target = AcquireTarget();
         if (target == null && !_agent.IsLocalPlayer) return; // bots: NO BLIND THROWS (see above)

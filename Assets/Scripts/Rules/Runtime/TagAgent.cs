@@ -160,9 +160,6 @@ public sealed class TagAgent : MonoBehaviour
     public float LungeCooldownProgress =>
         _lungeCooldownDuration > 0f ? Mathf.Clamp01(1f - _lungeCooldownRemaining / _lungeCooldownDuration) : 1f;
 
-    /// <summary>Seconds since this cooldown was armed. The HUD shows only ONE cooldown ring — the one
-    /// belonging to the most recent input — and picks it by whichever elapsed time is smallest.</summary>
-    public float LungeCooldownElapsed => Mathf.Max(0f, _lungeCooldownDuration - _lungeCooldownRemaining);
     public CharacterMotor Motor => _motor;
 
     /// <summary>The net-throw component (the ranged catch, replacing the old hand-tag) — created on this
@@ -766,9 +763,19 @@ public sealed class TagAgent : MonoBehaviour
     /// the countdown or before the round-start grace lifts — so a caller never has to check first.
     /// A hit runs the normal tag flow via <see cref="PerformTag"/>, which means the victim still gets
     /// their clutch dodge exactly as they would against a net.</summary>
+    /// <summary>Time.time of the last touch-tag press REFUSED because the tag was still recharging —
+    /// the Tag-mode counterpart to <see cref="LastDeniedLungeTime"/>. Drives the HUD ring, which only
+    /// appears after such a press.</summary>
+    public float LastDeniedTouchTime { get; private set; } = float.NegativeInfinity;
+
     public void TryTouchTag()
     {
-        if (!CanTouchTag()) return;
+        if (!CanTouchTag())
+        {
+            // Cooldown-only denial, as with the lunge: the other CanTouchTag gates are not "recharging".
+            if (_touchCooldownRemaining > 0f && _isLocalPlayer) LastDeniedTouchTime = Time.time;
+            return;
+        }
 
         TagAgent? target = AcquireTouchTarget();
         if (target == null) return;
@@ -789,8 +796,6 @@ public sealed class TagAgent : MonoBehaviour
     /// <summary>0 (just tagged) to 1 (ready) touch-tag cooldown progress for the HUD's outer action
     /// ring — the Tag-mode counterpart to <see cref="NetThrower.CooldownProgress"/>. 1 (self-hides)
     /// whenever nothing is on cooldown.</summary>
-    /// <summary>Seconds since the touch cooldown was armed — see <see cref="LungeCooldownElapsed"/>.</summary>
-    public float TouchCooldownElapsed => Mathf.Max(0f, _config.tagTouchCooldown - _touchCooldownRemaining);
 
     public float TouchCooldownProgress => _config.tagTouchCooldown > 0f
         ? Mathf.Clamp01(1f - _touchCooldownRemaining / _config.tagTouchCooldown)

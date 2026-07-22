@@ -2274,8 +2274,6 @@ public sealed class RoundController : MonoBehaviour
     private const int SpinnerTextureSize = 64;
     private const float SpinnerOuterRadius = 30f;
     private const float SpinnerInnerRadius = 26f; // thin hairline ring, not a solid band
-    private const float SpinnerDeniedWindow = 0.75f; // how long a denied press keeps boosting the lunge ring
-    private const float SpinnerFadeWindow = 0.25f;   // trailing portion of the window that eases the boost out
 
     private Texture2D[]? _lungeSpinnerFrames;
 
@@ -2614,89 +2612,82 @@ public sealed class RoundController : MonoBehaviour
         }
     }
 
-    // ---------------------------------------------------------------- Persistent action cooldown rings
+    // ---------------------------------------------------------------- Action cooldown reminder ring
     //
-    // Ambient readout for whichever action is recharging: shows for the WHOLE time an action is
-    // actually on cooldown, self-hiding the instant it's ready. Anchored dead-center — the same spot
-    // the old denied-press-only lunge spinner used — since that's the natural "your action" focal
-    // point; DrawThrowPrompt sits offset below it to avoid colliding. Reuses the lunge spinner's
-    // cached ring frames (_lungeSpinnerFrames) rather than building yet another texture — same ring
-    // shape, just quieter-tinted since this is a passive readout, not an alert.
+    // A REMINDER, not a gauge, and this is the whole design: it appears only when you PRESS an action
+    // that is still recharging, and only for ActionRingReminderSeconds. Anchored dead-center — the
+    // natural "your action" focal point; DrawThrowPrompt sits offset below it to avoid colliding.
+    // Reuses the lunge spinner's cached ring frames rather than building another texture.
     //
-    // EXACTLY ONE ring is drawn, ever. Lunge and catch cooldowns can genuinely run at once (a tagger
-    // who just lunged AND just threw), and this used to draw both as concentric rings at 34 and 48px.
-    // Two near-identical rings a few pixels apart read as one slightly-fat blob, and a player mid-chase
-    // cannot tell which of the two is which anyway. So the ring tracks the MOST RECENT input — the
-    // action you just pressed is the one whose recharge you care about — picked by whichever cooldown
-    // has the smallest elapsed time (see TagAgent.LungeCooldownElapsed / NetThrower.CooldownElapsed).
+    // It used to be an ambient readout shown for the WHOLE cooldown of whichever action last fired.
+    // That put a ring on screen after every single roll — including the first of the round, when you
+    // had done nothing wrong — so it was up almost permanently, read as fixed UI furniture, and
+    // carried no information at the moment it mattered. Tying it to a refused press makes its presence
+    // mean exactly one thing: "that press didn't happen, it's still recharging."
     //
-    // Denied-press feedback (TagAgent.LastDeniedLungeTime, ex-DrawLungeSpinner) folds into the lunge
-    // ring as a brightness/alpha boost instead of a separate draw at the same anchor — a persistent
-    // ring and a denied-press flash stacked on the same spot were the same information twice.
+    // EXACTLY ONE ring is drawn, ever — the most recently REFUSED action. Lunge and catch cooldowns can
+    // genuinely run at once (a tagger who just lunged AND just threw), and drawing both as concentric
+    // rings a few pixels apart read as one slightly-fat blob you could not tell apart mid-chase.
 
     // Single ring, sized between the old concentric pair. Stays well under DodgeRingOnScreenSize (72)
     // so the dodge ring still reads as the dominant outer element if this one is up when a runner gets
     // dodge-targeted.
     private const float ActionRingSize = 40f;
 
+    // The ring is a REMINDER, not a gauge. It appears only after you actually press an action that is
+    // still recharging, and only briefly. Showing it for every cooldown meant it was on screen after
+    // every single roll — including the first of the round — so it read as permanent UI furniture and
+    // stopped carrying information. 1.5s is long enough to register and short enough to stay an event.
+    private const float ActionRingReminderSeconds = 1.5f;
+    private const float ActionRingFadeSeconds = 0.4f; // trailing stretch that eases it out
+
     private void DrawActionCooldownRings()
     {
         if (_lungeSpinnerFrames == null || _localPlayerAgent == null) return;
 
-        float centerX = GameUIStyle.DesignWidth * 0.5f;
-        float centerY = GameUIStyle.DesignHeight * 0.5f;
-
-        // Lunge: both roles have one (Tagger tag-dive / Runner escape dash), so no role gate.
-        float deniedElapsed = Time.time - _localPlayerAgent.LastDeniedLungeTime;
-        float deniedBoost = 0f;
-        if (deniedElapsed >= 0f && deniedElapsed < SpinnerDeniedWindow)
-        {
-            // Same fade-out shape the old spinner used: full boost, then ease out over the trailing
-            // SpinnerFadeWindow seconds instead of popping off abruptly.
-            float fadeStart = SpinnerDeniedWindow - SpinnerFadeWindow;
-            deniedBoost = deniedElapsed <= fadeStart ? 1f : 1f - Mathf.Clamp01((deniedElapsed - fadeStart) / SpinnerFadeWindow);
-        }
-
-        // Most-recent-input wins: smallest elapsed since its cooldown was armed.
+        // Whichever action was most recently REFUSED for being on cooldown. Lunge is available to both
+        // roles (Tagger tag-dive / Runner escape dash); the catch is Tagger-only and is the net throw in
+        // pest control, the touch tag in tag mode.
+        float denied = _localPlayerAgent.LastDeniedLungeTime;
         float progress = _localPlayerAgent.LungeCooldownProgress;
-        float elapsed = progress < 1f ? _localPlayerAgent.LungeCooldownElapsed : float.MaxValue;
-        bool showingLunge = true;
 
-        // The catch cooldown: the net throw in pest control, the touch tag in tag mode. Only a Tagger
-        // can fire either (see NetThrower.CanThrow / TagAgent.CanTouchTag), so a Runner has nothing to
-        // read here.
         if (_localPlayerAgent.Role == Role.Tagger)
         {
             NetThrower? net = _localPlayerAgent.Net;
             bool tagMode = _config.mode == GameMode.Tag;
+            float catchDenied = tagMode ? _localPlayerAgent.LastDeniedTouchTime
+                                        : (net != null ? net.LastDeniedThrowTime : float.NegativeInfinity);
             float catchProgress = tagMode ? _localPlayerAgent.TouchCooldownProgress
                                           : (net != null ? net.CooldownProgress : 1f);
-            float catchElapsed = tagMode ? _localPlayerAgent.TouchCooldownElapsed
-                                         : (net != null ? net.CooldownElapsed : 0f);
-
-            if (catchProgress < 1f && catchElapsed < elapsed)
+            if (catchDenied > denied)
             {
+                denied = catchDenied;
                 progress = catchProgress;
-                elapsed = catchElapsed;
-                showingLunge = false;
             }
         }
 
-        // The denied-press flash belongs to the lunge, so it only rides along when the lunge is the
-        // ring actually on screen — boosting the net ring for a rejected lunge press would point the
-        // player at the wrong action.
-        DrawActionRing(centerX, centerY, ActionRingSize, progress, showingLunge ? deniedBoost : 0f);
+        float sinceDenied = Time.time - denied;
+        if (sinceDenied < 0f || sinceDenied >= ActionRingReminderSeconds) return;
+        if (progress >= 1f) return; // recharged while the reminder was up — nothing left to remind about
+
+        // Ease the whole ring out over the trailing stretch instead of popping off.
+        float fadeStart = ActionRingReminderSeconds - ActionRingFadeSeconds;
+        float alpha = sinceDenied <= fadeStart
+            ? 1f
+            : 1f - Mathf.Clamp01((sinceDenied - fadeStart) / ActionRingFadeSeconds);
+
+        DrawActionRing(centerX: GameUIStyle.DesignWidth * 0.5f, centerY: GameUIStyle.DesignHeight * 0.5f,
+            onScreenSize: ActionRingSize, progress: progress, alpha: alpha);
     }
 
-    /// <summary>One ring of the concentric pair: a fill arc (reusing BuildSpinnerArcTexture's frames
-    /// from _lungeSpinnerFrames) that self-hides once <paramref name="progress"/> reaches 1 (ready) —
-    /// unless <paramref name="deniedBoost"/> is still fading out, so the brief "ready" moment during a
-    /// denied-press boost stays visible instead of cutting off mid-flourish. No icon: these are
-    /// ambient cooldown readouts, not click prompts — see DrawDodgeRing / DrawThrowPrompt for the
-    /// elements that still carry a mouse glyph.</summary>
-    private void DrawActionRing(float centerX, float centerY, float onScreenSize, float progress, float deniedBoost)
+    /// <summary>The recharge reminder: a fill arc (reusing BuildSpinnerArcTexture's frames from
+    /// _lungeSpinnerFrames) showing how far along the cooldown is. Only ever drawn in response to a
+    /// press that was refused for being on cooldown, and <paramref name="alpha"/> eases it back out —
+    /// see DrawActionCooldownRings. No icon: this is a reminder, not a click prompt (see DrawDodgeRing /
+    /// DrawThrowPrompt for the elements that still carry a mouse glyph).</summary>
+    private void DrawActionRing(float centerX, float centerY, float onScreenSize, float progress, float alpha)
     {
-        if (progress >= 1f && deniedBoost <= 0f) return;
+        if (alpha <= 0f) return;
 
         int frameIndex = Mathf.Clamp(Mathf.RoundToInt(Mathf.Clamp01(progress) * (SpinnerFrameCount - 1)), 0, SpinnerFrameCount - 1);
         Rect rect = GameUIStyle.Scaled(new Rect(
@@ -2704,15 +2695,11 @@ public sealed class RoundController : MonoBehaviour
             onScreenSize, onScreenSize));
 
         // Faint full-ring backdrop so the fill arc reads against something even near 0 progress.
-        GUI.color = new Color(GameUIStyle.Text.r, GameUIStyle.Text.g, GameUIStyle.Text.b, 0.15f);
+        GUI.color = new Color(GameUIStyle.Text.r, GameUIStyle.Text.g, GameUIStyle.Text.b, 0.15f * alpha);
         GUI.DrawTexture(rect, _lungeSpinnerFrames[SpinnerFrameCount - 1]);
 
-        // Base tint is a quiet passive readout (0.7 alpha, GameUIStyle.Accent); deniedBoost pushes it
-        // toward AccentBright at full alpha — the "you pressed it too early" cue that used to be
-        // DrawLungeSpinner's separate draw, now just this ring flaring brighter.
-        Color tint = Color.Lerp(GameUIStyle.Accent, GameUIStyle.AccentBright, deniedBoost);
-        float alpha = Mathf.Lerp(0.7f, 1f, deniedBoost);
-        GUI.color = new Color(tint.r, tint.g, tint.b, alpha);
+        // Bright accent: this only ever fires on a rejected press, so it IS the "too early" cue.
+        GUI.color = new Color(GameUIStyle.AccentBright.r, GameUIStyle.AccentBright.g, GameUIStyle.AccentBright.b, alpha);
         GUI.DrawTexture(rect, _lungeSpinnerFrames[frameIndex]);
         GUI.color = Color.white;
     }

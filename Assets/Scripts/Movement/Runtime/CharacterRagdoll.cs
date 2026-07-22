@@ -92,6 +92,26 @@ public sealed class CharacterRagdoll : MonoBehaviour
     /// </summary>
     public void Build(Animator animator, CharacterMotor motor, CharacterAnimatorBridge? bridge)
     {
+        // HAND CONTROL BACK FIRST if we're rebuilding over a LIVE ragdoll. Activate turns the agent's
+        // own capsule off and its root body kinematic (see Activate) and relies on Deactivate to undo
+        // that — but this method used to just clear IsActive and rebuild the bones inert, restoring
+        // none of it. The agent was then left with NO enabled collider anywhere: root capsule off, root
+        // body kinematic, motor off, every bone collider back to disabled. It fell straight through the
+        // world. The later Deactivate() calls could not save it either, since they early-return on
+        // !IsActive and this had already cleared the flag.
+        //
+        // It always struck the pest_control model because the only caller that rebuilds a live ragdoll
+        // is a model swap, and the conversion that follows a ragdoll is always Runner -> Tagger — i.e.
+        // raccoon -> pest_control. The raccoon is never the RESULT of such a swap, which is the entire
+        // reason it looked rig-specific.
+        if (IsActive)
+        {
+            IsActive = false;
+            if (_rootCapsule != null) _rootCapsule.enabled = true;
+            if (_rootBody != null) _rootBody.isKinematic = false;
+            if (_motor != null) _motor.enabled = true;
+        }
+
         _boneBodies.Clear();
         _boneColliders.Clear();
         _builtByTransform.Clear();
