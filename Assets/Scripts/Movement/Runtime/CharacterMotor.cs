@@ -1114,6 +1114,16 @@ public sealed class CharacterMotor : MonoBehaviour
         if (wallHit.collider.GetComponentInParent<TrashCanInteractable>() != null)
             return false;
 
+        // Nor is another character a ledge. A capsule is 1.8m tall — under mantleMaxHeight (2.2m) and
+        // over mantleMinHeight — so a tagger diving at a runner probed the runner's own capsule, auto-
+        // mantled, and CancelDive'd its way ONTO the target's head instead of colliding with it. That
+        // killed contact tagging outright: OnCollisionEnter never fired. Same broad-wallMask reasoning
+        // as the trash can above. Guarding on CharacterMotor (not TagAgent) keeps Game.Movement
+        // Rules-agnostic and covers every character, tagger or not.
+        CharacterMotor? otherCharacter = wallHit.collider.GetComponentInParent<CharacterMotor>();
+        if (otherCharacter != null && otherCharacter != this)
+            return false;
+
         if (CurrentSpeed < 0.1f && !_input.JumpHeld && !InteractBuffered)
             return false;
 
