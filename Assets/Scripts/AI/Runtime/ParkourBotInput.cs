@@ -43,7 +43,15 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
     // a band both above and below the bot's current height (ramps rise above a shallow check),
     // not just straight down from a fixed small offset.
     [SerializeField] private float lookAheadDistance = 2.5f;
-    [SerializeField] private float maxSafeDrop = 2f;
+    // 3.5, NOT 2: this is "how far down can floor be before I call it the void", and at 2 it declared
+    // the roof deck under a bot's own feet to be the void. Bots auto-mantle (CharacterMotor gates the
+    // E-press on cameraYaw != null, i.e. the player only), so a tagger running into a cargo container
+    // gets hauled on top without choosing to — and containers are built 2.1m tall, worklights 2.2m,
+    // both deliberately just inside the 2.2m mantle ceiling. From up there every one of the 17 probe
+    // directions lands on deck 2.1m below, 0.1m past the old limit, so ALL of them failed,
+    // FindSafeDirection returned Vector3.zero, and the bot stood still until the round ended. Roofs sit
+    // 10-25m above the street, so 3.5 still detects a real void with enormous margin.
+    [SerializeField] private float maxSafeDrop = 3.5f;
     [SerializeField] private float upwardClearance = 3f;
 
     // Momentum brake horizon. Cliff-avoidance only STEERS, and steering cannot beat momentum: the
