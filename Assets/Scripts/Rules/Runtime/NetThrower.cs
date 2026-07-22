@@ -83,6 +83,11 @@ public sealed class NetThrower : MonoBehaviour
         _cooldownRemaining = _config.netThrowCooldown;
         _windupRemaining = _config.netWindupSeconds;
         _state = ThrowState.Windup;
+        // The Idle-time LateUpdate below re-asserts the carried net's WORLD rotation every frame, which
+        // bakes an arbitrary localRotation under the animated hand bone. The swing pose
+        // (CharacterAnimatorBridge.OrientHand) mounts the pole on the hand's local +Y and assumes the
+        // identity local rotation BuildNet started with — restore that contract as the hand takes over.
+        if (_carriedNet != null) _carriedNet.transform.localRotation = Quaternion.identity;
         _agent.DriveThrowWindup(_config.netWindupSeconds);
     }
 
@@ -271,6 +276,10 @@ public sealed class NetThrower : MonoBehaviour
     // HIT: trap dome over the victim, freeze + struggle for netTrapDuration, THEN the normal tag flow.
     private void ResolveHit(TagAgent victim)
     {
+        // ponytail: the projectile lands at the PREDICTED _landPos while the dome spawns on the victim
+        // (<= netHitRadius apart), so the swap can skip up to 1.1m. Accepted untested — the 0.8m dome
+        // should swallow most of it. If it ever reads as a teleport, drift the flight visual toward the
+        // victim over the last ~30% of t in Update.
         DestroyProjectile();
 
         GameObject? dome = null;
@@ -426,6 +435,10 @@ public sealed class NetThrower : MonoBehaviour
     {
         _projectile = NetVisual.BuildNet(null);
         _projectile.transform.position = _launchPos;
+        // The carried net inherits the hand bone's lossyScale (~1.74x on this rig — see
+        // NetVisual.NetModelScale's tuning note); the unparented projectile doesn't. Copy it so the
+        // net doesn't visibly shrink the instant it leaves the hand.
+        if (_carriedNet != null) _projectile.transform.localScale = _carriedNet.transform.lossyScale;
     }
 
     private void OnDestroy()

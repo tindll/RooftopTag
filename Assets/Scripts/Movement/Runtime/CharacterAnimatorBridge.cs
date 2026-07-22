@@ -162,24 +162,31 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         {
             case ThrowPhase.Windup:
             {
-                float t = Mathf.Clamp01(_throwTimer / _throwWindup);
-                arc = 1f - (1f - t) * (1f - t); // EaseOut into the load
-                authority = Mathf.Clamp01(t / ThrowBlendInFrac);
-                if (t >= 1f) _throwPhase = ThrowPhase.Hold;
+                // The scoop must CONNECT at release: NetThrower.Release() fires the instant its windup
+                // expires, so the LOAD->SCOOP whip is folded into the END of the windup instead of
+                // starting at release. Previously the net left the hand 0.12s (ThrowWhipSeconds) before
+                // the swing visually threw it — a quarter of the whole flight.
+                float loadSeconds = Mathf.Max(0.01f, _throwWindup - ThrowWhipSeconds);
+                if (_throwTimer <= loadSeconds)
+                {
+                    float t = Mathf.Clamp01(_throwTimer / loadSeconds);
+                    arc = 1f - (1f - t) * (1f - t); // EaseOut into the load
+                    authority = Mathf.Clamp01(t / ThrowBlendInFrac);
+                }
+                else
+                {
+                    float u = Mathf.Clamp01((_throwTimer - loadSeconds) / ThrowWhipSeconds);
+                    arc = 1f + u * u; // EaseIn whip LOAD -> SCOOP
+                    if (u >= 1f) _throwPhase = ThrowPhase.Hold;
+                }
                 break;
             }
             case ThrowPhase.Hold:
-                arc = 1f;
+                arc = 2f; // parked at the scoop (a fixed-step of skew, at most) until ReleaseThrow's recoil
                 break;
-            case ThrowPhase.Release when _throwTimer <= ThrowWhipSeconds:
+            case ThrowPhase.Release when _throwTimer <= ThrowRecoilSeconds:
             {
-                float u = _throwTimer / ThrowWhipSeconds;
-                arc = 1f + u * u; // EaseIn whip LOAD → SCOOP
-                break;
-            }
-            case ThrowPhase.Release when _throwTimer <= ThrowWhipSeconds + ThrowRecoilSeconds:
-            {
-                float v = (_throwTimer - ThrowWhipSeconds) / ThrowRecoilSeconds;
+                float v = _throwTimer / ThrowRecoilSeconds;
                 float settle = 1f - (1f - v) * (1f - v);
                 arc = 2f;
                 authority = 1f - settle; // hand the pose back to locomotion
