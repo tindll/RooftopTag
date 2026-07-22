@@ -1,7 +1,13 @@
 # Net carry & stow presentation — design
 
 Date: 2026-07-22
-Status: approved for planning
+Status: **SUPERSEDED** by `2026-07-22-net-carry-stow-rigging-design.md`
+
+> Superseded before implementation. This version hand-rolls what Unity's first-party
+> `com.unity.animation.rigging` package provides (`MultiParentConstraint` for the holster,
+> `TwoBoneIKConstraint` for the grips). The package was installed and the design reworked onto it.
+> Kept for the reasoning trail — the requirements, keypose intent, and the stiffness risk it
+> identifies all carry forward unchanged.
 
 ## Problem
 
