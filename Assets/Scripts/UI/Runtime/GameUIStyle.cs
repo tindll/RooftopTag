@@ -45,7 +45,8 @@ public static class GameUIStyle
     public static readonly Color Success = new Color32(0x5C, 0xC9, 0x6E, 0xFF);
     /// <summary>1px separator / panel rim. Cream at low alpha, so it lifts off charcoal without glowing.</summary>
     public static readonly Color Hairline = new(1f, 0.92f, 0.77f, 0.14f);
-    public static readonly Color Shadow = new(0f, 0f, 0f, 0.45f);
+    // 0.28, not 0.45: a contact shadow should suggest the panel floats, not draw a second edge on it.
+    public static readonly Color Shadow = new(0f, 0f, 0f, 0.28f);
 
     // ---------------------------------------------------------------- Type scale (design-space px @1080p)
 
@@ -166,7 +167,12 @@ public static class GameUIStyle
                 // Texture y=0 is the bottom row and GUI.DrawTexture draws the texture upright, so the
                 // top row (y = height-1) is the edge that meets the panel — that's where alpha peaks.
                 float t = y / (float)(ShadowTexHeight - 1);
-                float a = Shadow.a * t * t; // squared: falls off fast, so it reads as a soft contact shadow
+                // LINEAR, not squared. A squared ramp crushes nearly all of its opacity into the top
+                // fifth of the strip; the strip is only ~11 screen px tall once scaled, so that put the
+                // whole shadow into 2-3 px and it rendered as a hard dark RULE under every panel rather
+                // than a shadow — the 24 texels also alias badly downsampling to 11 px without mips.
+                // Linear spreads the falloff over the full height and resamples cleanly.
+                float a = Shadow.a * t;
                 pixels[y] = new Color(Shadow.r, Shadow.g, Shadow.b, a);
             }
 
@@ -397,8 +403,17 @@ public static class GameUIStyle
 
         // Shadow first, so the panel's antialiased rim draws over its top edge. It's a 1px-wide vertical
         // ramp, so stretching it across the panel width is exactly what it's for.
+        // Inset horizontally by the corner radius: the panel's bottom edge is only straight BETWEEN the
+        // rounded corners, so a full-width strip poked out square past the curve at both ends and read
+        // as a border sticking out from under the panel. GUI.color is reset because DrawTexture
+        // multiplies by it and callers routinely leave it tinted.
         float shadowHeight = Scaled(ShadowTexHeight * 0.75f);
-        GUI.DrawTexture(new Rect(rect.x, rect.yMax, rect.width, shadowHeight), ShadowTex, ScaleMode.StretchToFill, true);
+        float inset = Scaled(PanelRadius);
+        Color prevColor = GUI.color;
+        GUI.color = Color.white;
+        GUI.DrawTexture(new Rect(rect.x + inset, rect.yMax, Mathf.Max(0f, rect.width - inset * 2f), shadowHeight),
+            ShadowTex, ScaleMode.StretchToFill, true);
+        GUI.color = prevColor;
 
         GUI.Box(rect, GUIContent.none, _panelStyle);
     }
