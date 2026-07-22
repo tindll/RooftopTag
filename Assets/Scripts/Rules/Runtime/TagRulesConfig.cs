@@ -97,7 +97,7 @@ public sealed class TagRulesConfig : ScriptableObject
     // the normal tag flow runs. Aimed at the LOCAL player, the flight time doubles as the clutch-dodge
     // reaction window (see RoundController's Dodge region / NetThrower).
     public float netThrowRange = 6f;       // max horizontal distance to acquire a target (a touch past catchRange)
-    public float netThrowCooldown = 2.0f;  // seconds between throws (the net's own rate limiter, independent of the lunge)
+    public float netThrowCooldown = 1.2f;  // seconds between throws (the net's own rate limiter, independent of the lunge). A miss already costs netWindupSeconds + netFlightTime (0.9s) of committed animation before this even starts counting down, so the old 2.0 left over a second of dead air on top of that and a whiffed throw effectively ended the chase. 1.2 keeps a real rate limit while letting a tagger stay in the pursuit.
     public float netWindupSeconds = 0.45f; // wind-up before release: the net is raised, then hurled — long enough for the overhead-load telegraph to read at sprint speed
     public float netFlightTime = 0.45f;    // ballistic flight from hand to landing point; also the local-player dodge-window length
     public float netHitRadius = 1.1f;      // a target still within this of the landing point is caught. Purely a gameplay radius — the trap-dome VISUAL uses NetThrower.TrapDomeVisualRadius instead.

@@ -159,6 +159,10 @@ public sealed class TagAgent : MonoBehaviour
     /// nothing is on cooldown, e.g. a Tagger who hasn't whiffed.</summary>
     public float LungeCooldownProgress =>
         _lungeCooldownDuration > 0f ? Mathf.Clamp01(1f - _lungeCooldownRemaining / _lungeCooldownDuration) : 1f;
+
+    /// <summary>Seconds since this cooldown was armed. The HUD shows only ONE cooldown ring — the one
+    /// belonging to the most recent input — and picks it by whichever elapsed time is smallest.</summary>
+    public float LungeCooldownElapsed => Mathf.Max(0f, _lungeCooldownDuration - _lungeCooldownRemaining);
     public CharacterMotor Motor => _motor;
 
     /// <summary>The net-throw component (the ranged catch, replacing the old hand-tag) — created on this
@@ -774,6 +778,9 @@ public sealed class TagAgent : MonoBehaviour
     /// <summary>0 (just tagged) to 1 (ready) touch-tag cooldown progress for the HUD's outer action
     /// ring — the Tag-mode counterpart to <see cref="NetThrower.CooldownProgress"/>. 1 (self-hides)
     /// whenever nothing is on cooldown.</summary>
+    /// <summary>Seconds since the touch cooldown was armed — see <see cref="LungeCooldownElapsed"/>.</summary>
+    public float TouchCooldownElapsed => Mathf.Max(0f, _config.tagTouchCooldown - _touchCooldownRemaining);
+
     public float TouchCooldownProgress => _config.tagTouchCooldown > 0f
         ? Mathf.Clamp01(1f - _touchCooldownRemaining / _config.tagTouchCooldown)
         : 1f;

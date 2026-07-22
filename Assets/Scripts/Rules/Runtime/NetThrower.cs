@@ -63,6 +63,10 @@ public sealed class NetThrower : MonoBehaviour
     public float CooldownProgress =>
         _config.netThrowCooldown > 0f ? Mathf.Clamp01(1f - _cooldownRemaining / _config.netThrowCooldown) : 1f;
 
+    /// <summary>Seconds since this cooldown was armed. The HUD shows only ONE cooldown ring — the one
+    /// belonging to the most recent input — and picks it by whichever elapsed time is smallest.</summary>
+    public float CooldownElapsed => Mathf.Max(0f, _config.netThrowCooldown - _cooldownRemaining);
+
     internal void Initialize(TagAgent agent, TagRulesConfig config)
     {
         _agent = agent;
@@ -102,7 +106,7 @@ public sealed class NetThrower : MonoBehaviour
         // TAG MODE has no nets at all — the catch is TagAgent.TryTouchTag instead. Refusing here is
         // the whole opt-out: TryThrow no-ops (so the player's right-click and the bots' every-tick
         // call both fall through to the touch tag), HasThrowTarget stays false so the HUD prompt never
-        // lights off the net, and CooldownProgress stays 1 so the outer action ring self-hides. The
+        // lights off the net, and CooldownProgress stays 1 so it never wins the action ring. The
         // component is still created in TagAgent.Configure — one dead MonoBehaviour is cheaper than
         // making the bootstrap mode-aware, and the mode can change between rounds without a rebuild.
         if (_config.mode == GameMode.Tag) return false;

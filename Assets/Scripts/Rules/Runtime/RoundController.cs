@@ -2597,29 +2597,28 @@ public sealed class RoundController : MonoBehaviour
 
     // ---------------------------------------------------------------- Persistent action cooldown rings
     //
-    // Ambient always-on readouts for the lunge and net-throw cooldowns: show for the WHOLE time an
-    // action is actually recharging, self-hiding the instant it's ready. Anchored dead-center — the
-    // same spot the old denied-press-only lunge spinner used — since that's the natural "your action"
-    // focal point; DrawThrowPrompt sits offset below it to avoid colliding. Both rings share one
-    // center point rather than sitting side by side because lunge and net-throw cooldowns can run at
-    // the same time (a tagger who just lunged AND just threw), and concentric reads as "two readouts,
-    // one focal point" where two identical rings side by side would just look like clutter. Lunge is
-    // the INNER ring (both roles use it, so it's the one everyone glances at most) and net-throw is
-    // the OUTER ring (tagger-only, rarer) — sized with a visible gap between them (see the size consts
-    // below) so they read as two distinct rings, not one blob. Reuses the lunge spinner's cached ring
-    // frames (_lungeSpinnerFrames) rather than building yet another texture — same ring shape, just
-    // scaled and quieter-tinted since this is a passive readout, not an alert.
+    // Ambient readout for whichever action is recharging: shows for the WHOLE time an action is
+    // actually on cooldown, self-hiding the instant it's ready. Anchored dead-center — the same spot
+    // the old denied-press-only lunge spinner used — since that's the natural "your action" focal
+    // point; DrawThrowPrompt sits offset below it to avoid colliding. Reuses the lunge spinner's
+    // cached ring frames (_lungeSpinnerFrames) rather than building yet another texture — same ring
+    // shape, just quieter-tinted since this is a passive readout, not an alert.
+    //
+    // EXACTLY ONE ring is drawn, ever. Lunge and catch cooldowns can genuinely run at once (a tagger
+    // who just lunged AND just threw), and this used to draw both as concentric rings at 34 and 48px.
+    // Two near-identical rings a few pixels apart read as one slightly-fat blob, and a player mid-chase
+    // cannot tell which of the two is which anyway. So the ring tracks the MOST RECENT input — the
+    // action you just pressed is the one whose recharge you care about — picked by whichever cooldown
+    // has the smallest elapsed time (see TagAgent.LungeCooldownElapsed / NetThrower.CooldownElapsed).
     //
     // Denied-press feedback (TagAgent.LastDeniedLungeTime, ex-DrawLungeSpinner) folds into the lunge
     // ring as a brightness/alpha boost instead of a separate draw at the same anchor — a persistent
     // ring and a denied-press flash stacked on the same spot were the same information twice.
 
-    private const float ActionRingLungeSize = 34f; // inner ring
-    private const float ActionRingNetSize = 48f;   // outer ring — texture's ring band sits at ~0.41-0.47
-    // of on-screen size (see BuildSpinnerArcTexture's 26/30-of-64 radii), so 34 vs 48 leaves a real gap
-    // between the lunge ring's outer edge (~16) and the net ring's inner edge (~19.5) instead of the
-    // two bands touching. Both stay well under DodgeRingOnScreenSize (72) so the dodge ring still reads
-    // as the dominant outer element if a runner's own lunge ring is up when they get dodge-targeted.
+    // Single ring, sized between the old concentric pair. Stays well under DodgeRingOnScreenSize (72)
+    // so the dodge ring still reads as the dominant outer element if this one is up when a runner gets
+    // dodge-targeted.
+    private const float ActionRingSize = 40f;
 
     private void DrawActionCooldownRings()
     {
@@ -2638,20 +2637,36 @@ public sealed class RoundController : MonoBehaviour
             float fadeStart = SpinnerDeniedWindow - SpinnerFadeWindow;
             deniedBoost = deniedElapsed <= fadeStart ? 1f : 1f - Mathf.Clamp01((deniedElapsed - fadeStart) / SpinnerFadeWindow);
         }
-        DrawActionRing(centerX, centerY, ActionRingLungeSize, _localPlayerAgent.LungeCooldownProgress, deniedBoost);
 
-        // The catch cooldown (outer ring): the net throw in pest control, the touch tag in tag mode.
-        // Only a Tagger can fire either (see NetThrower.CanThrow / TagAgent.CanTouchTag), so a Runner
-        // has nothing to read here — hide it entirely rather than show a permanently-ready ring for an
-        // action they can't use. No denied-press feedback exists for either, so boost is always 0.
-        NetThrower? net = _localPlayerAgent.Net;
+        // Most-recent-input wins: smallest elapsed since its cooldown was armed.
+        float progress = _localPlayerAgent.LungeCooldownProgress;
+        float elapsed = progress < 1f ? _localPlayerAgent.LungeCooldownElapsed : float.MaxValue;
+        bool showingLunge = true;
+
+        // The catch cooldown: the net throw in pest control, the touch tag in tag mode. Only a Tagger
+        // can fire either (see NetThrower.CanThrow / TagAgent.CanTouchTag), so a Runner has nothing to
+        // read here.
         if (_localPlayerAgent.Role == Role.Tagger)
         {
-            if (_config.mode == GameMode.Tag)
-                DrawActionRing(centerX, centerY, ActionRingNetSize, _localPlayerAgent.TouchCooldownProgress, 0f);
-            else if (net != null)
-                DrawActionRing(centerX, centerY, ActionRingNetSize, net.CooldownProgress, 0f);
+            NetThrower? net = _localPlayerAgent.Net;
+            bool tagMode = _config.mode == GameMode.Tag;
+            float catchProgress = tagMode ? _localPlayerAgent.TouchCooldownProgress
+                                          : (net != null ? net.CooldownProgress : 1f);
+            float catchElapsed = tagMode ? _localPlayerAgent.TouchCooldownElapsed
+                                         : (net != null ? net.CooldownElapsed : 0f);
+
+            if (catchProgress < 1f && catchElapsed < elapsed)
+            {
+                progress = catchProgress;
+                elapsed = catchElapsed;
+                showingLunge = false;
+            }
         }
+
+        // The denied-press flash belongs to the lunge, so it only rides along when the lunge is the
+        // ring actually on screen — boosting the net ring for a rejected lunge press would point the
+        // player at the wrong action.
+        DrawActionRing(centerX, centerY, ActionRingSize, progress, showingLunge ? deniedBoost : 0f);
     }
 
     /// <summary>One ring of the concentric pair: a fill arc (reusing BuildSpinnerArcTexture's frames
