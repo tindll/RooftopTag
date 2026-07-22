@@ -33,6 +33,7 @@ public sealed class TagRulesTests
     public void Cleanup()
     {
         if (_sceneRoot != null) Object.DestroyImmediate(_sceneRoot);
+        Time.timeScale = 1f;
     }
 
     [UnityTest]
@@ -699,6 +700,80 @@ public sealed class TagRulesTests
         Assert.IsTrue(tagged, "Runner camped the pipe top for 15s untouched — taggers must edge-stalk to the lip and dive at a hanging target.");
     }
 
+    [UnityTest]
+    public IEnumerator AssignRoles_ForcePlayerAsTagger_PlayerIsTaggerAndBotsAreRunners()
+    {
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
+
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.forcePlayerAsRunner = false;
+        config.forcePlayerAsTagger = true;
+        config.taggerCount = 1; // player is the SOLE tagger; both bots must come out Runners
+
+        (_, _, TagAgent player, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f), config);
+        (_, _, TagAgent botA, _) = CreateTagAgent(new Vector3(3f, 1.1f, 0f), config);
+        (_, _, TagAgent botB, _) = CreateTagAgent(new Vector3(6f, 1.1f, 0f), config);
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        controller.Configure(config);
+        player.SetRoundController(controller);
+        botA.SetRoundController(controller);
+        botB.SetRoundController(controller);
+        controller.RegisterAgent(player, isLocalPlayer: true);
+        controller.RegisterAgent(botA, isLocalPlayer: false);
+        controller.RegisterAgent(botB, isLocalPlayer: false);
+
+        yield return null; // RoundController.Start() -> StartRound() -> AssignRoles()
+
+        Assert.AreEqual(Role.Tagger, player.Role, "forcePlayerAsTagger must pin the local player to Tagger.");
+        Assert.AreEqual(Role.Runner, botA.Role, "With taggerCount=1 every bot must be a Runner (no benching outside chase-me).");
+        Assert.AreEqual(Role.Runner, botB.Role, "With taggerCount=1 every bot must be a Runner (no benching outside chase-me).");
+        Assert.IsTrue(botA.gameObject.activeSelf && botB.gameObject.activeSelf,
+            "forcePlayerAsTagger must never bench bots — benching is chase-me (forcePlayerAsRunner) only.");
+    }
+
+    [UnityTest]
+    public IEnumerator NetThrow_LandsOnBotRunner_ConvertsAfterTrap()
+    {
+        // The human tagger's throw path is byte-identical to a bot's (TagAgent input just calls
+        // Net?.TryThrow()), so exercising TryThrow against a bot victim covers the human-thrown case.
+        // Timeline: windup 0.45 + flight 0.45 + trap 1.2 = 2.1s.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
+
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.roundStartGraceDuration = 0f; // NetThrower.CanThrow gates on IsPastStartGrace
+
+        // Runner 4m ahead of the tagger (+Z), inside netThrowRange (6m), stationary -> lead ~0,
+        // lands within netHitRadius.
+        (_, _, TagAgent tagger, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f), config);
+        (_, _, TagAgent runner, _) = CreateTagAgent(new Vector3(0f, 1.1f, 4f), config);
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        controller.Configure(config);
+        tagger.SetRoundController(controller);
+        runner.SetRoundController(controller);
+        controller.RegisterAgent(tagger, isLocalPlayer: false); // bot resolve path == human-thrown-at-bot path
+        controller.RegisterAgent(runner, isLocalPlayer: false);
+
+        yield return null; // Start() -> StartRound() (AssignRoles will shuffle roles; re-pin below)
+
+        tagger.SetRole(Role.Tagger, startGrace: false);
+        runner.SetRole(Role.Runner, startGrace: false);
+        tagger.Net!.TryThrow();
+
+        // windup 0.45 + flight 0.45 + trap 1.2 = 2.1s; pad for fixed-step slack.
+        yield return new WaitForSeconds(2.6f);
+
+        Assert.AreEqual(Role.Tagger, runner.Role, "A landed net must convert the runner after netTrapDuration.");
+        Assert.IsTrue(runner.IsInGrace, "Net-trap conversion must start the normal conversion grace.");
+    }
+
     // ---------------------------------------------------------------- Helpers
 
     private static GameObject CreateGround(Transform parent, Vector3 center, Vector3 size)
@@ -710,7 +785,8 @@ public sealed class TagRulesTests
         return go;
     }
 
-    private (GameObject go, CharacterMotor motor, TagAgent agent, ScriptedCharacterInput input) CreateTagAgent(Vector3 position)
+    private (GameObject go, CharacterMotor motor, TagAgent agent, ScriptedCharacterInput input) CreateTagAgent(
+        Vector3 position, TagRulesConfig? config = null)
     {
         var go = new GameObject("TestAgent");
         go.transform.SetParent(_sceneRoot!.transform, false);
@@ -726,7 +802,7 @@ public sealed class TagRulesTests
         motorSo.ApplyModifiedProperties();
 
         TagAgent agent = go.AddComponent<TagAgent>();
-        agent.Configure(_tagConfig, motor, go.GetComponentInChildren<Renderer>(), isLocalPlayer: false);
+        agent.Configure(config ?? _tagConfig, motor, go.GetComponentInChildren<Renderer>(), isLocalPlayer: false);
 
         return (go, motor, agent, input);
     }
