@@ -73,18 +73,20 @@ public sealed class NetThrower : MonoBehaviour
 
     /// <summary>Attempt a throw (player right-click, or a bot's rate-limited AI hook). Mirrors the gates
     /// <see cref="TagAgent.TryLunge"/> checks, plus the net's own cooldown. Self-gating, so a bot may call
-    /// it every tick — it no-ops unless a shot is actually available. NO BLIND THROWS: since bots call
-    /// this every tick, committing without a valid target would have every tagger hurling nets at
-    /// nothing and burning the cooldown right when a real target comes in range. No target = keep the
-    /// net in hand.</summary>
+    /// it every tick — it no-ops unless a shot is actually available.
+    /// BLIND THROWS ARE PLAYER-ONLY: the local player commits on an empty target (windup, flight, miss,
+    /// cooldown spent — the whole point is "throw whenever you like"), because a human decides when to
+    /// press the button. A bot calls this every tick, though, so for a bot a null target still keeps the
+    /// net in hand — commit it anyway and every bot tagger hurls nets at empty air continuously, burning
+    /// the cooldown right when a real target comes in range.</summary>
     public void TryThrow()
     {
         if (!CanThrow()) return;
 
         TagAgent? target = AcquireTarget();
-        if (target == null) return;
+        if (target == null && !_agent.IsLocalPlayer) return; // bots: NO BLIND THROWS (see above)
 
-        _targetAgent = target;
+        _targetAgent = target; // null here = the local player's blind throw; resolves as a clean miss
         _cooldownRemaining = _config.netThrowCooldown;
         _windupRemaining = _config.netWindupSeconds;
         _state = ThrowState.Windup;

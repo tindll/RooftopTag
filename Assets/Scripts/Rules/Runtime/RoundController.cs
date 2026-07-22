@@ -188,6 +188,10 @@ public sealed class RoundController : MonoBehaviour
     private int _trashPoints;
     private readonly List<TrashCanInteractable> _cans = new();       // every can in the scene
     private readonly List<TrashCanInteractable> _activeCans = new();  // activated, not-yet-eaten subset
+    // Set only at the trash-win EndRound call below (never at the timer-expiry Runner win), so
+    // DrawEndScreen can tell "runners ate the cans" from "runners outlasted the clock" without
+    // string-matching the EndRound reason text. Cleared by StartRound with the rest of the per-round state.
+    private bool _runnersWonByTrash;
     // TODO wire MatchMetrics.CansEaten — RoundController holds no MatchMetrics ref (it's per-agent on
     // ParkourBotInput), so the metrics agent reads this exposed counter instead.
     private int _cansEatenThisMatch;
@@ -640,6 +644,7 @@ public sealed class RoundController : MonoBehaviour
         _resultMessage = "";
         _playerLost = false;
         _caughtByName = "";
+        _runnersWonByTrash = false;
         _tagCounts.Clear();
         _taggerClaims.Clear();
         // Dodge budget resets per round; cancel any window a mid-round R abandoned (RestartRound hands
@@ -1090,6 +1095,7 @@ public sealed class RoundController : MonoBehaviour
                     _cansEatenThisMatch++; // TODO wire MatchMetrics.CansEaten
                     if (_trashPoints >= _config.trashPointsToWin)
                     {
+                        _runnersWonByTrash = true; // DrawEndScreen's cue to say "ATE THE TRASH" instead of "ESCAPED"
                         EndRound("Runners win! The trash has been eaten.");
                         return;
                     }
@@ -1563,22 +1569,25 @@ public sealed class RoundController : MonoBehaviour
             rowY += 26f;
         }
 
-        // Verdict: "YOU ESCAPED" / "CAUGHT" (round-level runner copy), "ALL CAUGHT" / "THEY ESCAPED"
-        // (round-level tagger copy), or the match-level headline once the match itself is decided —
-        // pop-in punch + a short upward slide, both driven by openT.
+        // Verdict: "YOU ESCAPED"/"YOU ATE THE TRASH" / "CAUGHT" (round-level runner copy), "ALL CAUGHT" /
+        // "THEY ESCAPED"/"THEY ATE THE TRASH" (round-level tagger copy), or the match-level headline once
+        // the match itself is decided — pop-in punch + a short upward slide, both driven by openT.
         // "CAUGHT" only fits a loss with a catcher; a street fall has none (_caughtByName is set
         // exclusively by PlayerCaught) and reads as "YOU DIED" instead. Ordering matters: a Tagger
         // who ran out the clock has _playerLost == false AND an empty _caughtByName, so _playerLost
         // must be checked before falling back to the catcher-name branch, or that case would
         // misread as "YOU DIED".
+        // Runners win two different ways (outlast the clock, or eat trashPointsToWin cans) and both land
+        // here as the same runnersWon result — _runnersWonByTrash (set only at the trash-win EndRound
+        // call) is what tells the two apart so the copy doesn't call a trash win "ESCAPED".
         bool localIsRunner = _localPlayerAgent == null || _localPlayerAgent.Role == Role.Runner;
         string verdict = matchEnd
             ? (playerWonMatch ? $"MATCH WON {_matchPlayerWins}-{_matchBotWins}" : $"MATCH LOST {_matchPlayerWins}-{_matchBotWins}")
             : localWon
-                ? (localIsRunner ? "YOU ESCAPED" : "ALL CAUGHT")
+                ? (localIsRunner ? (_runnersWonByTrash ? "YOU ATE THE TRASH" : "YOU ESCAPED") : "ALL CAUGHT")
                 : _playerLost
                     ? (string.IsNullOrEmpty(_caughtByName) ? "YOU DIED" : "CAUGHT")
-                    : "THEY ESCAPED"; // a Tagger who ran out the clock; a Runner can't reach here (timer expiry IS their win)
+                    : (_runnersWonByTrash ? "THEY ATE THE TRASH" : "THEY ESCAPED"); // a Tagger's loss; a Runner can't reach here (a Runner win IS their win)
         bool verdictWon = matchEnd ? playerWonMatch : localWon;
         Color verdictColor = verdictWon ? GameUIStyle.AccentBright : _config.taggerColor;
         int verdictSize = matchEnd ? GameUIStyle.Title : GameUIStyle.Display;
@@ -1607,10 +1616,10 @@ public sealed class RoundController : MonoBehaviour
         if (!matchEnd)
         {
             string subline = localWon
-                ? (localIsRunner ? "survived the timer" : "every runner in the net")
+                ? (localIsRunner ? (_runnersWonByTrash ? "every can stripped bare" : "survived the timer") : "every runner in the net")
                 : _playerLost
                     ? (!string.IsNullOrEmpty(_caughtByName) ? $"caught by {_caughtByName}" : "the street broke your fall")
-                    : "the runners outlasted the clock";
+                    : (_runnersWonByTrash ? "every can stripped bare" : "the runners outlasted the clock");
             GUIStyle sublineStyle = GameUIStyle.Label(GameUIStyle.Body, TextAnchor.MiddleCenter);
             sublineStyle.normal.textColor = new Color(GameUIStyle.TextDim.r, GameUIStyle.TextDim.g, GameUIStyle.TextDim.b, Mathf.Clamp01(openT * 2f));
             GUI.Label(GameUIStyle.Scaled(new Rect(panel.x, rowY, panel.width, 22f)), subline, sublineStyle);
