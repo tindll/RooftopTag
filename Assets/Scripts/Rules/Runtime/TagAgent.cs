@@ -808,7 +808,7 @@ public sealed class TagAgent : MonoBehaviour
             other.SetRole(Role.Tagger, startGrace: true);
         other.WasTagged?.Invoke(other, this);
         AudioSource.PlayClipAtPoint(GetBoopClip(), other.transform.position);
-        _roundController?.RecordTag(this);
+        _roundController?.RecordTag(this, other);
 
         // Tag-moment juice — ONLY when the local player is the tagger or the one tagged, AND graphics
         // exist. Same guard as OnLanded (~:171): PerformTag runs for every bot-on-bot tag in the

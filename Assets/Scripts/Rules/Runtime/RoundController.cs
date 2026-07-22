@@ -439,11 +439,19 @@ public sealed class RoundController : MonoBehaviour
     /// <summary>Loose tagger coordination: taggers record who they're currently pursuing so others prefer an unclaimed runner over piling onto the same one.</summary>
     public void ClaimTarget(TagAgent tagger, TagAgent target) => _taggerClaims[tagger] = target;
 
-    /// <summary>Increments the tagger's tag count for the summary screen. Called from TagAgent.PerformTag for every landed tag.</summary>
-    public void RecordTag(TagAgent tagger)
+    // Last landed tag (tagger, victim) — read by the win check to decide whether the round-winning
+    // catch was the local player's and deserves the "YOU CAUGHT" kill cam.
+    private TagAgent? _lastTagTagger;
+    private TagAgent? _lastTagVictim;
+
+    /// <summary>Increments the tagger's tag count for the summary screen and remembers the pair.
+    /// Called from TagAgent.ExecuteTag for every landed tag.</summary>
+    public void RecordTag(TagAgent tagger, TagAgent victim)
     {
         _tagCounts.TryGetValue(tagger, out int count);
         _tagCounts[tagger] = count + 1;
+        _lastTagTagger = tagger;
+        _lastTagVictim = victim;
     }
 
     /// <summary>Nearest Runner not already claimed by another Tagger; falls back to the plain nearest Runner if every Runner is claimed (better to double up than idle).</summary>
@@ -624,6 +632,8 @@ public sealed class RoundController : MonoBehaviour
         // timeScale back to 1 right after this, so CancelDodgeWindow deliberately leaves time alone).
         _dodgeUsesThisRound = 0;
         CancelDodgeWindow();
+        _lastTagTagger = null;
+        _lastTagVictim = null;
         // A faller mid-sequence when the round ended must not leak into this one and get consequenced
         // (respawned + converted) seconds after AssignRoles below has already placed them. Un-ragdoll
         // them on the way out: dropping them from the set is the last chance anything has to, and
@@ -1069,6 +1079,17 @@ public sealed class RoundController : MonoBehaviour
 
         if (runnersRemaining == 0)
         {
+            // Player-tagger's round-winning catch gets the victim-side cinematic treatment, final catch
+            // ONLY (a replay per catch would freeze the hunt up to 10 times a round). A bot co-tagger
+            // landing the last catch gets no replay — it's the player's moment or nothing.
+            if (_killCamPlayback != null && _localPlayerAgent != null
+                && _localPlayerAgent.Role == Role.Tagger
+                && _lastTagTagger == _localPlayerAgent && _lastTagVictim != null)
+            {
+                _killCamPlayback.Play(_lastTagTagger, _lastTagVictim,
+                    $"YOU CAUGHT {_lastTagVictim.DisplayName}", () => EndRound("Taggers win! All runners tagged."));
+                return;
+            }
             EndRound("Taggers win! All runners tagged.");
             return;
         }
@@ -1185,7 +1206,7 @@ public sealed class RoundController : MonoBehaviour
         // timeScale 0) — no explicit suppression needed.
         if (_killCamPlayback != null)
         {
-            _killCamPlayback.Play(tagger, player, tagger.DisplayName, () => EndRound("You were tagged!"));
+            _killCamPlayback.Play(tagger, player, $"CAUGHT BY {tagger.DisplayName}", () => EndRound("You were tagged!"));
             return;
         }
         EndRound("You were tagged!");

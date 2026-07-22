@@ -115,9 +115,10 @@ public sealed class KillCamPlayback : MonoBehaviour
     /// then holds <see cref="PostTagHold"/> on the tag itself. There is no skip — it plays to the end.
     /// <paramref name="onComplete"/> fires on that natural finish — and immediately, without a replay,
     /// if there's nothing to show (no recorder, no data, headless), so a caller waiting on it to reach an
-    /// end screen always gets there.
+    /// end screen always gets there. <paramref name="caughtLabel"/> is the full caption shown on screen
+    /// (e.g. "CAUGHT BY NAME" for the victim's view, "YOU CAUGHT NAME" for the tagger's).
     /// </summary>
-    public void Play(TagAgent tagger, TagAgent victim, string taggerName, System.Action onComplete)
+    public void Play(TagAgent tagger, TagAgent victim, string caughtLabel, System.Action onComplete)
     {
         // No kill cam in the headless self-play harness: freezing timeScale for a replay nobody can see
         // would stall/skew the metric batch. Same guard as the rest of the presentation-only code here.
@@ -150,7 +151,7 @@ public sealed class KillCamPlayback : MonoBehaviour
         _tagger = tagger;
         _victim = victim;
         _onComplete = onComplete;
-        _caughtLabel = $"CAUGHT BY {taggerName}";
+        _caughtLabel = caughtLabel;
         _holdRemaining = PostTagHold;
 
         // Freeze the sim. timeScale 0 stops FixedUpdate, so motors/physics/bot AI all stop for free and
