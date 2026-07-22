@@ -300,6 +300,20 @@ public sealed class KillCamPlayback : MonoBehaviour
             animator.SetBool(CatchingId, frame.Catching);
             animator.SetBool(FlippingId, frame.Flipping);
             animator.SetBool(AirDivingId, frame.AirDiving);
+
+            // Replay the net swing too. It lives on the rig, not the Animator, so restoring only the
+            // Animator params above replayed a tagger who carries the net through the whole catch and
+            // never throws it — the reason the kill cam showed no catch.
+            var netRig = entry.Agent.GetComponent<Game.Movement.NetRigController>();
+            if (netRig != null)
+            {
+                netRig.SetReplayThrow(frame.NetThrowArc, frame.NetThrowBlend);
+                // CharacterAnimatorBridge normally pumps Tick, but it is disabled for the replay (it
+                // would fight DriveAgents), so drive the rig here or the replayed swing never applies.
+                // Unscaled delta: the replay runs with timeScale frozen, like the Animator above.
+                netRig.Tick((Game.Movement.MotorState)frame.MotorState, frame.Diving, frame.Flipping,
+                    Time.unscaledDeltaTime);
+            }
         }
     }
 
@@ -381,6 +395,12 @@ public sealed class KillCamPlayback : MonoBehaviour
         {
             if (entry.Animator != null) entry.Animator.updateMode = entry.PriorUpdateMode;
             if (entry.Bridge != null) entry.Bridge.enabled = entry.BridgeWasEnabled;
+
+            // Hand the net swing back to its own phase machine, or the rig would stay pinned to the
+            // last replayed frame — which for a catch replay is the scoop, i.e. the net stranded out
+            // in front of the tagger for the rest of the round.
+            var netRig = entry.Agent != null ? entry.Agent.GetComponent<Game.Movement.NetRigController>() : null;
+            if (netRig != null) netRig.ClearReplayThrow();
 
             // Critical for the resume-play (F9) path: we wrote these transforms, and with
             // Physics.autoSyncTransforms on, the last pose we wrote would be synced into each

@@ -27,6 +27,13 @@ public struct KillCamFrame
     /// a frame for. Never touches an Animator, so it's exempt from the hash-id half of the landmine
     /// above.</summary>
     public bool DodgeCueActive;
+
+    /// <summary>The net-throw swing, sampled off <see cref="Game.Movement.NetRigController"/>. Arc runs
+    /// READY(0) → LOAD(1) → SCOOP(2); Blend is how much authority it holds over the carry pose. NOT an
+    /// Animator param — the swing is rig-driven, so restoring only Animator state replayed a tagger who
+    /// carries the net and never throws it. Exempt from the hash-id half of the landmine above, but it
+    /// DOES need the lerp entry and the read/write pair.</summary>
+    public float NetThrowArc, NetThrowBlend;
 }
 
 /// <summary>
@@ -213,6 +220,8 @@ public sealed class KillCamRecorder : MonoBehaviour
             Flipping = nearest.Flipping,
             AirDiving = nearest.AirDiving,
             DodgeCueActive = nearest.DodgeCueActive,
+            NetThrowArc = Mathf.Lerp(a.NetThrowArc, b.NetThrowArc, t),
+            NetThrowBlend = Mathf.Lerp(a.NetThrowBlend, b.NetThrowBlend, t),
         };
     }
 
@@ -264,6 +273,16 @@ public sealed class KillCamRecorder : MonoBehaviour
                 frame.Catching = animator.GetBool(CatchingId);
                 frame.Flipping = animator.GetBool(FlippingId);
                 frame.AirDiving = animator.GetBool(AirDivingId);
+            }
+
+            // The net swing is rig state, not Animator state, so it is sampled separately. Re-resolved
+            // per tick like the animator above: a model swap destroys and rebuilds the rig, and the
+            // controller component itself is reused across that.
+            var netRig = agent.GetComponent<Game.Movement.NetRigController>();
+            if (netRig != null)
+            {
+                frame.NetThrowArc = netRig.ThrowArc;
+                frame.NetThrowBlend = netRig.ThrowBlend;
             }
 
             int slot = _writeIndex[i];

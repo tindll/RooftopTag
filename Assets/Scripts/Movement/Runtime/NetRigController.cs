@@ -207,11 +207,41 @@ public sealed class NetRigController : MonoBehaviour
     /// <summary>Driven each frame by CharacterAnimatorBridge. Cosmetic only — nothing in the motor or
     /// the tag rules ever waits on this, so a roll begins on exactly the frame it always did and the
     /// stow simply plays over its opening frames.</summary>
+    /// <summary>Where the throw is along READY(0) → LOAD(1) → SCOOP(2), and how much authority it has.
+    /// Sampled by KillCamRecorder: the swing lives on this rig, NOT on any Animator parameter, so a
+    /// replay that only restores Animator state shows the tagger carrying the net and never throwing —
+    /// which is why the kill cam had no catch animation.</summary>
+    public float ThrowArc { get; private set; }
+    public float ThrowBlend => _throwBlend;
+
+    private bool _replayDriven;
+    private float _replayArc, _replayBlend;
+
+    /// <summary>Drive the swing from recorded values instead of the live phase machine (kill-cam replay).
+    /// Re-asserted every replayed frame; <see cref="ClearReplayThrow"/> hands control back.</summary>
+    public void SetReplayThrow(float arc, float blend)
+    {
+        _replayDriven = true;
+        _replayArc = arc;
+        _replayBlend = blend;
+    }
+
+    /// <summary>Hand the swing back to the live phase machine when a replay ends.</summary>
+    public void ClearReplayThrow()
+    {
+        _replayDriven = false;
+        _throwPhase = ThrowPhase.None;
+        _throwTimer = 0f;
+    }
+
     public void Tick(MotorState state, bool diving, bool flipping, float deltaTime)
     {
         if (_mount == null) return;
 
-        var (arc, throwBlend) = AdvanceThrow(deltaTime);
+        // A replay drives the swing from recorded frames; AdvanceThrow must not also run, or it would
+        // fight the scrub and re-enter Hold on its own clock.
+        var (arc, throwBlend) = _replayDriven ? (_replayArc, _replayBlend) : AdvanceThrow(deltaTime);
+        ThrowArc = arc;
         _throwBlend = throwBlend;
 
         if (_throwSocket != null && _chest != null && _agent != null)
