@@ -45,8 +45,6 @@ public static class GameUIStyle
     public static readonly Color Success = new Color32(0x5C, 0xC9, 0x6E, 0xFF);
     /// <summary>1px separator / panel rim. Cream at low alpha, so it lifts off charcoal without glowing.</summary>
     public static readonly Color Hairline = new(1f, 0.92f, 0.77f, 0.14f);
-    // 0.28, not 0.45: a contact shadow should suggest the panel floats, not draw a second edge on it.
-    public static readonly Color Shadow = new(0f, 0f, 0f, 0.28f);
 
     // ---------------------------------------------------------------- Type scale (design-space px @1080p)
 
@@ -91,7 +89,6 @@ public static class GameUIStyle
     private const int PanelTexSize = 32;   // 9-slice source: corners + a stretched 8px middle
     private const int PanelRadius = 10;
     private const int PanelBorder = 12;    // > radius so the slice never cuts into the curve; < size/2
-    private const int ShadowTexHeight = 24;
     private const int GradientTexWidth = 64;
     private const int VignetteTexSize = 128;
 
@@ -99,7 +96,6 @@ public static class GameUIStyle
     private static Texture2D? _buttonNormalTex;
     private static Texture2D? _buttonHoverTex;
     private static Texture2D? _buttonPressedTex;
-    private static Texture2D? _shadowTex;
     private static Texture2D? _gradientTex;
     private static Texture2D? _vignetteTex;
     private static Texture2D? _thumbTex;
@@ -151,41 +147,6 @@ public static class GameUIStyle
     /// <summary>1px hairline. ponytail: Unity's built-in white texture already IS a 1x1 — tint it with
     /// GUI.color, same as the existing HUD/kill-cam letterbox draws do. Nothing to generate.</summary>
     public static Texture2D HairlineTex => Texture2D.whiteTexture;
-
-    /// <summary>Soft drop-shadow strip: opaque-ish at the TOP row, fading to clear downward. Draw it
-    /// directly beneath a panel's bottom edge.</summary>
-    public static Texture2D? ShadowTex
-    {
-        get
-        {
-            if (_shadowTex != null) return _shadowTex;
-            if (Headless) return null;
-
-            var pixels = new Color[ShadowTexHeight];
-            for (int y = 0; y < ShadowTexHeight; y++)
-            {
-                // Texture y=0 is the bottom row and GUI.DrawTexture draws the texture upright, so the
-                // top row (y = height-1) is the edge that meets the panel — that's where alpha peaks.
-                float t = y / (float)(ShadowTexHeight - 1);
-                // LINEAR, not squared. A squared ramp crushes nearly all of its opacity into the top
-                // fifth of the strip; the strip is only ~11 screen px tall once scaled, so that put the
-                // whole shadow into 2-3 px and it rendered as a hard dark RULE under every panel rather
-                // than a shadow — the 24 texels also alias badly downsampling to 11 px without mips.
-                // Linear spreads the falloff over the full height and resamples cleanly.
-                float a = Shadow.a * t;
-                pixels[y] = new Color(Shadow.r, Shadow.g, Shadow.b, a);
-            }
-
-            _shadowTex = new Texture2D(1, ShadowTexHeight, TextureFormat.RGBA32, false)
-            {
-                filterMode = FilterMode.Bilinear,
-                wrapMode = TextureWrapMode.Clamp,
-            };
-            _shadowTex.SetPixels(pixels);
-            _shadowTex.Apply();
-            return _shadowTex;
-        }
-    }
 
     /// <summary>Horizontal accent gradient (accent -> bright, left to right). Meter fills, slider fills,
     /// underlines. Tint with GUI.color for role-coloured variants.</summary>
@@ -394,28 +355,19 @@ public static class GameUIStyle
 
     // ---------------------------------------------------------------- Draw helpers (design-space rects)
 
-    /// <summary>Rounded charcoal panel + its contact shadow. Rect is design space.</summary>
+    /// <summary>Rounded charcoal panel. Rect is design space.</summary>
+    // No drop shadow. There used to be a ramp strip drawn under the bottom edge, and at HUD scale it
+    // never read as a shadow: the strip is only ~11 screen px tall, it is a hard-edged rectangle under
+    // a ROUNDED panel so its square ends poked out past the curve, and it was darker than the panel's
+    // own fill — so on anything but a flat dark backdrop the "shadow" became the most prominent part of
+    // the widget and read as a black border ruled under every HUD element. Softening it (linear ramp,
+    // lower alpha, inset ends) helped but did not fix the fundamental problem. The panel already reads
+    // as a distinct surface from its charcoal fill and hairline rim; it does not need a shadow.
     public static void Panel(Rect designRect)
     {
         if (Headless) return;
         EnsureStyles();
-        Rect rect = Scaled(designRect);
-
-        // Shadow first, so the panel's antialiased rim draws over its top edge. It's a 1px-wide vertical
-        // ramp, so stretching it across the panel width is exactly what it's for.
-        // Inset horizontally by the corner radius: the panel's bottom edge is only straight BETWEEN the
-        // rounded corners, so a full-width strip poked out square past the curve at both ends and read
-        // as a border sticking out from under the panel. GUI.color is reset because DrawTexture
-        // multiplies by it and callers routinely leave it tinted.
-        float shadowHeight = Scaled(ShadowTexHeight * 0.75f);
-        float inset = Scaled(PanelRadius);
-        Color prevColor = GUI.color;
-        GUI.color = Color.white;
-        GUI.DrawTexture(new Rect(rect.x + inset, rect.yMax, Mathf.Max(0f, rect.width - inset * 2f), shadowHeight),
-            ShadowTex, ScaleMode.StretchToFill, true);
-        GUI.color = prevColor;
-
-        GUI.Box(rect, GUIContent.none, _panelStyle);
+        GUI.Box(Scaled(designRect), GUIContent.none, _panelStyle);
     }
 
     /// <summary>Button with hover/pressed states. Rect is design space. Returns true on click.</summary>

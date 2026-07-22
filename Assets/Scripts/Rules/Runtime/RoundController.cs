@@ -2041,13 +2041,10 @@ public sealed class RoundController : MonoBehaviour
         Rect mapRect = GameUIStyle.Scaled(mapRectDesign);
         float iconSize = GameUIStyle.Scaled(MinimapIconSize);
 
-        // Soft contact shadow — reuses GameUIStyle's generated ShadowTex with the same
-        // strip-below-the-bottom-edge idiom GameUIStyle.Panel uses, so the map reads as sitting ON the
-        // screen instead of floating flat against the 3D scene behind it.
-        Texture2D? shadowTex = GameUIStyle.ShadowTex;
-        if (shadowTex != null)
-            GUI.DrawTexture(new Rect(mapRect.x, mapRect.yMax, mapRect.width, GameUIStyle.Scaled(10f)), shadowTex, ScaleMode.StretchToFill, true);
-
+        // No contact shadow: this map is a CIRCLE, and the strip-below-the-bottom-edge idiom draws a
+        // straight rectangle whose square ends stuck out past the curve on both sides. It read as a
+        // shelf under the map rather than a shadow. Removed along with GameUIStyle.Panel's — same
+        // artifact, same reason.
         GUI.color = Color.white;
         if (_minimapMaskMaterial != null && _minimapCompositeTexture != null)
         {
@@ -2436,7 +2433,7 @@ public sealed class RoundController : MonoBehaviour
         float radius = halfW * 0.9f; // most of the half-width — reads as a rounded/pill silhouette, not a boxy rect
         float innerX = halfW - radius;
         float innerY = halfH - radius;
-        // Texture row 0 is the BOTTOM (Unity's texture-space convention — see GameUIStyle.ShadowTex), so
+        // Texture row 0 is the BOTTOM (Unity's texture-space convention), so
         // "40% down from the top" is 60% up from the bottom.
         float splitRowFromBottom = height * 0.6f;
 
