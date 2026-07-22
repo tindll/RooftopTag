@@ -54,7 +54,6 @@ public sealed class TagAgent : MonoBehaviour
     private float _slideLean;
     private bool _wasAirDiving;
 
-    private const int RingSegments = 48;
 
     private static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
 
@@ -104,7 +103,6 @@ public sealed class TagAgent : MonoBehaviour
     private Coroutine? _armCoroutine;
     private MotorState _previousMotorState;
 
-    private LineRenderer? _reachRing;
     private static AudioClip? _boopClip;
     private static AudioClip? _convertedClip;
 
@@ -260,18 +258,6 @@ public sealed class TagAgent : MonoBehaviour
         }
         _previousMotorState = _motor.CurrentState;
 
-        if (_isLocalPlayer)
-        {
-            var ringGo = new GameObject("TagReachRing (debug)");
-            _reachRing = ringGo.AddComponent<LineRenderer>();
-            _reachRing.loop = true;
-            _reachRing.positionCount = RingSegments;
-            _reachRing.useWorldSpace = true;
-            _reachRing.widthMultiplier = 0.05f;
-            _reachRing.material = new Material(Shader.Find("Sprites/Default"));
-            _reachRing.enabled = false;
-        }
-
         UpdateColor();
     }
 
@@ -285,7 +271,6 @@ public sealed class TagAgent : MonoBehaviour
     {
         _lungeAction?.Dispose();
         _tagAction?.Dispose();
-        if (_reachRing != null) Destroy(_reachRing.gameObject);
         _motor.Landed -= OnLanded;
         _motor.Jumped -= OnJumped;
         _motor.MantleStarted -= OnMantleStarted;
@@ -331,13 +316,6 @@ public sealed class TagAgent : MonoBehaviour
             _lungeTagWindowRemaining -= Time.deltaTime;
 
         TickNetTrap();
-
-        if (_reachRing != null)
-        {
-            bool showRing = Role == Role.Tagger && !IsInGrace;
-            _reachRing.enabled = showRing;
-            if (showRing) UpdateReachRing();
-        }
 
         // Procedural capsule arm gestures — skipped for animated models (the Animator poses the arms).
         if (!_proceduralBody) return;
@@ -944,25 +922,6 @@ public sealed class TagAgent : MonoBehaviour
         Quaternion rotation = Quaternion.Euler(degrees, 0f, 0f);
         if (_leftArmPivot != null) _leftArmPivot.localRotation = rotation;
         if (_rightArmPivot != null) _rightArmPivot.localRotation = rotation;
-    }
-
-    // ---------------------------------------------------------------- Debug reach ring
-
-    private void UpdateReachRing()
-    {
-        float radius = CurrentReachRadius();
-
-        Color ringColor = _lungeCooldownRemaining > 0f ? new Color(0.6f, 0.6f, 0.6f, 0.6f) : new Color(1f, 0.25f, 0.2f, 0.8f);
-        _reachRing!.startColor = ringColor;
-        _reachRing.endColor = ringColor;
-
-        Vector3 center = transform.position + Vector3.up * 0.05f;
-        for (int i = 0; i < RingSegments; i++)
-        {
-            float angle = i / (float)RingSegments * Mathf.PI * 2f;
-            Vector3 point = center + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * radius;
-            _reachRing.SetPosition(i, point);
-        }
     }
 
     // ---------------------------------------------------------------- Tag sound

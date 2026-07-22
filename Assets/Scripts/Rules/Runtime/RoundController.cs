@@ -293,6 +293,7 @@ public sealed class RoundController : MonoBehaviour
             SetupLungeSpinner();
             SetupDodgeRing();
             SetupDodgeMouseIcon();
+            SetupThrowPromptIcon();
         }
     }
 
@@ -1293,6 +1294,7 @@ public sealed class RoundController : MonoBehaviour
 
         DrawMinimap();
         DrawLungeSpinner();
+        DrawThrowPrompt();
     }
 
     // Top-center HUD capsule: [SCORE PIPS][TIMER][BINS] merged into one GameUIStyle.Panel strip
@@ -2295,6 +2297,20 @@ public sealed class RoundController : MonoBehaviour
     private Texture2D[]? _dodgeRingFrames;
     private Texture2D? _dodgeMouseIconTex;
 
+    // Right-click "you could land a throw" prompt — same glyph family as the dodge icon, sized the
+    // same, but sits just below dead-center: the lunge spinner and dodge ring both anchor exactly
+    // screen-center, so stacking a third element there would collide with the spinner's denied-press flash.
+    private const int ThrowPromptTexWidth = 22;
+    private const int ThrowPromptTexHeight = 30;
+    private const float ThrowPromptOnScreenWidth = 26f;
+    private const float ThrowPromptOnScreenHeight = 36f;
+    private const float ThrowPromptYOffset = 70f; // design units below screen center
+    private const float ThrowPromptFadeSeconds = 0.15f; // subtle pop-in as a target enters/leaves range
+
+    private Texture2D? _throwPromptIconTex;
+    private float _throwPromptFadeStartUnscaled = float.NegativeInfinity;
+    private bool _throwPromptWasVisible;
+
     private void SetupDodgeRing()
     {
         if (_dodgeRingFrames != null) return;
@@ -2314,6 +2330,14 @@ public sealed class RoundController : MonoBehaviour
         if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return;
 
         _dodgeMouseIconTex = BuildMouseIconTexture(DodgeMouseIconTexWidth, DodgeMouseIconTexHeight);
+    }
+
+    private void SetupThrowPromptIcon()
+    {
+        if (_throwPromptIconTex != null) return;
+        if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) return; // same headless/-nographics guard as SetupDodgeMouseIcon
+
+        _throwPromptIconTex = BuildMouseIconTexture(ThrowPromptTexWidth, ThrowPromptTexHeight, litRight: true);
     }
 
     /// <summary>Screen-center draining red ring + centered mouse-LMB glyph. Called only while
@@ -2344,14 +2368,14 @@ public sealed class RoundController : MonoBehaviour
         GUI.DrawTexture(iconRect, _dodgeMouseIconTex);
     }
 
-    /// <summary>Small mouse-glyph icon for the dodge ring: a tall rounded-rect body (same SDF
-    /// rounded-rect math as GameUIStyle.RoundedRect, just non-square) split by a horizontal line 40%
-    /// down from the top into a "buttons" section and a "body" section below it. The buttons section's
-    /// LEFT half — the mouse's left button, since dodging is bound to LMB — is lit in
-    /// GameUIStyle.AccentBright; everything else (right button + body) stays a dim neutral, so the lit
-    /// half reads as "click this". Built once via SetPixels, same idiom as BuildDotTexture/
+    /// <summary>Small mouse-glyph icon shared by the dodge cue (LMB) and the throw prompt (RMB): a tall
+    /// rounded-rect body (same SDF rounded-rect math as GameUIStyle.RoundedRect, just non-square) split
+    /// by a horizontal line 40% down from the top into a "buttons" section and a "body" section below
+    /// it. The buttons section's LEFT half is lit by default; pass <paramref name="litRight"/> to light
+    /// the right half instead (net throw is bound to RMB). Everything else stays a dim neutral, so the
+    /// lit half reads as "click this". Built once via SetPixels, same idiom as BuildDotTexture/
     /// BuildTriangleTexture above.</summary>
-    private static Texture2D BuildMouseIconTexture(int width, int height)
+    private static Texture2D BuildMouseIconTexture(int width, int height, bool litRight = false)
     {
         var tex = new Texture2D(width, height, TextureFormat.RGBA32, false) { filterMode = FilterMode.Bilinear };
         var pixels = new Color[width * height];
@@ -2379,7 +2403,8 @@ public sealed class RoundController : MonoBehaviour
                 float d = outside + Mathf.Min(Mathf.Max(qx, qy), 0f) - radius; // <0 inside
                 float coverage = Mathf.Clamp01(0.5f - d); // 1px antialiased edge, same formula as GameUIStyle.RoundedRect
 
-                Color fill = inTopSection && x < width / 2 ? GameUIStyle.AccentBright : dim;
+                bool litHalf = inTopSection && (litRight ? x >= width / 2 : x < width / 2);
+                Color fill = litHalf ? GameUIStyle.AccentBright : dim;
                 pixels[y * width + x] = new Color(fill.r, fill.g, fill.b, coverage);
             }
         }
@@ -2387,5 +2412,32 @@ public sealed class RoundController : MonoBehaviour
         tex.SetPixels(pixels);
         tex.Apply();
         return tex;
+    }
+
+    /// <summary>Right-click "you could land a throw right now" prompt: mirrors the dodge glyph but with
+    /// the RIGHT half lit, gated on <see cref="NetThrower.HasThrowTarget"/> so it lights exactly when
+    /// TryThrow would actually fire and find someone. Offset below dead-center (see the field comments
+    /// above) so it never overlaps the lunge spinner / dodge ring's screen-center anchor.</summary>
+    private void DrawThrowPrompt()
+    {
+        if (_throwPromptIconTex == null || _roundOver || IsCountdownActive) { _throwPromptWasVisible = false; return; }
+        if (_localPlayerAgent == null || _localPlayerAgent.Role != Role.Tagger || _localPlayerAgent.Net?.HasThrowTarget != true)
+        {
+            _throwPromptWasVisible = false;
+            return;
+        }
+
+        if (!_throwPromptWasVisible) _throwPromptFadeStartUnscaled = Time.unscaledTime; // fresh appearance — restart the fade-in
+        _throwPromptWasVisible = true;
+        float alpha = UIEase.Since(_throwPromptFadeStartUnscaled, ThrowPromptFadeSeconds);
+
+        Rect rect = GameUIStyle.Scaled(new Rect(
+            GameUIStyle.DesignWidth * 0.5f - ThrowPromptOnScreenWidth * 0.5f,
+            GameUIStyle.DesignHeight * 0.5f + ThrowPromptYOffset - ThrowPromptOnScreenHeight * 0.5f,
+            ThrowPromptOnScreenWidth, ThrowPromptOnScreenHeight));
+
+        GUI.color = new Color(1f, 1f, 1f, alpha);
+        GUI.DrawTexture(rect, _throwPromptIconTex);
+        GUI.color = Color.white;
     }
 }

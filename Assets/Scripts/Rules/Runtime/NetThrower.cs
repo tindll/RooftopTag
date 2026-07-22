@@ -91,6 +91,10 @@ public sealed class NetThrower : MonoBehaviour
         _agent.DriveThrowWindup(_config.netWindupSeconds);
     }
 
+    /// <summary>True when a throw would actually fire and find a target right now — the HUD's
+    /// right-click catch prompt lights on this. Same gates TryThrow runs, without committing.</summary>
+    public bool HasThrowTarget => CanThrow() && AcquireTarget() != null;
+
     private bool CanThrow()
     {
         if (Time.timeScale == 0f) return false;             // kill cam / pause — same guard as TryLunge
