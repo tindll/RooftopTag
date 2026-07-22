@@ -387,55 +387,31 @@ public sealed class NetThrower : MonoBehaviour
         bool shouldCarry = _config.netCarryVisible && HasGraphics
             && _agent.Role == Role.Tagger && !_agent.IsInGrace;
 
+        _agent.SetNetCarried(shouldCarry);
+
         if (!shouldCarry)
         {
             if (_carriedNet != null) { Destroy(_carriedNet); _carriedNet = null; _carryParent = null; }
             return;
         }
 
-        Transform desiredParent = ResolveHandOrShoulder();
+        Transform desiredParent = ResolveNetAnchor();
         if (_carriedNet == null || _carryParent != desiredParent)
         {
             if (_carriedNet != null) Destroy(_carriedNet);
             _carriedNet = NetVisual.BuildNet(desiredParent);
             _carryParent = desiredParent;
-            if (desiredParent == transform) // root fallback (no hand bone): sit it at a shoulder-ish offset
+            if (desiredParent == transform) // no rig (headless/capsule): shoulder-ish offset, as before
                 _carriedNet.transform.localPosition = new Vector3(0.28f, 1.4f, 0.18f);
         }
 
         _carriedNet.SetActive(_state != ThrowState.Flight);
     }
 
-    // Parenting under the R_Hand bone with IDENTITY local rotation would leave the net's pole (local +Y)
-    // following the Tripo rig's arbitrary hand axes, and a one-time corrective rotation at build would
-    // drift as the run cycle swings the arm — so every frame AFTER the Animator has posed the hand
-    // (LateUpdate), re-assert an AGENT-space orientation — pole up and ~25° forward, hoop opening facing
-    // the agent's forward — while the throw is Idle. During Windup the hand's own swing takes over (the
-    // additive throw pose in CharacterAnimatorBridge reads better with the net following the arm), and
-    // in Flight the carried net is hidden anyway.
-    private void LateUpdate()
-    {
-        if (_carriedNet == null || !_carriedNet.activeSelf) return;
-        if (_state != ThrowState.Idle || _carryParent == transform) return;
-        // Pole direction is the axis that must be exact (it sells "held upright"), so build the rotation
-        // with the pole as primary: LookRotation's forward argument gets the agent-forward re-projected
-        // perpendicular to the pole, and its up argument gets the pole itself (which LookRotation then
-        // honors exactly, since the two are orthogonal).
-        Vector3 poleDir = Vector3.Slerp(transform.up, transform.forward, 25f / 90f).normalized; // +Y up, ~25° fwd
-        Vector3 hoopFwd = Vector3.ProjectOnPlane(transform.forward, poleDir).normalized;
-        _carriedNet.transform.rotation = Quaternion.LookRotation(hoopFwd, poleDir);
-    }
-
-    private Transform ResolveHandOrShoulder()
-    {
-        Animator animator = GetComponentInChildren<Animator>();
-        if (animator != null && animator.isHuman)
-        {
-            Transform hand = animator.GetBoneTransform(HumanBodyBones.RightHand);
-            if (hand != null) return hand;
-        }
-        return transform; // fallback: agent root, offset in UpdateCarriedNet
-    }
+    // The rig's NetAnchor when there is one; the agent root otherwise. Re-resolved every frame because
+    // TagAgent.SwapModel destroys and rebuilds the model (and with it the rig), exactly as the old
+    // hand-bone lookup was.
+    private Transform ResolveNetAnchor() => _agent.NetAnchor ?? transform;
 
     private void DestroyProjectile()
     {

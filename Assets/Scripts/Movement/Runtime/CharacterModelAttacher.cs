@@ -76,6 +76,13 @@ public static class CharacterModelAttacher
         {
             CharacterRagdoll ragdoll = root.GetComponent<CharacterRagdoll>() ?? root.AddComponent<CharacterRagdoll>();
             ragdoll.Build(animator, motor, bridge);
+
+            // Rebuilt per model swap like the ragdoll, but the rig's own GameObjects live under the
+            // CharacterModel child, so the swap's Destroy takes them with it — only the controller
+            // component on the root is reused.
+            NetRigController netRig = root.GetComponent<NetRigController>() ?? root.AddComponent<NetRigController>();
+            netRig.Build(animator);
+            bridge.ConfigureNetRig(netRig);
         }
 
         return (model.GetComponentInChildren<SkinnedMeshRenderer>(), false, bridge);

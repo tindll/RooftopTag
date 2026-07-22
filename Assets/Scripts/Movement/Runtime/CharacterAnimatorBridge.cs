@@ -41,6 +41,18 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     private CharacterMotor _motor = null!;
     private Animator _animator = null!;
 
+    private NetRigController? _netRig;
+
+    /// <summary>Wired by CharacterModelAttacher on the graphics path. Null headless, and null on the
+    /// procedural-capsule fallback — every consumer must null-check.</summary>
+    public void ConfigureNetRig(NetRigController netRig) => _netRig = netRig;
+
+    /// <summary>The transform a carried net parents to, or null when there is no rig.</summary>
+    public Transform? NetAnchor => _netRig != null ? _netRig.NetAnchor : null;
+
+    /// <summary>Relayed to the rig; see NetRigController.SetNetCarried.</summary>
+    public void SetNetCarried(bool carried) => _netRig?.SetNetCarried(carried);
+
     private bool _flipping;
     private float _flipTimer;
     private bool _diving;

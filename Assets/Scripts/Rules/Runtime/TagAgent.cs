@@ -687,6 +687,12 @@ public sealed class TagAgent : MonoBehaviour
     /// drives it from the trash-can channel). Null-safe: a headless agent may have no bridge.</summary>
     public void SetEating(bool eating) => _bridge?.SetEating(eating);
 
+    /// <summary>Relays to the CURRENT bridge (live _bridge field, so a model swap is picked up).</summary>
+    public void SetNetCarried(bool carried) => _bridge?.SetNetCarried(carried);
+
+    /// <summary>The rig transform a carried net parents to, or null when there is no rig.</summary>
+    public Transform? NetAnchor => _bridge != null ? _bridge.NetAnchor : null;
+
     /// <summary>The vertical-band + line-of-sight gate the net throw (<see cref="NetThrower"/>) applies
     /// before it will commit: the target must be within
     /// <see cref="TagRulesConfig.tagReachVerticalTolerance"/> of our height (so a tag/net can't land on
