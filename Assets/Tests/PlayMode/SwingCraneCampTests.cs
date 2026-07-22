@@ -33,7 +33,7 @@ public sealed class SwingCraneCampTests
     }
 
     [UnityTest]
-    public IEnumerator ChainSwingCrane_NoPieceIsStandable_CapsuleSlidesOffEveryTop()
+    public IEnumerator ChainSwingCrane_MastCapIsAStandablePerch()
     {
         _sceneRoot = new GameObject("TestScene");
         // Ground's top face sits at y = 0 — matches BuildCrane's own mastBottomY floor (clamped to 0),
@@ -64,7 +64,18 @@ public sealed class SwingCraneCampTests
         // axes span a vertical plane, so one is always within 45 deg of up) — asserting they shed would
         // be asserting something impossible. They're 0.18-0.35m rods you'd have to balance on. See
         // ChainSwingInteractable.VertexUpTilt.
-        string[] padNames = { "MastCap", "Counterweight" };
+        // INVERTED FROM WHAT THIS FILE ORIGINALLY ASSERTED. The crane used to try to shed everyone via
+        // VertexUpTilt, on the principle that no piece should be standable. That never actually worked:
+        // a vertex-up box still has one highest POINT, and a capsule dropped dead-centre balances on
+        // that apex with a straight-up contact normal — the old test caught MastCap doing exactly that,
+        // and once MastCap was excluded it caught Counterweight doing the same. No orientation or size
+        // fixes it, because every convex solid has a top point.
+        //
+        // Meanwhile the nav graph had no node on the crane, so a player who camped the mast could not
+        // be followed by any bot. The design is now the resolvable one: the mast cap is an honest flat
+        // perch WITH a graph node and a Climb edge (RooftopGraphBuilder's Swing case), so standing
+        // there is allowed and contested rather than impossible-in-theory and unpunishable-in-practice.
+        string[] padNames = { "MastCap" };
         BoxCollider[] pieces = crane!.GetComponentsInChildren<BoxCollider>()
             .Where(c => padNames.Contains(c.name)).ToArray();
         Assert.AreEqual(padNames.Length, pieces.Length,
@@ -90,10 +101,10 @@ public sealed class SwingCraneCampTests
                 yield return new WaitForFixedUpdate();
 
             float restY = go.transform.position.y;
-            Debug.Log($"METRIC swing_crane_camp piece={piece.name} top_y={topY:0.00} rest_y={restY:0.00} state={motor.CurrentState}");
-            Assert.Less(restY, topY - 0.5f,
-                $"Capsule came to rest at y={restY:0.00}, close to {piece.name}'s own top (y={topY:0.00}) — " +
-                "it camped on the crane instead of sliding off a non-standable tilted face.");
+            Debug.Log($"METRIC swing_crane_perch piece={piece.name} top_y={topY:0.00} rest_y={restY:0.00} state={motor.CurrentState}");
+            Assert.Greater(restY, topY - 0.5f,
+                $"Capsule fell to y={restY:0.00}, well below {piece.name}'s top (y={topY:0.00}) — the mast cap " +
+                "is meant to be a standable perch that bots can be routed to, not a surface that sheds you.");
         }
     }
 

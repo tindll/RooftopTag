@@ -256,6 +256,32 @@ public sealed class ChainSwingInteractable : MonoBehaviour
     // BuildCrane for what that means for the arms.
     private static readonly Quaternion VertexUpTilt = Quaternion.Euler(35.264f, 0f, 45f);
 
+    // Crane geometry shared with RooftopGraphBuilder, which needs the mast-top perch position to put a
+    // navigation node there. Hoisted out of BuildCrane's locals so the two cannot drift apart.
+    private const float JibReach = 3f;      // horizontal reach from mast to pivot
+    private const float MastCapRise = 0.6f; // mast rises this far above the jib
+
+    // The MAST CAP IS A PERCH. It used to be a VertexUpTilt cube that shed anyone who landed on it, on
+    // the principle that no crane piece should be standable — but a vertex-up box still has a single
+    // highest POINT, and a capsule dropped onto that apex balances there with a straight-up contact
+    // normal. No orientation or size fixes that; every convex solid has a top point. So players camped
+    // the mast anyway, on a spot the nav graph deliberately had no node for, and simply could not be
+    // followed. Making it an honest platform and giving bots a route to it is the resolvable version.
+    private const float MastPadSize = 1.4f;      // comfortably shadows the 0.5x0.5 shaft top below it
+    private const float MastPadThickness = 0.25f;
+
+    /// <summary>World position a character stands at on the crane's mast cap — the top face of the pad.
+    /// Derived from the same pivot/exit the crane is built from, so <see cref="RooftopArena.SwingPivot"/>
+    /// is all a caller needs. Used by the bot navigation graph to place the crane's perch node.</summary>
+    public static Vector3 MastPerchPoint(Vector3 pivot, Vector3 exitDir)
+    {
+        Vector3 exit = exitDir.sqrMagnitude < 1e-4f ? Vector3.forward : exitDir.normalized;
+        Vector3 side = Vector3.Cross(Vector3.up, exit);
+        if (side.sqrMagnitude < 1e-4f) side = Vector3.right;
+        side.Normalize();
+        return new Vector3(pivot.x, pivot.y + MastCapRise + MastPadThickness * 0.5f, pivot.z) + side * JibReach;
+    }
+
     // A small crane the chain hangs from: a mast offset to the side (perpendicular to the swing arc so
     // it never blocks the player or the trigger sphere), a horizontal jib reaching over the pivot, a
     // diagonal brace to the jib tip, and a counter-jib + counterweight for silhouette. Every piece is
@@ -287,8 +313,8 @@ public sealed class ChainSwingInteractable : MonoBehaviour
         if (side.sqrMagnitude < 1e-4f) side = Vector3.right;
         side.Normalize();
 
-        const float jib = 3f;       // horizontal reach from mast to the pivot (jib tip)
-        const float mastCap = 0.6f; // mast rises this far above the jib
+        const float jib = JibReach;       // horizontal reach from mast to the pivot (jib tip)
+        const float mastCap = MastCapRise; // mast rises this far above the jib
         // How far the counterweight sits BEYOND the mast on the +side axis (opposite the jib load). Tuned
         // so the pad lands ~under the GLB model's own counterweight: at craneModelScale 6 the model's
         // counterweight is (0.729 hook->counterweight span) * 6 ~= 4.4m out from the pivot, and the mast
@@ -322,13 +348,11 @@ public sealed class ChainSwingInteractable : MonoBehaviour
             new Vector3(mastTop.x, (mastTopY + mastBottomY) * 0.5f, mastTop.z),
             new Vector3(0.5f, mastH, 0.5f), Quaternion.identity, renderers);
 
-        // Caps the mast's flat top with a bare VertexUpTilt cube centred exactly ON that top point, so
-        // a downward approach meets the tilted cap before it can ever reach the shaft's flat top below
-        // it. Coverage check: a vertex-up cube of edge s has a top-down (hexagonal) silhouette whose
-        // narrowest radius (its inradius) is s*sqrt(2/3)*cos(30deg) ~= 0.71s; at s=0.8 that is ~0.57m in
-        // every direction, well past the shaft's own top's corner-to-centre distance (0.5x0.5 square ->
-        // 0.35m), so the cap fully shadows the shaft's top with margin.
-        CraneBox(crane.transform, "MastCap", mastTop, new Vector3(0.8f, 0.8f, 0.8f), VertexUpTilt, renderers);
+        // Flat pad centred on the mast's top point — a deliberate perch (see MastPadSize's remarks).
+        // 1.4m square still fully shadows the 0.5x0.5 shaft top beneath it, so nobody lands on the
+        // shaft's own edge instead. MastPerchPoint mirrors this placement for the nav graph.
+        CraneBox(crane.transform, "MastCap", mastTop,
+            new Vector3(MastPadSize, MastPadThickness, MastPadSize), Quaternion.identity, renderers);
 
         // Jib (horizontal arm at pivot height, from the mast out to the pivot). Aim stays the TRUE
         // mast->pivot line: it has to actually connect the two, and no rotation could make it

@@ -173,6 +173,15 @@ public static class RooftopGraphBuilder
                     graph.AddEdge(NearestOfRoof(link.From, swEntry), swEntryNode, ParkourEdgeType.Run, 0f, bidirectional: true);
                     graph.AddEdge(swEntryNode, swExitNode, ParkourEdgeType.Swing, sprint, bidirectional: false);
                     graph.AddEdge(swExitNode, NearestOfRoof(link.To, swExit), ParkourEdgeType.Run, 0f, bidirectional: true);
+
+                    // The crane's mast cap is a standable perch (ChainSwingInteractable.MastPerchPoint),
+                    // and a player who climbs it used to be untouchable: the graph had no node up there,
+                    // so no bot could ever form a plan that ended on the crane. One node plus a Climb
+                    // edge from the swing-entry lip gives the chase somewhere to follow.
+                    Vector3 pivot = RooftopArena.SwingPivot(swFrom, swTo, link.Param);
+                    Vector3 perch = ChainSwingInteractable.MastPerchPoint(pivot, toward);
+                    int perchNode = graph.AddNode(perch);
+                    graph.AddEdge(swEntryNode, perchNode, ParkourEdgeType.Climb, 0f, bidirectional: true);
                     break;
                 }
 
