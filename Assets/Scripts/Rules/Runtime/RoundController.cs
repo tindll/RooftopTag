@@ -1309,7 +1309,6 @@ public sealed class RoundController : MonoBehaviour
         if (_roundOver) DrawEndScreen();
 
         DrawMinimap();
-        DrawLungeSpinner();
         DrawThrowPrompt();
         DrawActionCooldownRings();
     }
@@ -2179,9 +2178,8 @@ public sealed class RoundController : MonoBehaviour
     private const int SpinnerTextureSize = 64;
     private const float SpinnerOuterRadius = 30f;
     private const float SpinnerInnerRadius = 26f; // thin hairline ring, not a solid band
-    private const float SpinnerOnScreenSize = 34f; // subtle corner-of-eye size, not a crosshair takeover
-    private const float SpinnerDeniedWindow = 0.75f; // how long a single denied press stays visible
-    private const float SpinnerFadeWindow = 0.25f;   // trailing portion of the window that eases out
+    private const float SpinnerDeniedWindow = 0.75f; // how long a denied press keeps boosting the lunge ring
+    private const float SpinnerFadeWindow = 0.25f;   // trailing portion of the window that eases the boost out
 
     private Texture2D[]? _lungeSpinnerFrames;
 
@@ -2199,52 +2197,6 @@ public sealed class RoundController : MonoBehaviour
             float sweepDegrees = i / (float)(SpinnerFrameCount - 1) * 360f;
             _lungeSpinnerFrames[i] = BuildSpinnerArcTexture(SpinnerTextureSize, SpinnerOuterRadius, SpinnerInnerRadius, sweepDegrees);
         }
-    }
-
-    // Only shown for the local player, only while they're a Tagger, and only for a short window
-    // after a cooldown-denied press (TagAgent.LastDeniedLungeTime) — pressing again while still on
-    // cooldown re-triggers the window, so repeated impatient clicks keep it visible.
-    private void DrawLungeSpinner()
-    {
-        if (_lungeSpinnerFrames == null || _localPlayerAgent == null) return;
-        // No role gate: both roles lunge now (Tagger tag-dive / Runner escape dash) on the same
-        // cooldown, so both get the denied-press spinner.
-
-        float elapsed = Time.time - _localPlayerAgent.LastDeniedLungeTime;
-        if (elapsed < 0f || elapsed >= SpinnerDeniedWindow) return;
-
-        // Denominator is the cooldown the local player's role actually carries: Runners run on
-        // runnerRollCooldown, Taggers have none (dive-lock is their limiter, so 0 here).
-        float roleCooldown = _localPlayerAgent.Role == Role.Runner ? _config.runnerRollCooldown : 0f;
-        float fill = Mathf.Clamp01(1f - _localPlayerAgent.LungeCooldownRemaining / Mathf.Max(roleCooldown, 0.0001f));
-        bool ready = _localPlayerAgent.LungeCooldownRemaining <= 0f;
-
-        Rect rect = GameUIStyle.Scaled(new Rect(
-            GameUIStyle.DesignWidth * 0.5f - SpinnerOnScreenSize * 0.5f,
-            GameUIStyle.DesignHeight * 0.5f - SpinnerOnScreenSize * 0.5f,
-            SpinnerOnScreenSize, SpinnerOnScreenSize));
-
-        // Fade out over the last SpinnerFadeWindow seconds of the denied-press window rather than
-        // popping off abruptly.
-        float fadeStart = SpinnerDeniedWindow - SpinnerFadeWindow;
-        float alphaFade = elapsed <= fadeStart ? 1f : 1f - Mathf.Clamp01((elapsed - fadeStart) / SpinnerFadeWindow);
-
-        // Faint full-ring backdrop so the progress arc reads against something even near frame 0.
-        GUI.color = new Color(GameUIStyle.Text.r, GameUIStyle.Text.g, GameUIStyle.Text.b, 0.18f * alphaFade);
-        GUI.DrawTexture(rect, _lungeSpinnerFrames[SpinnerFrameCount - 1]);
-
-        // "Ready" flourish: cooldown finished inside the still-open denied window — full ring pops
-        // to GameUIStyle.AccentBright as the "go" cue; the progress wipe itself is the calmer
-        // GameUIStyle.Accent — full white/amber reads too loud against the palette.
-        Color readyTint = GameUIStyle.AccentBright;
-        Color tint = ready
-            ? new Color(readyTint.r, readyTint.g, readyTint.b, alphaFade)
-            : new Color(GameUIStyle.Accent.r, GameUIStyle.Accent.g, GameUIStyle.Accent.b, 0.9f * alphaFade);
-        int frameIndex = Mathf.Clamp(Mathf.RoundToInt(fill * (SpinnerFrameCount - 1)), 0, SpinnerFrameCount - 1);
-        GUI.color = tint;
-        GUI.DrawTexture(rect, _lungeSpinnerFrames[frameIndex]);
-
-        GUI.color = Color.white;
     }
 
     /// <summary>Ring-shaped pie-wipe frame: filled between <paramref name="innerRadius"/> and
@@ -2294,18 +2246,21 @@ public sealed class RoundController : MonoBehaviour
     // ---------------------------------------------------------------- Dodge window ring + mouse icon
     //
     // The dodge cue's focal element (see DrawDodgeCue): a red radial ring, same visual family as the
-    // lunge cooldown spinner above — it reuses BuildSpinnerArcTexture and picks a cached frame by fill
-    // fraction exactly as DrawLungeSpinner does — just tinted red instead of accent, and bigger, since
-    // this is THE cue rather than a corner status readout. Fill is the window's REMAINING fraction
-    // (unscaled), so the ring starts full and drains as the reaction window runs out, instead of
-    // filling up like the spinner's cooldown wipe. A small generated mouse-LMB glyph sits centered
-    // inside it. Both are pre-generated once (same rationale as the spinner frames/minimap icons: OnGUI
-    // runs at least twice a frame) and built lazily from RegisterAgent's isLocalPlayer branch.
+    // persistent action cooldown rings below — it reuses BuildSpinnerArcTexture and picks a cached
+    // frame by fill fraction the same way. Bigger and outermost of anything at screen-center (see
+    // DodgeRingOnScreenSize) since this is THE cue, a life-or-death reaction window, rather than a
+    // corner status readout. Fill is the window's REMAINING fraction (unscaled), so the ring starts
+    // full and drains as the reaction window runs out, instead of filling up like a cooldown wipe. A
+    // small generated mouse-LMB glyph sits centered inside it. Both are pre-generated once (same
+    // rationale as the action ring frames/minimap icons: OnGUI runs at least twice a frame) and built
+    // lazily from RegisterAgent's isLocalPlayer branch.
 
-    private const int DodgeRingTextureSize = 96;  // higher-res than the lunge spinner (64) — drawn ~2x larger on screen
+    private const int DodgeRingTextureSize = 96;  // higher-res than the action rings (64) — drawn ~2x larger on screen
     private const float DodgeRingOuterRadius = 46f;
-    private const float DodgeRingInnerRadius = 40f; // thin ring, same proportion as the lunge spinner's
-    private const float DodgeRingOnScreenSize = 72f; // bigger than the lunge spinner (34) — this is THE focal cue
+    private const float DodgeRingInnerRadius = 40f; // thin ring, same proportion as the action rings'
+    private const float DodgeRingOnScreenSize = 72f; // bigger than either action ring (see below) — stays
+    // the dominant outer element when a runner's dodge window and their own lunge cooldown are both
+    // live at dead-center simultaneously.
 
     private const int DodgeMouseIconTexWidth = 22;
     private const int DodgeMouseIconTexHeight = 30;
@@ -2316,8 +2271,8 @@ public sealed class RoundController : MonoBehaviour
     private Texture2D? _dodgeMouseIconTex;
 
     // Right-click "you could land a throw" prompt — same glyph family as the dodge icon, sized the
-    // same, but sits just below dead-center: the lunge spinner and dodge ring both anchor exactly
-    // screen-center, so stacking a third element there would collide with the spinner's denied-press flash.
+    // same, but sits just below dead-center: the persistent lunge/net cooldown rings and the dodge
+    // ring all anchor exactly screen-center, so stacking a fourth element there would collide.
     private const int ThrowPromptTexWidth = 22;
     private const int ThrowPromptTexHeight = 30;
     private const float ThrowPromptOnScreenWidth = 26f;
@@ -2461,71 +2416,84 @@ public sealed class RoundController : MonoBehaviour
 
     // ---------------------------------------------------------------- Persistent action cooldown rings
     //
-    // Ambient always-on readouts for the lunge and net-throw cooldowns — unlike DrawLungeSpinner above
-    // (which only flashes for SpinnerDeniedWindow after a denied press), these show for the WHOLE time an
-    // action is actually recharging, self-hiding the instant it's ready. Deliberately NOT screen-center:
-    // that spot is already claimed by the lunge spinner and the dodge ring, and DesignHeight * 0.5f + 70
-    // by the right-click catch prompt (DrawThrowPrompt) — piling a third readout on top of those would be
-    // a collision, not a cluster. Low-center, side by side, is clear of all three and still reads as "your
-    // two action slots" at a glance. Reuses the lunge spinner's cached ring frames (_lungeSpinnerFrames)
-    // and the dodge/throw-prompt mouse glyphs (_dodgeMouseIconTex left-lit for LMB/lunge,
-    // _throwPromptIconTex right-lit for RMB/net) rather than building yet another texture — same ring
-    // shape and glyph family, just quieter tinting since this is a passive readout, not an alert.
+    // Ambient always-on readouts for the lunge and net-throw cooldowns: show for the WHOLE time an
+    // action is actually recharging, self-hiding the instant it's ready. Anchored dead-center — the
+    // same spot the old denied-press-only lunge spinner used — since that's the natural "your action"
+    // focal point; DrawThrowPrompt sits offset below it to avoid colliding. Both rings share one
+    // center point rather than sitting side by side because lunge and net-throw cooldowns can run at
+    // the same time (a tagger who just lunged AND just threw), and concentric reads as "two readouts,
+    // one focal point" where two identical rings side by side would just look like clutter. Lunge is
+    // the INNER ring (both roles use it, so it's the one everyone glances at most) and net-throw is
+    // the OUTER ring (tagger-only, rarer) — sized with a visible gap between them (see the size consts
+    // below) so they read as two distinct rings, not one blob. Reuses the lunge spinner's cached ring
+    // frames (_lungeSpinnerFrames) rather than building yet another texture — same ring shape, just
+    // scaled and quieter-tinted since this is a passive readout, not an alert.
+    //
+    // Denied-press feedback (TagAgent.LastDeniedLungeTime, ex-DrawLungeSpinner) folds into the lunge
+    // ring as a brightness/alpha boost instead of a separate draw at the same anchor — a persistent
+    // ring and a denied-press flash stacked on the same spot were the same information twice.
 
-    private const float ActionRingOnScreenSize = 28f; // smaller than the lunge spinner's 34 — corner-of-eye, not urgent
-    private const float ActionRingGap = 40f;           // center-to-center spacing between the lunge/net pair
-    private const float ActionRingBottomMargin = 64f;  // design units up from the bottom edge
-    private const float ActionRingIconScale = 0.55f;   // glyph sized relative to ActionRingOnScreenSize
+    private const float ActionRingLungeSize = 34f; // inner ring
+    private const float ActionRingNetSize = 48f;   // outer ring — texture's ring band sits at ~0.41-0.47
+    // of on-screen size (see BuildSpinnerArcTexture's 26/30-of-64 radii), so 34 vs 48 leaves a real gap
+    // between the lunge ring's outer edge (~16) and the net ring's inner edge (~19.5) instead of the
+    // two bands touching. Both stay well under DodgeRingOnScreenSize (72) so the dodge ring still reads
+    // as the dominant outer element if a runner's own lunge ring is up when they get dodge-targeted.
 
     private void DrawActionCooldownRings()
     {
         if (_lungeSpinnerFrames == null || _localPlayerAgent == null) return;
 
         float centerX = GameUIStyle.DesignWidth * 0.5f;
-        float centerY = GameUIStyle.DesignHeight - ActionRingBottomMargin;
+        float centerY = GameUIStyle.DesignHeight * 0.5f;
 
-        // Lunge: both roles have one (Tagger tag-dive / Runner escape dash), so no role gate — mirrors
-        // DrawLungeSpinner's own "no role gate" note.
-        DrawActionRing(centerX - ActionRingGap * 0.5f, centerY, _localPlayerAgent.LungeCooldownProgress, _dodgeMouseIconTex);
+        // Lunge: both roles have one (Tagger tag-dive / Runner escape dash), so no role gate.
+        float deniedElapsed = Time.time - _localPlayerAgent.LastDeniedLungeTime;
+        float deniedBoost = 0f;
+        if (deniedElapsed >= 0f && deniedElapsed < SpinnerDeniedWindow)
+        {
+            // Same fade-out shape the old spinner used: full boost, then ease out over the trailing
+            // SpinnerFadeWindow seconds instead of popping off abruptly.
+            float fadeStart = SpinnerDeniedWindow - SpinnerFadeWindow;
+            deniedBoost = deniedElapsed <= fadeStart ? 1f : 1f - Mathf.Clamp01((deniedElapsed - fadeStart) / SpinnerFadeWindow);
+        }
+        DrawActionRing(centerX, centerY, ActionRingLungeSize, _localPlayerAgent.LungeCooldownProgress, deniedBoost);
 
         // Net throw: only a Tagger's NetThrower ever actually fires (see NetThrower.CanThrow's Role
         // check), so a Runner has nothing to read here — hide it entirely rather than show a
-        // permanently-ready ring for an action they can't use.
+        // permanently-ready ring for an action they can't use. No denied-press feedback exists for
+        // this one, so boost is always 0.
         NetThrower? net = _localPlayerAgent.Net;
         if (_localPlayerAgent.Role == Role.Tagger && net != null)
-            DrawActionRing(centerX + ActionRingGap * 0.5f, centerY, net.CooldownProgress, _throwPromptIconTex);
+            DrawActionRing(centerX, centerY, ActionRingNetSize, net.CooldownProgress, 0f);
     }
 
-    /// <summary>One ring of the pair: a quiet accent-tinted fill arc (reusing BuildSpinnerArcTexture's
-    /// frames from _lungeSpinnerFrames) around a small mouse-glyph icon, self-hiding once
-    /// <paramref name="progress"/> reaches 1 (ready) so there's nothing on screen when both actions are
-    /// off cooldown.</summary>
-    private void DrawActionRing(float centerX, float centerY, float progress, Texture2D? icon)
+    /// <summary>One ring of the concentric pair: a fill arc (reusing BuildSpinnerArcTexture's frames
+    /// from _lungeSpinnerFrames) that self-hides once <paramref name="progress"/> reaches 1 (ready) —
+    /// unless <paramref name="deniedBoost"/> is still fading out, so the brief "ready" moment during a
+    /// denied-press boost stays visible instead of cutting off mid-flourish. No icon: these are
+    /// ambient cooldown readouts, not click prompts — see DrawDodgeRing / DrawThrowPrompt for the
+    /// elements that still carry a mouse glyph.</summary>
+    private void DrawActionRing(float centerX, float centerY, float onScreenSize, float progress, float deniedBoost)
     {
-        if (progress >= 1f) return;
+        if (progress >= 1f && deniedBoost <= 0f) return;
 
-        int frameIndex = Mathf.Clamp(Mathf.RoundToInt(progress * (SpinnerFrameCount - 1)), 0, SpinnerFrameCount - 1);
+        int frameIndex = Mathf.Clamp(Mathf.RoundToInt(Mathf.Clamp01(progress) * (SpinnerFrameCount - 1)), 0, SpinnerFrameCount - 1);
         Rect rect = GameUIStyle.Scaled(new Rect(
-            centerX - ActionRingOnScreenSize * 0.5f, centerY - ActionRingOnScreenSize * 0.5f,
-            ActionRingOnScreenSize, ActionRingOnScreenSize));
+            centerX - onScreenSize * 0.5f, centerY - onScreenSize * 0.5f,
+            onScreenSize, onScreenSize));
 
-        // Faint full-ring backdrop, same trick as DrawLungeSpinner, so the fill arc reads against
-        // something even near 0 progress.
+        // Faint full-ring backdrop so the fill arc reads against something even near 0 progress.
         GUI.color = new Color(GameUIStyle.Text.r, GameUIStyle.Text.g, GameUIStyle.Text.b, 0.15f);
         GUI.DrawTexture(rect, _lungeSpinnerFrames[SpinnerFrameCount - 1]);
 
-        // Quieter than the denied-press spinner's 0.9 alpha — this is a passive readout, not a flag to
-        // pay attention to.
-        GUI.color = new Color(GameUIStyle.Accent.r, GameUIStyle.Accent.g, GameUIStyle.Accent.b, 0.7f);
+        // Base tint is a quiet passive readout (0.7 alpha, GameUIStyle.Accent); deniedBoost pushes it
+        // toward AccentBright at full alpha — the "you pressed it too early" cue that used to be
+        // DrawLungeSpinner's separate draw, now just this ring flaring brighter.
+        Color tint = Color.Lerp(GameUIStyle.Accent, GameUIStyle.AccentBright, deniedBoost);
+        float alpha = Mathf.Lerp(0.7f, 1f, deniedBoost);
+        GUI.color = new Color(tint.r, tint.g, tint.b, alpha);
         GUI.DrawTexture(rect, _lungeSpinnerFrames[frameIndex]);
-        GUI.color = Color.white;
-
-        if (icon == null) return;
-        float iconW = ActionRingOnScreenSize * ActionRingIconScale;
-        float iconH = iconW * (DodgeMouseIconTexHeight / (float)DodgeMouseIconTexWidth); // preserve the glyph's aspect
-        Rect iconRect = GameUIStyle.Scaled(new Rect(centerX - iconW * 0.5f, centerY - iconH * 0.5f, iconW, iconH));
-        GUI.color = new Color(1f, 1f, 1f, 0.85f);
-        GUI.DrawTexture(iconRect, icon);
         GUI.color = Color.white;
     }
 }
