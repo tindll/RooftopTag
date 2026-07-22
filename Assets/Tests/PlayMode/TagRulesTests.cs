@@ -746,6 +746,10 @@ public sealed class TagRulesTests
 
         var config = ScriptableObject.CreateInstance<TagRulesConfig>();
         config.roundStartGraceDuration = 0f; // NetThrower.CanThrow gates on IsPastStartGrace
+        // taggerCount defaults to 10, which would make BOTH agents Taggers -> runnersRemaining hits 0
+        // on frame 1 -> EndRound -> the throw is aborted by NetThrower's IsRoundOver guard before it
+        // can ever resolve. Every other RoundController test here pins this for the same reason.
+        config.taggerCount = 1;
 
         // Runner 4m ahead of the tagger (+Z), inside netThrowRange (6m), stationary -> lead ~0,
         // lands within netHitRadius.
