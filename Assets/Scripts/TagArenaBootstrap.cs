@@ -62,6 +62,23 @@ public sealed class TagArenaBootstrap : MonoBehaviour
     /// </summary>
     public void ApplyTaggerCount(int newTaggerCount) => _tagConfig.taggerCount = newTaggerCount;
 
+    /// <summary>Whether the local player will be pinned Tagger next round — the main menu reads it to
+    /// show the live value when re-showing (same pattern as TaggerCount/UnlimitedTime).</summary>
+    public bool PlayerIsTagger => _tagConfig.forcePlayerAsTagger;
+
+    /// <summary>Total live agents (player + spawned bots) — the menu's Runners row maps through this.</summary>
+    public int RosterSize => _bots.Count + 1;
+
+    /// <summary>Pins the local player's role for the next StartRound. Runner keeps chase-me semantics
+    /// (surplus bots benched, Chasers row = bot hunters); Tagger disables benching, so every
+    /// non-tagger bot plays as a Runner. ponytail: two-state only — "genuinely random" (both flags
+    /// false) exists in config but has no menu surface until someone asks.</summary>
+    public void ApplyPlayerRole(bool asTagger)
+    {
+        _tagConfig.forcePlayerAsTagger = asTagger;
+        _tagConfig.forcePlayerAsRunner = !asTagger;
+    }
+
     /// <summary>Current unlimited-time (free-roam) state — the main menu reads it to show the live value.</summary>
     public bool UnlimitedTime => _tagConfig.unlimitedTime;
 

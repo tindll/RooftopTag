@@ -22,6 +22,10 @@ public sealed class MainMenuOverlay : MonoBehaviour
     // free-roam space for testing movement/animation with nothing hunting the player.
     private static readonly int[] ChaserCounts = { 0, 1, 3, 5, 10 };
 
+    // next to ChaserCounts. No 0: a hunt with no prey is meaningless — free-roam is
+    // Runner + 0 chasers, exactly as before.
+    private static readonly int[] RunnerCounts = { 1, 3, 5, 10 };
+
     // Card geometry, design-space (GameUIStyle.Scale takes it to real pixels @1080p/1440p/ultrawide).
     // Left column, not centered. Height is computed per open state: the CONTROLS dropdown is the
     // one thing that changes row count at runtime, so the card grows by exactly its rows when
@@ -29,7 +33,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
     private const float CardX = 90f;
     private const float CardY = 110f;
     private const float CardWidth = 460f;
-    private const float CardBaseHeight = 384f;
+    private const float CardBaseHeight = 440f; // +1 row (46 + 10 gap) for the Play-as role row
     private const float CardPad = 28f;
     private const float SlideInDuration = 0.35f;
 
@@ -56,6 +60,8 @@ public sealed class MainMenuOverlay : MonoBehaviour
     public bool IsOpen => _open;
 
     private int _chaserIndex;
+    private bool _playAsTagger;
+    private int _runnerIndex = 3; // RunnerCounts[3] = 10 -> solo hunt, mirror of the chase-me default
     private bool _unlimitedTime;
     private bool _controlsExpanded; // CONTROLS dropdown, collapsed by default
     private float _openedAtUnscaled;
@@ -69,6 +75,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
         _localAgent = GetComponent<TagAgent>();
         _chaserIndex = System.Array.IndexOf(ChaserCounts, bootstrap.TaggerCount);
         if (_chaserIndex < 0) _chaserIndex = 0;
+        _playAsTagger = bootstrap.PlayerIsTagger;
         _unlimitedTime = bootstrap.UnlimitedTime;
     }
 
@@ -137,6 +144,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
         GUI.DrawTexture(GameUIStyle.Scaled(new Rect(contentX, y, 160f, 5f)), GameUIStyle.GradientTex, ScaleMode.StretchToFill, true);
         y += 5f + 22f;
 
+        y = DrawRoleRow(contentX, y, contentWidth);
         y = DrawDifficultyRow(contentX, y, contentWidth);
         y = DrawChaserRow(contentX, y, contentWidth);
         y = DrawTimeRow(contentX, y, contentWidth);
@@ -186,8 +194,20 @@ public sealed class MainMenuOverlay : MonoBehaviour
             () => _bootstrap.ApplyDifficulty(CycleDifficulty(current, 1)));
     }
 
-    private float DrawChaserRow(float x, float y, float width) =>
-        DrawOptionRow(x, y, width, "Chasers", ChaserCounts[_chaserIndex].ToString(),
+    private float DrawRoleRow(float x, float y, float width) =>
+        DrawOptionRow(x, y, width, "Play as", _playAsTagger ? "Tagger" : "Runner",
+            () => _playAsTagger = !_playAsTagger,
+            () => _playAsTagger = !_playAsTagger);
+
+    // Chasers/Runners semantics differ by mode (see docs/plans/player-as-tagger.md "Design decisions"):
+    // in chase-me (Runner) it's bot hunters and surplus bots get benched; as Tagger, taggerCount
+    // includes the player at roster index 0 and nothing benches, so the row is reframed as prey
+    // count ("Runners") and mapped through RosterSize in Play().
+    private float DrawChaserRow(float x, float y, float width) => _playAsTagger
+        ? DrawOptionRow(x, y, width, "Runners", RunnerCounts[_runnerIndex].ToString(),
+            () => _runnerIndex = (_runnerIndex - 1 + RunnerCounts.Length) % RunnerCounts.Length,
+            () => _runnerIndex = (_runnerIndex + 1) % RunnerCounts.Length)
+        : DrawOptionRow(x, y, width, "Chasers", ChaserCounts[_chaserIndex].ToString(),
             () => _chaserIndex = (_chaserIndex - 1 + ChaserCounts.Length) % ChaserCounts.Length,
             () => _chaserIndex = (_chaserIndex + 1) % ChaserCounts.Length);
 
@@ -240,7 +260,12 @@ public sealed class MainMenuOverlay : MonoBehaviour
     private void Play()
     {
         KeyRebinder.Cancel(); // never leave a rebind listen running behind live gameplay
-        _bootstrap.ApplyTaggerCount(ChaserCounts[_chaserIndex]);
+        _bootstrap.ApplyPlayerRole(_playAsTagger);
+        // Tagger mode: the row is prey count; taggerCount includes the player (AssignRoles inserts them
+        // at index 0), so taggers = roster - runners. Max guard covers hypothetical smaller scenes.
+        _bootstrap.ApplyTaggerCount(_playAsTagger
+            ? Mathf.Max(1, _bootstrap.RosterSize - RunnerCounts[_runnerIndex])
+            : ChaserCounts[_chaserIndex]);
         _bootstrap.ApplyUnlimitedTime(_unlimitedTime);
         _open = false;
         Time.timeScale = 1f;
