@@ -365,5 +365,7 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         _animator.SetBool(CatchingId, _catching);
         _animator.SetBool(EatingId, _eatingTarget || _eatExiting); // held true through the stand-up
         _animator.SetBool(EatStopId, _eatExiting);
+
+        _netRig?.Tick(state, _diving, _flipping, Time.deltaTime);
     }
 }

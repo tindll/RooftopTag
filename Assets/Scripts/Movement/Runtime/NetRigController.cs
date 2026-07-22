@@ -23,7 +23,25 @@ public sealed class NetRigController : MonoBehaviour
     private static readonly Vector3 BackLocalPos = new(-0.05f, -0.05f, -0.22f);
     private static readonly Vector3 BackLocalEuler = new(0f, 0f, 55f);
 
+    // Grip points as children of NetAnchor, so they travel with the net for free — this is what
+    // removes all per-frame grip math. Local +Y is the pole axis (how NetVisual.BuildNet mounts).
+    private const float GripLowerY = 0f;
+    private const float GripUpperY = 0.38f;   // was ThrowGripSeparation — left hand grips above the right
+    private static readonly Vector3 ElbowHintLLocal = new(-0.45f, -0.35f, 0.10f);
+    private static readonly Vector3 ElbowHintRLocal = new(0.45f, -0.35f, 0.10f);
+
+    // Below 1.0 so a little of the clip's own shoulder motion survives and the upper body doesn't
+    // read as a frozen mannequin. Raise toward 1 for a tighter grip, lower for more life.
+    private const float CarryWeight = 0.9f;
+
+    private const float StowSeconds = 0.2f;
+
     private MultiParentConstraint? _mount;
+    private TwoBoneIKConstraint? _leftHandIK;
+    private TwoBoneIKConstraint? _rightHandIK;
+
+    private float _stowBlend;
+    private float _throwBlend;
 
     // Cached at Build — the throw socket is driven in world space each frame against these.
     private Transform? _chest;
@@ -93,9 +111,72 @@ public sealed class NetRigController : MonoBehaviour
         d.constrainedRotationZAxis = true;
         _mount.data = d;              // struct property — must assign back
 
+        // Grips ride the net, so they are authored along the ANCHOR's own local +Y (the pole axis) —
+        // NetAnchor is not a scaled bone, so plain localPosition is correct here.
+        var gripLower = new GameObject("GripLower").transform;
+        gripLower.SetParent(_netAnchor, false);
+        gripLower.localPosition = new Vector3(0f, GripLowerY, 0f);
+        var gripUpper = new GameObject("GripUpper").transform;
+        gripUpper.SetParent(_netAnchor, false);
+        gripUpper.localPosition = new Vector3(0f, GripUpperY, 0f);
+
+        Transform hintL = MakeSocket(chest, agent, "ElbowHintL", ElbowHintLLocal, Vector3.zero);
+        Transform hintR = MakeSocket(chest, agent, "ElbowHintR", ElbowHintRLocal, Vector3.zero);
+
+        _rightHandIK = MakeHandIK(rigGO.transform, "RightHandIK",
+            animator.GetBoneTransform(HumanBodyBones.RightUpperArm),
+            animator.GetBoneTransform(HumanBodyBones.RightLowerArm),
+            animator.GetBoneTransform(HumanBodyBones.RightHand), gripLower, hintR);
+        _leftHandIK = MakeHandIK(rigGO.transform, "LeftHandIK",
+            animator.GetBoneTransform(HumanBodyBones.LeftUpperArm),
+            animator.GetBoneTransform(HumanBodyBones.LeftLowerArm),
+            animator.GetBoneTransform(HumanBodyBones.LeftHand), gripUpper, hintL);
+
         RigBuilder builder = animator.GetComponent<RigBuilder>() ?? animator.gameObject.AddComponent<RigBuilder>();
         builder.layers.Add(new RigLayer(rig, true));
         builder.Build();
+    }
+
+    /// <summary>Driven each frame by CharacterAnimatorBridge. Cosmetic only — nothing in the motor or
+    /// the tag rules ever waits on this, so a roll begins on exactly the frame it always did and the
+    /// stow simply plays over its opening frames.</summary>
+    public void Tick(MotorState state, bool diving, bool flipping, float deltaTime)
+    {
+        if (_mount == null) return;
+
+        bool holster = !_carried || NetCarryState.ShouldHolster(state, diving, flipping);
+        _stowBlend = NetCarryState.Advance(_stowBlend, holster, deltaTime, StowSeconds);
+
+        var (carry, back, _) = NetCarryState.MountWeights(_stowBlend, _throwBlend);
+        var d = _mount.data;
+        var arr = d.sourceObjects;
+        arr.SetWeight(0, carry);
+        arr.SetWeight(1, back);
+        d.sourceObjects = arr;
+        _mount.data = d;              // struct property — must assign back
+
+        var (leftW, rightW) = NetCarryState.HandWeights(_stowBlend, CarryWeight);
+        if (_leftHandIK != null) _leftHandIK.weight = leftW;
+        if (_rightHandIK != null) _rightHandIK.weight = rightW;
+    }
+
+    private static TwoBoneIKConstraint? MakeHandIK(Transform rigRoot, string name,
+        Transform? root, Transform? mid, Transform? tip, Transform target, Transform hint)
+    {
+        if (root == null || mid == null || tip == null) return null;
+
+        var go = new GameObject(name);
+        go.transform.SetParent(rigRoot, false);
+        var ik = go.AddComponent<TwoBoneIKConstraint>();
+        var d = ik.data;
+        d.root = root; d.mid = mid; d.tip = tip;
+        d.target = target; d.hint = hint;
+        d.targetPositionWeight = 1f;
+        d.targetRotationWeight = 1f;
+        d.hintWeight = 1f;
+        ik.data = d;                  // struct property — must assign back
+        ik.weight = 0f;               // driven by Tick
+        return ik;
     }
 
     // Offsets are AGENT-SPACE METRES, not bone-local: this rig's bone local space is scaled ~167x, so
