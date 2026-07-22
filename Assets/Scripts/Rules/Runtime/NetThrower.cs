@@ -90,11 +90,6 @@ public sealed class NetThrower : MonoBehaviour
         _cooldownRemaining = _config.netThrowCooldown;
         _windupRemaining = _config.netWindupSeconds;
         _state = ThrowState.Windup;
-        // The Idle-time LateUpdate below re-asserts the carried net's WORLD rotation every frame, which
-        // bakes an arbitrary localRotation under the animated hand bone. The swing pose
-        // (CharacterAnimatorBridge.OrientHand) mounts the pole on the hand's local +Y and assumes the
-        // identity local rotation BuildNet started with — restore that contract as the hand takes over.
-        if (_carriedNet != null) _carriedNet.transform.localRotation = Quaternion.identity;
         _agent.DriveThrowWindup(_config.netWindupSeconds);
     }
 

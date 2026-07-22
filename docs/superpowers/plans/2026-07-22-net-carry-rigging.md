@@ -57,7 +57,12 @@ findings from the spike change the code below:
    bypasses the sync and the job keeps its previous weight. Only relevant to test harnesses, but it
    invalidates any verification written that way.
 
-**Open question for Task 2, to settle empirically:** bone `lossyScale` differs per model
+**RESOLVED in Task 2 — no action needed.** Measured live: `NetAnchor.lossyScale = 1.738` and the
+carried net's `lossyScale = 1.738`, which is exactly the ~1.74 `NetVisual` is tuned for. Parenting
+under the rig root happens to inherit the same scale the hand bone gave it, so no compensation is
+required and `SpawnProjectile`'s `lossyScale` copy keeps working unchanged. Socket placement verified
+at the same time: `anchor-to-chest = 0.320 m`, matching the authored agent-space offset exactly.
+Original question, kept for context: bone `lossyScale` differs per model
 (`pest_control`/`Spine01` measured 167×, while `NetThrower`'s comment records the hand bone at ~1.74×
 on the Mixamo rig). `NetAnchor` parents under the rig root, not the hand, so it inherits the
 CharacterModel scale rather than the bone scale — the net may render at the wrong size. Check the
