@@ -341,10 +341,13 @@ public sealed class ParkourBotInput : MonoBehaviour, ICharacterInput
 
         if (_agent.Role == Role.Tagger)
         {
-            // Ranged catch is now a thrown net (replaces the every-tick hand-tag). TryThrow self-gates on
-            // range/ahead/LOS + its own cooldown, so calling it each tick just means "throw whenever a shot
-            // is available"; the committed-dive lunge below still closes the last few metres.
+            // The catch, whichever form the mode gives it: pest control's thrown net, or tag mode's
+            // short-range touch. BOTH self-gate on the game mode as well as on range/ahead/LOS + their
+            // own cooldown, so calling both every tick is exactly "catch whenever a catch is available"
+            // and needs no mode branch here — in either mode one of them is inert. The committed-dive
+            // lunge below still closes the last few metres for both.
             _agent.Net?.TryThrow();
+            _agent.TryTouchTag();
 
             // Lunge to close the last stretch: a committed forward dive when the target is within
             // range AND roughly ahead (so the bot dives AT it, not sideways). The dive's contact-tag

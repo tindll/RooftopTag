@@ -24,6 +24,7 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     private static readonly int FlippingId = Animator.StringToHash("Flipping");
     private static readonly int DivingId = Animator.StringToHash("Diving");
     private static readonly int CatchingId = Animator.StringToHash("Catching");
+    private static readonly int TaggingId = Animator.StringToHash("Tagging");
     private static readonly int EatingId = Animator.StringToHash("Eating");
     private static readonly int EatStopId = Animator.StringToHash("EatStop");
     private static readonly int EatStartId = Animator.StringToHash("EatStart");
@@ -53,10 +54,19 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
     /// <summary>Relayed to the rig; see NetRigController.SetNetCarried.</summary>
     public void SetNetCarried(bool carried) => _netRig?.SetNetCarried(carried);
 
+    // How long to hold the Tagging bool after a touch tag, so the swipe clip plays through instead of
+    // being snatched back by the locomotion AnyState on the next frame — same mechanism as
+    // DiveHoldSeconds above. This is a FEEL KNOB, not a clip-derived constant: unlike the dive/catch
+    // clips, tagging_animation.fbx has never been frame-measured (CharacterPreviewShot), so there is no
+    // trim to match. Shorten it if the swipe overstays the moment; lengthen it if it visibly cuts off.
+    private const float TagSwipeHoldSeconds = 0.5f;
+
     private bool _flipping;
     private float _flipTimer;
     private bool _diving;
     private float _diveTimer;
+    private bool _tagging;
+    private float _tagTimer;
     // Selects the tagger's finishing-catch clip (DivingCatch) over the generic roll while _diving.
     // Shares the same _diveTimer/hold — it's only a variant flag, not a second window.
     private bool _catching;
@@ -116,6 +126,16 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         _diveTimer = DiveHoldSeconds;
     }
 
+    /// <summary>Play the tag-mode touch-tag swipe; called by TagAgent the moment a touch tag commits
+    /// (TryTouchTag), before the tag itself resolves. Held for <see cref="TagSwipeHoldSeconds"/> like
+    /// the dive so the locomotion AnyState can't cut it off. Purely cosmetic — the tag lands through
+    /// TagAgent.PerformTag regardless of what the Animator does with this.</summary>
+    public void TriggerTagSwipe()
+    {
+        _tagging = true;
+        _tagTimer = TagSwipeHoldSeconds;
+    }
+
     /// <summary>Pushed each frame by RoundController (via TagAgent): true while this agent is filling a
     /// trash can. Drives the crouch/rummage eat animation.</summary>
     public void SetEating(bool eating) => _eatingTarget = eating;
@@ -144,6 +164,14 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         {
             _diveTimer -= Time.deltaTime;
             if (_diveTimer <= 0f) { _diving = false; _catching = false; }
+        }
+        if (_tagging)
+        {
+            _tagTimer -= Time.deltaTime;
+            // A dive out-ranks the swipe: the dive is a COMMITTED motor state (BeginDive locks the
+            // character in) while the swipe is a cosmetic gesture, so if both are somehow up the pose
+            // must follow the thing the physics is actually doing.
+            if (_tagTimer <= 0f || _diving) _tagging = false;
         }
         // Eating: a ONE-SHOT EatStart trigger drives the crouch-down on the rising edge — a trigger,
         // NOT the held bool, because an AnyState transition gated on the bool re-fires every frame and
@@ -175,6 +203,7 @@ public sealed class CharacterAnimatorBridge : MonoBehaviour
         _animator.SetBool(FlippingId, _flipping);
         _animator.SetBool(DivingId, _diving);
         _animator.SetBool(CatchingId, _catching);
+        _animator.SetBool(TaggingId, _tagging);
         _animator.SetBool(EatingId, _eatingTarget || _eatExiting); // held true through the stand-up
         _animator.SetBool(EatStopId, _eatExiting);
 

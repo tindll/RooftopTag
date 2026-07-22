@@ -544,6 +544,20 @@ public sealed class RoundController : MonoBehaviour
 
         AgentFell?.Invoke(agent);
 
+        // TAG MODE: a fall is a respawn and nothing else, for bots and the player alike. Both of the
+        // pest-control consequences below break tag's core invariant — the local player's loss ends a
+        // round that is supposed to keep going, and converting a fallen Runner to Tagger would MINT A
+        // SECOND IT out of thin air (tag keeps the tagger count fixed; only ExecuteTag's swap moves the
+        // role). Falling already costs you your position, which in a footrace is the real penalty.
+        if (_config.mode == GameMode.Tag)
+        {
+            agent.Motor.ResetState(spawn.pos, spawn.rot);
+            // Same brief respawn grace the pest-control bot branch gives, so nobody reappears directly
+            // into the IT's reach. Role is deliberately unchanged.
+            agent.SetRole(agent.Role, startGrace: true);
+            return;
+        }
+
         if (agent == _localPlayerAgent)
         {
             // The local player falling off the map is a loss, same flow as being tagged (see
@@ -706,6 +720,13 @@ public sealed class RoundController : MonoBehaviour
         _cans.AddRange(FindObjectsByType<TrashCanInteractable>());
         foreach (TrashCanInteractable can in _cans) can.ResetForRound();
 
+        // TAG MODE has no trash objective — it's a raccoon's win condition and there are no raccoons.
+        // Bailing with _activeCans empty is the whole opt-out: the eat loop, the trash win check, the
+        // bin HUD row (ShouldShowBinRow) and the tagger-side "they're eating" ping all already no-op on
+        // an empty list, exactly as they do in the scenes that have no cans at all. The cans stay reset
+        // and hidden above, so switching back to pest control next round re-activates them normally.
+        if (_config.mode == GameMode.Tag) return;
+
         for (int i = _cans.Count - 1; i > 0; i--)
         {
             int j = Random.Range(0, i + 1);
@@ -740,7 +761,18 @@ public sealed class RoundController : MonoBehaviour
             (shuffled[i], shuffled[j]) = (shuffled[j], shuffled[i]);
         }
 
+        bool tagMode = _config.mode == GameMode.Tag;
+
         if (forceTagger) shuffled.Insert(0, _localPlayerAgent!);
+        else if (forceRunner && tagMode)
+            // TAG MODE, player pinned Runner: insert them at the FIRST RUNNER SLOT (index taggerCount)
+            // rather than appending at the back. The index-based isTagger check below still resolves
+            // them to Runner, but now they sit INSIDE the roster cap the bench rule cuts at, so the
+            // menu's chosen player count is exactly what ends up on the map. Appending would leave them
+            // beyond the cap, saved only by the !isPlayer bench exemption — which would then put
+            // cap + 1 agents in play and make the menu's number a lie. Clamped in case a config ever
+            // asks for more taggers than there are agents.
+            shuffled.Insert(Mathf.Min(_config.taggerCount, shuffled.Count), _localPlayerAgent!);
         else if (forceRunner) shuffled.Add(_localPlayerAgent!);
 
         // forceRunner always appends the player at the LAST index, so as long as taggerCount stays
@@ -763,16 +795,19 @@ public sealed class RoundController : MonoBehaviour
             // lowering the Chasers count actually removes bots from the map rather than turning the
             // surplus into fellow runners. Every agent passes through SetActive here, so raising the count again re-activates the
             // benched bots on the next round. Outside chase-me nothing benches (bench stays false).
-            bool bench = forceRunner && !isPlayer && !isTagger;
+            bool bench = !tagMode && forceRunner && !isPlayer && !isTagger;
 
-            // Tagger mode (forceTagger): the menu now picks co-taggers AND runners independently, so
-            // any bot beyond taggerCount+runnerCount must also be BENCHED rather than left as a fellow
-            // Runner — otherwise the two counts can't both be honored. runnerCount == 0 means
-            // "uncapped" (today's behavior: every non-tagger bot is a Runner), so this only engages
-            // when the menu actually picked a runner cap. !isPlayer is redundant with the index guard
-            // (the player sits at index 0 < effectiveTaggerCount in tagger mode) but kept explicit —
-            // the local player must never be benched. Same reactivation-next-round guarantee as above.
-            if (forceTagger && _config.runnerCount > 0 && !isPlayer)
+            // Tagger mode (forceTagger), and TAG MODE whichever role the player picked: the menu picks
+            // taggers AND runners independently, so any bot beyond taggerCount+runnerCount must also be
+            // BENCHED rather than left as a fellow Runner — otherwise the two counts can't both be
+            // honored. runnerCount == 0 means "uncapped" (chase-me's behavior: every non-tagger bot is
+            // a Runner), so this only engages when a real runner cap was picked.
+            //
+            // Tag mode uses this rule for BOTH pinned roles, which is why the chase-me benching above
+            // is switched off there: tag has no "surplus bots become spare hunters" concept, it has a
+            // fixed roster of N players of whom taggerCount are IT. The player is always inside the cap
+            // (see the insert above), and !isPlayer keeps them safe regardless.
+            if ((forceTagger || tagMode) && _config.runnerCount > 0 && !isPlayer)
                 bench = i >= effectiveTaggerCount + _config.runnerCount;
             agent.gameObject.SetActive(!bench);
             if (bench) continue;
@@ -1037,7 +1072,9 @@ public sealed class RoundController : MonoBehaviour
                     // computed". Nothing reads it mid-round. A faller is genuinely still a Runner until
                     // the map converts them, so excluding them from runnersRemaining instead would
                     // corrupt the count that decides whether the TAGGERS win.
-                    if (agent == _localPlayerAgent) _playerLost = true;
+                    // ...except in TAG MODE, where a fall is a plain respawn and never a loss (see
+                    // ApplyFallConsequence's tag branch) — so there is no early verdict to lock in.
+                    if (agent == _localPlayerAgent && _config.mode != GameMode.Tag) _playerLost = true;
                 }
             }
 
@@ -1107,6 +1144,21 @@ public sealed class RoundController : MonoBehaviour
         foreach (TagAgent agent in _agents)
             agent.SetEating(_eatersThisFrame.Contains(agent));
 
+        // TAG MODE's only win condition: whoever is IT when the clock runs out loses. The message
+        // deliberately reuses the "Runners win!" prefix EndRound's verdict computation already parses
+        // (runnersWon == (localRole == Runner)) — a player who is still IT reads as a loss and a player
+        // who isn't reads as a win, with no new plumbing through the session tally, the best-of-5 pips
+        // or the end screen. Returns before the two pest-control checks below: "all runners tagged"
+        // cannot happen under a swap (the tagger count is invariant), but a taggerCount equal to the
+        // whole roster would trip it on frame one.
+        if (_config.mode == GameMode.Tag)
+        {
+            if (!_config.unlimitedTime && _timeRemaining <= 0f)
+                EndRound("Runners win! Time's up.");
+            UpdateMinimapCamera();
+            return;
+        }
+
         if (runnersRemaining == 0)
         {
             // Player-tagger's round-winning catch gets the victim-side cinematic treatment, final catch
@@ -1130,14 +1182,21 @@ public sealed class RoundController : MonoBehaviour
         if (!_config.unlimitedTime && _timeRemaining <= 0f)
             EndRound($"Runners win! {runnersRemaining} survived.");
 
-        if (_minimapCamera != null && _localPlayerAgent != null)
-        {
-            Vector3 playerPos = _localPlayerAgent.transform.position;
-            _minimapCamera.transform.position = new Vector3(playerPos.x, playerPos.y + MinimapCameraHeight, playerPos.z);
-            // Rotate-to-facing: the render turns with the player so their forward always faces the
-            // top of the map (matched by the -playerYaw offset rotation in DrawMinimap below).
-            _minimapCamera.transform.rotation = Quaternion.Euler(90f, _localPlayerAgent.transform.eulerAngles.y, 0f);
-        }
+        UpdateMinimapCamera();
+    }
+
+    /// <summary>Parks the minimap camera over the local player, turned to their facing. Extracted from
+    /// the tail of Update so tag mode's early return (which skips the pest-control-only win checks) can
+    /// still run it — the minimap has nothing to do with which ruleset is live.</summary>
+    private void UpdateMinimapCamera()
+    {
+        if (_minimapCamera == null || _localPlayerAgent == null) return;
+
+        Vector3 playerPos = _localPlayerAgent.transform.position;
+        _minimapCamera.transform.position = new Vector3(playerPos.x, playerPos.y + MinimapCameraHeight, playerPos.z);
+        // Rotate-to-facing: the render turns with the player so their forward always faces the
+        // top of the map (matched by the -playerYaw offset rotation in DrawMinimap below).
+        _minimapCamera.transform.rotation = Quaternion.Euler(90f, _localPlayerAgent.transform.eulerAngles.y, 0f);
     }
 
     private void EndRound(string message)
@@ -1218,6 +1277,14 @@ public sealed class RoundController : MonoBehaviour
     private void PlayerCaught(TagAgent player, TagAgent tagger)
     {
         if (_roundOver) return;
+
+        // TAG MODE: being tagged is not a loss, it makes you IT — TagAgent.ExecuteTag has already
+        // swapped the roles and the round carries straight on. Bailing here also keeps the kill cam
+        // out of it: a replay fires on the ROUND-ENDING catch, and in tag mode there are a dozen
+        // catches a round, none of which end anything. The "YOU'RE IT" flash still plays — that's
+        // OnLocalPlayerTagged, a separate WasTagged subscription.
+        if (_config.mode == GameMode.Tag) return;
+
         _playerLost = true;
         _caughtByName = tagger.DisplayName; // end-screen "caught by <NAME>" subline
 
@@ -1315,6 +1382,7 @@ public sealed class RoundController : MonoBehaviour
         if (_roundOver) DrawEndScreen();
 
         DrawMinimap();
+        DrawTagModeHud(); // no-op outside Tag mode
         DrawThrowPrompt();
         DrawActionCooldownRings();
     }
@@ -2403,7 +2471,15 @@ public sealed class RoundController : MonoBehaviour
     private void DrawThrowPrompt()
     {
         if (_throwPromptIconTex == null || _roundOver || IsCountdownActive) { _throwPromptWasVisible = false; return; }
-        if (_localPlayerAgent == null || _localPlayerAgent.Role != Role.Tagger || _localPlayerAgent.Net?.HasThrowTarget != true)
+
+        // Same prompt, same glyph, same anchor in both modes — only which catch is being offered
+        // changes. Tag mode reads TagAgent.HasTouchTarget (the ~2.2m touch), pest control reads
+        // NetThrower.HasThrowTarget (the 6m net); both are "TryX would fire and find someone right now",
+        // so the prompt means exactly the same thing to the player either way.
+        bool hasTarget = _localPlayerAgent != null && (_config.mode == GameMode.Tag
+            ? _localPlayerAgent.HasTouchTarget
+            : _localPlayerAgent.Net?.HasThrowTarget == true);
+        if (_localPlayerAgent == null || _localPlayerAgent.Role != Role.Tagger || !hasTarget)
         {
             _throwPromptWasVisible = false;
             return;
@@ -2421,6 +2497,102 @@ public sealed class RoundController : MonoBehaviour
         GUI.color = new Color(1f, 1f, 1f, alpha);
         GUI.DrawTexture(rect, _throwPromptIconTex);
         GUI.color = Color.white;
+    }
+
+    // ---------------------------------------------------------------- Tag mode HUD (role chip + IT markers)
+    //
+    // Tag mode removes both of the things that told the roles apart in pest control: the models are
+    // identical (see TagAgent.ResourceForRole — nobody is a raccoon) and nobody carries a net. On top
+    // of that the roles SWAP several times a round. So the mode needs its own answers to the only two
+    // questions that matter, and needs them glanceable rather than inferred:
+    //   "Am I it?"   → the role chip, always on, under the timer.
+    //   "Who is it?" → a caret over every other Tagger's head.
+    // The minimap already colours icons by role, but it is a small corner element and it can't answer
+    // "which of the three people in front of me is it" — that is what the world-space caret is for.
+
+    private const float RoleChipY = 62f;            // clears the timer capsule (y 8 + HudCapsuleHeight 46) with a gap
+    private const float RoleChipWidth = 168f;
+    private const float RoleChipHeight = 32f;
+    private const float RoleChipPulseHz = 1.7f;
+
+    private const float ItMarkerHeadroom = 2.3f;    // metres above the agent root (~1.8m model + clearance)
+    private const float ItMarkerSize = 26f;         // design units, at point-blank
+    private const float ItMarkerFarDistance = 60f;  // beyond this the caret sits at its floor size/alpha
+    private const float ItMarkerMinAlpha = 0.35f;
+    private const float ItMarkerBobAmplitude = 5f;  // design units
+    private const float ItMarkerBobHz = 1.6f;
+
+    private void DrawTagModeHud()
+    {
+        if (_config.mode != GameMode.Tag || _localPlayerAgent == null || _roundOver) return;
+        DrawRoleChip();
+        DrawItMarkers();
+    }
+
+    /// <summary>Always-on "YOU'RE IT" / "RUNNER" capsule under the timer. The IT state pulses so it
+    /// reads as an alarm rather than a label — you are the one thing everyone is running from, and the
+    /// round ends badly if you still are at 00:00. Unscaled time, so it keeps breathing through the tag
+    /// slow-mo dip and the dodge window's 0.3x freeze.</summary>
+    private void DrawRoleChip()
+    {
+        bool isIt = _localPlayerAgent!.Role == Role.Tagger;
+        var chip = new Rect((GameUIStyle.DesignWidth - RoleChipWidth) * 0.5f, RoleChipY, RoleChipWidth, RoleChipHeight);
+        GameUIStyle.Panel(chip);
+
+        float alpha = isIt
+            ? Mathf.Lerp(0.55f, 1f, 0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * RoleChipPulseHz * 2f * Mathf.PI))
+            : 1f;
+        Color color = isIt ? _config.taggerColor : _config.runnerColor;
+
+        GUIStyle style = GameUIStyle.Label(GameUIStyle.Body, TextAnchor.MiddleCenter, FontStyle.Bold);
+        style.normal.textColor = new Color(color.r, color.g, color.b, alpha);
+        GUI.Label(GameUIStyle.Scaled(chip), isIt ? "YOU'RE IT" : "RUNNER", style);
+    }
+
+    /// <summary>A tagger-red caret hanging over every OTHER Tagger's head, shrinking and fading with
+    /// distance so a far-off IT reads as a hint rather than a HUD element. The local player is skipped —
+    /// the role chip above already tells them, and a caret over your own head is just occlusion.</summary>
+    private void DrawItMarkers()
+    {
+        Camera? camera = _cameraRig != null ? _cameraRig.Camera : null;
+        if (camera == null || _minimapTriangleTexture == null || _minimapTriangleOutlineTexture == null) return;
+
+        foreach (TagAgent agent in _agents)
+        {
+            if (agent == _localPlayerAgent || agent.Role != Role.Tagger) continue;
+            if (!agent.isActiveAndEnabled) continue; // benched surplus bots are out of play
+
+            Vector3 screen = camera.WorldToScreenPoint(agent.transform.position + Vector3.up * ItMarkerHeadroom);
+            // z is distance ALONG the camera's forward axis; WorldToScreenPoint mirrors points behind
+            // the camera back onto the screen, so without this the caret ghosts in when the IT is
+            // directly behind you.
+            if (screen.z <= 0f) continue;
+
+            float distanceT = Mathf.Clamp01(screen.z / ItMarkerFarDistance);
+            float size = GameUIStyle.Scaled(Mathf.Lerp(ItMarkerSize, ItMarkerSize * 0.55f, distanceT));
+            float alpha = Mathf.Lerp(1f, ItMarkerMinAlpha, distanceT);
+            // Bob, so a caret over a tagger who is standing still still catches the eye.
+            float bob = GameUIStyle.Scaled(Mathf.Sin(Time.unscaledTime * ItMarkerBobHz * 2f * Mathf.PI) * ItMarkerBobAmplitude);
+
+            // Screen space is y-up from the bottom; GUI space is y-down from the top.
+            var rect = new Rect(screen.x - size * 0.5f, Screen.height - screen.y - size * 0.5f + bob, size, size);
+
+            // BuildTriangleTexture points the tip along +y and GUI.DrawTexture draws it tip-UP (that's
+            // how the minimap uses it for "facing"). A head marker has to point DOWN at what it marks,
+            // so flip it about its own centre.
+            Matrix4x4 savedMatrix = GUI.matrix;
+            GUIUtility.RotateAroundPivot(180f, rect.center);
+
+            // Outline (the un-inset triangle) under the inset fill, exactly the layering
+            // DrawMinimapIcon uses — it keeps the caret legible against a bright rooftop.
+            GUI.color = new Color(0f, 0f, 0f, alpha * 0.65f);
+            GUI.DrawTexture(rect, _minimapTriangleOutlineTexture);
+            GUI.color = new Color(_config.taggerColor.r, _config.taggerColor.g, _config.taggerColor.b, alpha);
+            GUI.DrawTexture(rect, _minimapTriangleTexture);
+            GUI.color = Color.white;
+
+            GUI.matrix = savedMatrix;
+        }
     }
 
     // ---------------------------------------------------------------- Persistent action cooldown rings
@@ -2468,13 +2640,18 @@ public sealed class RoundController : MonoBehaviour
         }
         DrawActionRing(centerX, centerY, ActionRingLungeSize, _localPlayerAgent.LungeCooldownProgress, deniedBoost);
 
-        // Net throw: only a Tagger's NetThrower ever actually fires (see NetThrower.CanThrow's Role
-        // check), so a Runner has nothing to read here — hide it entirely rather than show a
-        // permanently-ready ring for an action they can't use. No denied-press feedback exists for
-        // this one, so boost is always 0.
+        // The catch cooldown (outer ring): the net throw in pest control, the touch tag in tag mode.
+        // Only a Tagger can fire either (see NetThrower.CanThrow / TagAgent.CanTouchTag), so a Runner
+        // has nothing to read here — hide it entirely rather than show a permanently-ready ring for an
+        // action they can't use. No denied-press feedback exists for either, so boost is always 0.
         NetThrower? net = _localPlayerAgent.Net;
-        if (_localPlayerAgent.Role == Role.Tagger && net != null)
-            DrawActionRing(centerX, centerY, ActionRingNetSize, net.CooldownProgress, 0f);
+        if (_localPlayerAgent.Role == Role.Tagger)
+        {
+            if (_config.mode == GameMode.Tag)
+                DrawActionRing(centerX, centerY, ActionRingNetSize, _localPlayerAgent.TouchCooldownProgress, 0f);
+            else if (net != null)
+                DrawActionRing(centerX, centerY, ActionRingNetSize, net.CooldownProgress, 0f);
+        }
     }
 
     /// <summary>One ring of the concentric pair: a fill arc (reusing BuildSpinnerArcTexture's frames

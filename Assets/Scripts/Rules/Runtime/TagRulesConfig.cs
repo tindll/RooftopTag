@@ -7,6 +7,24 @@ namespace Game.Rules;
 [CreateAssetMenu(fileName = "TagRulesConfig", menuName = "RooftopTag/Tag Rules Config")]
 public sealed class TagRulesConfig : ScriptableObject
 {
+    [Header("Mode")]
+    /// <summary>Which ruleset the round runs — see <see cref="GameMode"/>. Deliberately defaults to
+    /// PestControl so every existing scene, PlayMode test and the headless self-play harness keep
+    /// today's rules without touching anything; only the main menu's Mode row moves it.</summary>
+    public GameMode mode = GameMode.PestControl;
+
+    /// <summary>Tag mode's catch range: the horizontal distance a Tagger's touch tag reaches (see
+    /// TagAgent.TryTouchTag). Well under <see cref="netThrowRange"/> (6) because you're meant to
+    /// actually touch them, but above <see cref="tagReachMoving"/> (1.6) because two 0.4-radius
+    /// bodies at sprint speed need real forgiveness or every tag whiffs. Height is gated separately
+    /// by <see cref="tagReachVerticalTolerance"/>, via TagAgent.HasTagLineOfSight.</summary>
+    public float tagTouchRange = 2.2f;
+
+    /// <summary>Seconds between touch tags — the touch tag's own rate limiter, the counterpart to
+    /// <see cref="netThrowCooldown"/>. Deliberately short: a missed touch should cost tempo in a
+    /// footrace, not a whole turn.</summary>
+    public float tagTouchCooldown = 0.6f;
+
     [Header("Round")]
     // 2 minutes keeps timer-survival a real, reachable win state for an 11-agent 1v10 chase-me round
     // (self-play sweeps land well under 30s once a tag cascade starts).

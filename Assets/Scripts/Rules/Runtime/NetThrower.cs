@@ -99,6 +99,13 @@ public sealed class NetThrower : MonoBehaviour
 
     private bool CanThrow()
     {
+        // TAG MODE has no nets at all — the catch is TagAgent.TryTouchTag instead. Refusing here is
+        // the whole opt-out: TryThrow no-ops (so the player's right-click and the bots' every-tick
+        // call both fall through to the touch tag), HasThrowTarget stays false so the HUD prompt never
+        // lights off the net, and CooldownProgress stays 1 so the outer action ring self-hides. The
+        // component is still created in TagAgent.Configure — one dead MonoBehaviour is cheaper than
+        // making the bootstrap mode-aware, and the mode can change between rounds without a rebuild.
+        if (_config.mode == GameMode.Tag) return false;
         if (Time.timeScale == 0f) return false;             // kill cam / pause — same guard as TryLunge
         if (_agent.Role != Role.Tagger || _agent.IsInGrace) return false;
         if (_agent.Motor.IsDiving) return false;            // committed-dive lock blocks a throw
@@ -379,7 +386,10 @@ public sealed class NetThrower : MonoBehaviour
     // (the thrown clone stands in) and whenever the agent isn't an out-of-grace Tagger.
     private void UpdateCarriedNet()
     {
-        bool shouldCarry = _config.netCarryVisible && HasGraphics
+        // Mode check is its own clause rather than riding on CanThrow(): CanThrow also goes false on
+        // cooldown/mid-dive/during the countdown, and the net must stay VISIBLE in hand through all of
+        // those. Only tag mode means "there is no net" — see CanThrow's remarks.
+        bool shouldCarry = _config.mode != GameMode.Tag && _config.netCarryVisible && HasGraphics
             && _agent.Role == Role.Tagger && !_agent.IsInGrace;
 
         _agent.SetNetCarried(shouldCarry);

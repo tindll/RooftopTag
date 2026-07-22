@@ -54,6 +54,10 @@ public static class BuildCharacterAnimator
         // Catching selects the tagger's finishing-move variant of the dive (DivingCatch) over the
         // generic DiveRoll. Both share the Diving bool/window; Catching just picks the clip.
         ctrl.AddParameter("Catching", AnimatorControllerParameterType.Bool);
+        // Tagging is TAG MODE's touch-tag swipe (TagAgent.TryTouchTag -> CharacterAnimatorBridge.
+        // TriggerTagSwipe). Independent of Diving/Catching — the touch tag is not a dive, it is a
+        // reach-out from a run.
+        ctrl.AddParameter("Tagging", AnimatorControllerParameterType.Bool);
         // Eating (bin objective): Eating held for the whole crouch sequence; EatStop pulses the stand-up.
         ctrl.AddParameter("Eating", AnimatorControllerParameterType.Bool);
         ctrl.AddParameter("EatStop", AnimatorControllerParameterType.Bool);
@@ -149,6 +153,15 @@ public static class BuildCharacterAnimator
         var divingCatch = Simple(sm, "DivingCatch", Clip("X Bot@Dive Roll", "DivingCatch"));
         divingCatch.speed = 2.233f / 2f / 0.8f;
 
+        // Tag-mode touch tag: the reach-out swipe, driven by the bridge's Tagging bool (held for
+        // TagSwipeHoldSeconds). Unlike DiveRoll/DivingCatch this clip is deliberately NOT trimmed or
+        // speed-scaled: every trim in this project (SlideFirst/Last, DiveFirst/Last, CatchFirst/Last in
+        // CharacterImportPostprocessor) came from a real per-frame CharacterPreviewShot measurement of
+        // the clip, and tagging_animation has never been measured. Guessing a frame range would just be
+        // a fabricated constant. If the swipe opens on a dead standing windup or drags, measure it the
+        // same way the others were and add the trim then; the bridge's hold is the knob until then.
+        var tagSwipe = Simple(sm, "TagSwipe", Clip("tagging_animation"));
+
         // Eating (bin objective): Standing To Crouched -> Crouching Idle (loop) -> Crouched To Standing.
         // Crouching Idle loops (CharacterImportPostprocessor); the two transitions are one-shots. Driven
         // by the bridge's Eating bool (held through the WHOLE sequence, incl. the stand-up) plus EatStop
@@ -181,6 +194,16 @@ public static class BuildCharacterAnimator
         catchT.AddCondition(AnimatorConditionMode.If, 0, "Diving");
         catchT.AddCondition(AnimatorConditionMode.If, 0, "Catching");
 
+        // Tag-mode touch tag owns the moment whenever Tagging is set, over any locomotion state. Guarded
+        // IfNot Diving so a committed dive (a real motor state lock) always beats the cosmetic swipe —
+        // the bridge already clears its own flag in that case, this is the belt to that braces.
+        var tagT = sm.AddAnyStateTransition(tagSwipe);
+        tagT.hasExitTime = false;
+        tagT.duration = 0.06f;
+        tagT.canTransitionToSelf = false;
+        tagT.AddCondition(AnimatorConditionMode.If, 0, "Tagging");
+        tagT.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
+
         // AnyState → EatEnter when eating begins (and not already standing back up).
         var eatT = sm.AddAnyStateTransition(eatEnter);
         eatT.hasExitTime = false;
@@ -209,7 +232,8 @@ public static class BuildCharacterAnimator
         groundT.canTransitionToSelf = false;
         groundT.AddCondition(AnimatorConditionMode.Equals, 0, "MotorState");
         groundT.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
-        groundT.AddCondition(AnimatorConditionMode.IfNot, 0, "Eating"); // don't yank the eat crouch back to locomotion
+        groundT.AddCondition(AnimatorConditionMode.IfNot, 0, "Eating");   // don't yank the eat crouch back to locomotion
+        groundT.AddCondition(AnimatorConditionMode.IfNot, 0, "Tagging"); // ...nor the touch-tag swipe
 
         Any(sm, sliding, 1);
         // Airborne only when NOT flipping; the flip owns the airborne window when rolled.
@@ -241,8 +265,9 @@ public static class BuildCharacterAnimator
         t.duration = 0.08f;
         t.canTransitionToSelf = false;
         t.AddCondition(AnimatorConditionMode.Equals, stateValue, "MotorState");
-        // Never interrupt a committed dive roll — same guard as groundT.
+        // Never interrupt a committed dive roll, or a touch-tag swipe — same guards as groundT.
         t.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
+        t.AddCondition(AnimatorConditionMode.IfNot, 0, "Tagging");
     }
 
     // Airborne (MotorState == 2) split by the Flipping bool so the flip and the normal fall/jump
@@ -259,6 +284,9 @@ public static class BuildCharacterAnimator
         // airborne (e.g. off a ledge) must finish its roll pose, not snap to the jump/fall blend.
         t.AddCondition(AnimatorConditionMode.IfNot, 0, "Diving");
         t.AddCondition(AnimatorConditionMode.IfNot, 0, "Eating"); // eating owns the pose (defensive; ground-probe flicker)
+        // A touch tag mid-jump (tag mode's catch has no ground requirement) must keep its swipe rather
+        // than snapping to the jump/fall blend, same reasoning as the dive guard above.
+        t.AddCondition(AnimatorConditionMode.IfNot, 0, "Tagging");
     }
 
     // Returns the first candidate clip that exists on disk. Later candidates are stopgaps for a

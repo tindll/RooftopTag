@@ -85,6 +85,11 @@ public sealed class TagAgent : MonoBehaviour
     private float _lungeCooldownDuration;
     private float _graceRemaining;
 
+    // Tag mode's touch-tag rate limiter (see TryTouchTag). Its OWN field rather than reusing
+    // _lungeCooldownRemaining: the lunge is still a movement dash both roles use freely, and folding
+    // the catch cooldown into it would mean a whiffed tag also blocked your escape roll.
+    private float _touchCooldownRemaining;
+
     // Swallow a lunge press only for this long after spawn — kills the leaked main-menu PLAY /
     // R-restart leftButton click on the round's first frame WITHOUT blocking the lunge for the whole
     // round-start grace (which made the movement dash unavailable for ~3s, felt bad). The lunge can
@@ -264,9 +269,15 @@ public sealed class TagAgent : MonoBehaviour
 
             _tagAction = new InputAction("Tag", InputActionType.Button, "<Mouse>/rightButton");
             _tagAction.AddBinding("<Gamepad>/leftTrigger");
-            // Right-click is now a net THROW (replaces the instant ranged hand-tag). Reads the live Net
-            // field at invoke time, so it works regardless of Configure/Net creation ordering below.
-            _tagAction.performed += _ => Net?.TryThrow();
+            // Right-click is the catch, whichever form the mode gives it: a net THROW in pest control
+            // (replacing the old instant ranged hand-tag), a short-range TOUCH TAG in tag mode. Both
+            // read live state at invoke time — the Net field (so Configure/Net creation ordering below
+            // doesn't matter) and _config.mode (so a mode change between rounds needs no rebind).
+            _tagAction.performed += _ =>
+            {
+                if (_config.mode == GameMode.Tag) TryTouchTag();
+                else Net?.TryThrow();
+            };
             PlayerInputProvider.LoadBindingOverride(_tagAction);
             _tagAction.Enable();
         }
@@ -342,6 +353,9 @@ public sealed class TagAgent : MonoBehaviour
         if (_lungeCooldownRemaining > 0f)
             _lungeCooldownRemaining -= Time.deltaTime;
 
+        if (_touchCooldownRemaining > 0f)
+            _touchCooldownRemaining -= Time.deltaTime;
+
         TickNetTrap();
 
         // Procedural capsule arm gestures — skipped for animated models (the Animator poses the arms).
@@ -395,7 +409,14 @@ public sealed class TagAgent : MonoBehaviour
     // quadruped models ("rigged_raccoon", "raccoon_quad") and QuadrupedPresenter stay on disk for a
     // future quad rework; switching to them is this one string (and the two matching ones in
     // TagArenaBootstrap).
-    private static string ResourceForRole(Role role) => role == Role.Tagger ? "pest_control" : "raccon_testing";
+    //
+    // TAG MODE: everyone wears pest_control regardless of role. Roles swap on every single tag there
+    // (see ExecuteTag), so a per-role model would mean a full destroy-and-reattach of the rig several
+    // times a round — and "the raccoon becomes the exterminator becomes the raccoon" is not the
+    // fiction that mode is telling. Returning the same string for both roles makes SwapModel's
+    // wanted == _currentModelResource check a no-op, so no swap ever runs.
+    private string ResourceForRole(Role role) =>
+        _config.mode == GameMode.Tag || role == Role.Tagger ? "pest_control" : "raccon_testing";
 
     /// <summary>
     /// Re-attaches the rigged model to match <paramref name="role"/> (Runner looks like a raccoon,
@@ -713,9 +734,85 @@ public sealed class TagAgent : MonoBehaviour
         return true;
     }
 
-    // The thrown net is the ONLY catch mechanic (player: right click, via NetThrower.TryThrow; bots
-    // call the same TryThrow from their AI). Neither physical body contact nor a lunge/dive tags a
-    // runner — merely brushing, landing on, or diving into someone must never convert them.
+    // ---------------------------------------------------------------- Touch tag (Tag mode's catch)
+    //
+    // Tag mode has no nets: right-click is a short-range TOUCH, resolved instantly through the same
+    // PerformTag path the old ranged hand-tag used (dodge i-frames, then RoundController's reactive
+    // dodge window for a local victim, then ExecuteTag). That path was left fully wired but
+    // unreachable when the net took over as pest control's only catch — this is what calls it again.
+    //
+    // Range is TagRulesConfig.tagTouchRange (~2.2m) rather than netThrowRange (6m): you are meant to
+    // physically reach them. Everything else — the ahead cone, the vertical band, the line-of-sight
+    // linecast — is the net's acquisition logic verbatim, so the two catches can't drift apart on
+    // "what counts as reachable".
+
+    /// <summary>Tag mode's catch (player: right click; bots call it every tick from their AI). Fully
+    /// self-gating — it no-ops in pest-control mode, off-role, in grace, mid-dive, on cooldown, during
+    /// the countdown or before the round-start grace lifts — so a caller never has to check first.
+    /// A hit runs the normal tag flow via <see cref="PerformTag"/>, which means the victim still gets
+    /// their clutch dodge exactly as they would against a net.</summary>
+    public void TryTouchTag()
+    {
+        if (!CanTouchTag()) return;
+
+        TagAgent? target = AcquireTouchTarget();
+        if (target == null) return;
+
+        // Spend the cooldown on the COMMIT, not on the hit: a whiffed lunge-at-nothing costs nothing
+        // (AcquireTouchTarget already refused), but a tag that gets dodged must still cost tempo —
+        // and by then PerformTag has deferred, so this is the only place that reliably runs.
+        _touchCooldownRemaining = _config.tagTouchCooldown;
+        _bridge?.TriggerTagSwipe(); // the reach-out swipe; no-op on the procedural capsule / headless
+        PerformTag(target);
+    }
+
+    /// <summary>True when a touch tag would actually fire and find someone right now — the HUD's
+    /// right-click catch prompt lights on this in Tag mode, exactly as it lights on
+    /// <see cref="NetThrower.HasThrowTarget"/> in pest control. Same gates, without committing.</summary>
+    public bool HasTouchTarget => CanTouchTag() && AcquireTouchTarget() != null;
+
+    /// <summary>0 (just tagged) to 1 (ready) touch-tag cooldown progress for the HUD's outer action
+    /// ring — the Tag-mode counterpart to <see cref="NetThrower.CooldownProgress"/>. 1 (self-hides)
+    /// whenever nothing is on cooldown.</summary>
+    public float TouchCooldownProgress => _config.tagTouchCooldown > 0f
+        ? Mathf.Clamp01(1f - _touchCooldownRemaining / _config.tagTouchCooldown)
+        : 1f;
+
+    // Mirrors NetThrower.CanThrow gate for gate, plus the mode check. Kept in the same order so the
+    // two read as the same contract.
+    private bool CanTouchTag()
+    {
+        if (_config.mode != GameMode.Tag) return false;
+        if (Time.timeScale == 0f) return false;              // kill cam / pause — same guard as TryLunge
+        if (Role != Role.Tagger || IsInGrace) return false;
+        if (_motor.IsDiving) return false;                   // committed-dive lock blocks a tag
+        if (_touchCooldownRemaining > 0f) return false;
+
+        RoundController? round = _roundController;
+        if (round == null) return false;
+        if (round.IsRoundOver || round.IsCountdownActive) return false;
+        if (!round.IsPastStartGrace) return false;
+        return true;
+    }
+
+    // Nearest opposing runner within tagTouchRange, roughly ahead, passing the shared vertical-band +
+    // line-of-sight gate. Same shape as NetThrower.AcquireTarget with the range swapped.
+    private TagAgent? AcquireTouchTarget()
+    {
+        TagAgent? nearest = _roundController?.FindNearestOpposingAgent(this);
+        if (nearest == null || nearest.IsInGrace) return null;
+
+        Vector3 delta = nearest.transform.position - transform.position;
+        if (Vector3.ProjectOnPlane(delta, Vector3.up).magnitude > _config.tagTouchRange) return null;
+        if (Vector3.Dot(transform.forward, delta.normalized) < 0.3f) return null;
+        if (!HasTagLineOfSight(nearest)) return null;
+        return nearest;
+    }
+
+    // The CATCH is always an explicit action — pest control's thrown net (player: right click, via
+    // NetThrower.TryThrow; bots call the same TryThrow from their AI) or tag mode's touch tag
+    // (TryTouchTag, just above). Neither physical body contact nor a lunge/dive ever tags a runner in
+    // either mode — merely brushing, landing on, or diving into someone must never convert them.
 
     private void PerformTag(TagAgent other)
     {
@@ -761,12 +858,31 @@ public sealed class TagAgent : MonoBehaviour
         // have ended (timer expiry at slow-mo, another tag) between deferral and this landing.
         if (_roundController != null && _roundController.IsRoundOver) return;
 
-        // The local human player is never converted to Tagger on tag — RoundController subscribes to
-        // WasTagged on the local player and ends the round with a "You lose" screen instead (see
-        // RoundController.PlayerCaught). Every other agent (bots, and the headless self-play harness,
-        // which has no local player at all) keeps the normal Runner->Tagger infection model.
-        if (!other._isLocalPlayer)
+        if (_config.mode == GameMode.Tag)
+        {
+            // TAG MODE — the SWAP, and the one genuinely new rule in the mode: the victim becomes IT
+            // and the tagger drops to Runner, so the number of Taggers is invariant across a round.
+            // The local player is NOT exempt here (unlike pest control below): being tagged makes them
+            // IT and the round carries on (RoundController.PlayerCaught returns early in this mode).
+            //
+            // The victim's conversion grace is doing double duty as tag mode's NO-TAG-BACKS rule and
+            // the fresh runner's head start, for free: IsInGrace blocks the new IT's own TryTouchTag
+            // (see CanTouchTag) and hides them from AcquireTouchTarget, so neither side can act for
+            // conversionGraceDuration. The ex-tagger gets NO grace deliberately — with the only IT
+            // frozen by theirs nothing can reach them anyway, and grace would make this fresh runner
+            // untargetable for the window after that, which reads as the tag not having landed.
             other.SetRole(Role.Tagger, startGrace: true);
+            SetRole(Role.Runner, startGrace: false);
+        }
+        else if (!other._isLocalPlayer)
+        {
+            // PEST CONTROL — the local human player is never converted to Tagger on tag;
+            // RoundController subscribes to WasTagged on the local player and ends the round with a
+            // "You lose" screen instead (see RoundController.PlayerCaught). Every other agent (bots,
+            // and the headless self-play harness, which has no local player at all) keeps the normal
+            // Runner->Tagger infection cascade — the tagger STAYS a tagger.
+            other.SetRole(Role.Tagger, startGrace: true);
+        }
         other.WasTagged?.Invoke(other, this);
         AudioSource.PlayClipAtPoint(GetBoopClip(), other.transform.position);
         _roundController?.RecordTag(this, other);

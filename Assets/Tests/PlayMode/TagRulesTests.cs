@@ -330,6 +330,70 @@ public sealed class TagRulesTests
     }
 
     [UnityTest]
+    public IEnumerator TouchTag_InTagMode_SwapsRoles()
+    {
+        // TAG MODE's one genuinely new rule: a touch tag SWAPS the pair — the victim becomes IT and
+        // the tagger drops to Runner — instead of pest control's one-way Runner->Tagger cascade. Both
+        // halves matter and they fail independently: if only the victim converted, the round would
+        // gain an IT every tag until everyone was IT and nothing could ever be tagged again. That
+        // silent half-working failure is exactly what this pins.
+        _sceneRoot = new GameObject("TestScene");
+        CreateGround(_sceneRoot.transform, new Vector3(0f, -0.5f, 0f), new Vector3(20f, 1f, 20f));
+
+        var config = ScriptableObject.CreateInstance<TagRulesConfig>();
+        config.mode = GameMode.Tag;
+        config.taggerCount = 1;
+        config.roundStartGraceDuration = 0f; // CanTouchTag gates on IsPastStartGrace; nothing to protect here
+
+        var controllerGo = new GameObject("RoundController");
+        controllerGo.transform.SetParent(_sceneRoot.transform, false);
+        RoundController controller = controllerGo.AddComponent<RoundController>();
+        controller.Configure(config);
+
+        // Default rotation faces +Z, so putting the victim on +Z satisfies TryTouchTag's "roughly
+        // ahead" cone. 1.5m is comfortably inside tagTouchRange (2.2) but outside it were the range
+        // ever mistakenly wired to tagReachStill (1.0).
+        (_, _, TagAgent tagger, _) = CreateTagAgent(new Vector3(0f, 1.1f, 0f), config);
+        (_, _, TagAgent victim, _) = CreateTagAgent(new Vector3(0f, 1.1f, 1.5f), config);
+        tagger.SetRoundController(controller);
+        victim.SetRoundController(controller);
+        controller.RegisterAgent(tagger, isLocalPlayer: false);
+        controller.RegisterAgent(victim, isLocalPlayer: false);
+
+        // RoundController.Start -> StartRound -> AssignRoles runs at the end of this frame, and it
+        // rewrites BOTH halves of the setup: it shuffles the roles, and it pulls whoever it made a
+        // Tagger back 1.5m along -Z (TaggerSpawnBackOffset, the anti-instant-tag spawn separation).
+        // So pin role AND position afterwards instead of trusting the spawn layout. No countdown to
+        // wait out — BeginCountdown self-skips with no local player registered.
+        yield return null;
+        yield return null;
+        tagger.SetRole(Role.Tagger, startGrace: false);
+        victim.SetRole(Role.Runner, startGrace: false);
+        tagger.Motor.ResetState(new Vector3(0f, 1.1f, 0f), Quaternion.identity);
+        victim.Motor.ResetState(new Vector3(0f, 1.1f, 1.5f), Quaternion.identity);
+        yield return new WaitForFixedUpdate();
+        yield return null;
+
+        float gap = Vector3.Distance(tagger.transform.position, victim.transform.position);
+        Debug.Log($"METRIC touch_tag_gap={gap:F2} range={config.tagTouchRange} has_target={tagger.HasTouchTarget}");
+        Assert.IsTrue(tagger.HasTouchTarget, "Precondition: the victim should be inside touch range, ahead, and in line of sight.");
+
+        tagger.TryTouchTag();
+
+        Assert.AreEqual(Role.Tagger, victim.Role, "The victim of a touch tag becomes IT.");
+        Assert.AreEqual(Role.Runner, tagger.Role, "...and the tagger DROPS to Runner — tag swaps, it does not cascade.");
+        Assert.IsTrue(victim.IsInGrace, "The new IT gets conversion grace — that grace IS tag's no-tag-backs rule.");
+        Assert.IsFalse(tagger.IsInGrace, "The fresh runner deliberately gets no grace, so they stay targetable.");
+
+        // The invariant that makes the mode work at all: the number of ITs never moves.
+        int taggers = 0;
+        foreach (TagAgent agent in controller.Agents)
+            if (agent.Role == Role.Tagger) taggers++;
+        Debug.Log($"METRIC tag_mode_taggers_after_swap={taggers}");
+        Assert.AreEqual(1, taggers, "Tag mode keeps exactly one IT across a tag — the count is invariant.");
+    }
+
+    [UnityTest]
     public IEnumerator RooftopArenaScene_SpawnsWithCorrectRoleDistribution()
     {
         Scene rooftopArenaScene = EditorSceneManager.LoadSceneInPlayMode(

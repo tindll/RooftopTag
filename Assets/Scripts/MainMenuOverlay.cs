@@ -30,6 +30,11 @@ public sealed class MainMenuOverlay : MonoBehaviour
     // 0 = solo hunt, the mirror of today's default.
     private static readonly int[] CoTaggerCounts = { 0, 1, 2, 3 };
 
+    // TAG MODE's single roster row: bots on the map alongside the player, so the round has
+    // opponents + 1 players in it. No 0 — tag with nobody else is just walking around, and free-roam
+    // already exists as Pest Control + 0 chasers.
+    private static readonly int[] OpponentCounts = { 1, 3, 5, 7, 11 };
+
     // Card geometry, design-space (GameUIStyle.Scale takes it to real pixels @1080p/1440p/ultrawide).
     // Left column, not centered. Height is computed per open state: the CONTROLS dropdown is the
     // one thing that changes row count at runtime, so the card grows by exactly its rows when
@@ -71,6 +76,8 @@ public sealed class MainMenuOverlay : MonoBehaviour
     private bool _playAsTagger;
     private int _runnerIndex = 3; // RunnerCounts[3] = 10 -> mirror of the chase-me default
     private int _coTaggerIndex; // CoTaggerCounts[0] = 0 -> solo hunt by default
+    private GameMode _mode = GameMode.PestControl;
+    private int _opponentIndex = 3; // OpponentCounts[3] = 7 -> a busy but readable rooftop for tag
     private bool _unlimitedTime;
     private bool _controlsExpanded; // CONTROLS dropdown, collapsed by default
     private float _openedAtUnscaled;
@@ -85,6 +92,7 @@ public sealed class MainMenuOverlay : MonoBehaviour
         _chaserIndex = System.Array.IndexOf(ChaserCounts, bootstrap.TaggerCount);
         if (_chaserIndex < 0) _chaserIndex = 0;
         _playAsTagger = bootstrap.PlayerIsTagger;
+        _mode = bootstrap.Mode;
         _unlimitedTime = bootstrap.UnlimitedTime;
     }
 
@@ -143,8 +151,11 @@ public sealed class MainMenuOverlay : MonoBehaviour
         Color prevColor = GUI.color;
         GUI.color = new Color(1f, 1f, 1f, t); // fades in alongside the slide
 
-        float cardHeight = CardBaseHeight
-            + (_playAsTagger ? OptionRowHeight : 0f) // Tagger mode's extra Co-taggers row
+        // Rows are: Mode, Play as, Difficulty, [Co-taggers], Chasers/Runners/Opponents, Round time.
+        // The Mode row is always present (+1 over the old base); Co-taggers only in Pest Control's
+        // Tagger role (tag mode has a fixed one IT, so there is nothing to pick).
+        float cardHeight = CardBaseHeight + OptionRowHeight
+            + (_mode == GameMode.PestControl && _playAsTagger ? OptionRowHeight : 0f)
             + (_controlsExpanded ? RebindRowCount * (RebindRowHeight + RebindRowGap) : 0f);
         GameUIStyle.Panel(new Rect(x, CardY, CardWidth, cardHeight));
 
@@ -155,9 +166,10 @@ public sealed class MainMenuOverlay : MonoBehaviour
         GUI.DrawTexture(GameUIStyle.Scaled(new Rect(contentX, y, 160f, 5f)), GameUIStyle.GradientTex, ScaleMode.StretchToFill, true);
         y += 5f + 22f;
 
+        y = DrawModeRow(contentX, y, contentWidth);
         y = DrawRoleRow(contentX, y, contentWidth);
         y = DrawDifficultyRow(contentX, y, contentWidth);
-        if (_playAsTagger) y = DrawCoTaggerRow(contentX, y, contentWidth);
+        if (_mode == GameMode.PestControl && _playAsTagger) y = DrawCoTaggerRow(contentX, y, contentWidth);
         y = DrawChaserRow(contentX, y, contentWidth);
         y = DrawTimeRow(contentX, y, contentWidth);
         y += 12f;
@@ -206,23 +218,47 @@ public sealed class MainMenuOverlay : MonoBehaviour
             () => _bootstrap.ApplyDifficulty(CycleDifficulty(current, 1)));
     }
 
-    private float DrawRoleRow(float x, float y, float width) =>
-        DrawOptionRow(x, y, width, "Play as", _playAsTagger ? "Tagger" : "Runner",
+    // The ruleset itself — see GameMode. Two values, so both arrows toggle (same shape as DrawTimeRow).
+    private float DrawModeRow(float x, float y, float width)
+    {
+        void Toggle() => _mode = _mode == GameMode.PestControl ? GameMode.Tag : GameMode.PestControl;
+        return DrawOptionRow(x, y, width, "Mode", _mode == GameMode.Tag ? "Tag" : "Pest Control", Toggle, Toggle);
+    }
+
+    // Same pinned-role toggle in both modes; only the words change, because "Tagger" in a game about
+    // exterminators and "IT" in a game of tag are the same flag telling the player two different things.
+    private float DrawRoleRow(float x, float y, float width)
+    {
+        string value = _mode == GameMode.Tag
+            ? (_playAsTagger ? "IT" : "Runner")
+            : (_playAsTagger ? "Tagger" : "Runner");
+        return DrawOptionRow(x, y, width, "Play as", value,
             () => _playAsTagger = !_playAsTagger,
             () => _playAsTagger = !_playAsTagger);
+    }
 
-    // Chasers/Runners semantics differ by mode: in chase-me (Runner) "Chasers" is bot hunters and
-    // surplus bots get benched (RoundController.AssignRoles' forceRunner branch); as Tagger, this row
-    // is the player's independently-picked Runner count, benching any bot beyond
-    // taggerCount+runnerCount (AssignRoles' forceTagger branch) — see DrawCoTaggerRow for the other
-    // half of the pair.
-    private float DrawChaserRow(float x, float y, float width) => _playAsTagger
-        ? DrawOptionRow(x, y, width, "Runners", RunnerCounts[_runnerIndex].ToString(),
-            () => _runnerIndex = (_runnerIndex - 1 + RunnerCounts.Length) % RunnerCounts.Length,
-            () => _runnerIndex = (_runnerIndex + 1) % RunnerCounts.Length)
-        : DrawOptionRow(x, y, width, "Chasers", ChaserCounts[_chaserIndex].ToString(),
-            () => _chaserIndex = (_chaserIndex - 1 + ChaserCounts.Length) % ChaserCounts.Length,
-            () => _chaserIndex = (_chaserIndex + 1) % ChaserCounts.Length);
+    // Three different meanings for one row, by mode and pinned role:
+    //  - TAG: "Opponents" — bots on the map; the round has that many + 1 players (see Play()).
+    //  - Pest Control / Runner (chase-me): "Chasers" is bot hunters, surplus bots get benched
+    //    (RoundController.AssignRoles' forceRunner branch).
+    //  - Pest Control / Tagger: the player's independently-picked Runner count, benching any bot
+    //    beyond taggerCount+runnerCount (AssignRoles' forceTagger branch) — see DrawCoTaggerRow for
+    //    the other half of that pair.
+    private float DrawChaserRow(float x, float y, float width)
+    {
+        if (_mode == GameMode.Tag)
+            return DrawOptionRow(x, y, width, "Opponents", OpponentCounts[_opponentIndex].ToString(),
+                () => _opponentIndex = (_opponentIndex - 1 + OpponentCounts.Length) % OpponentCounts.Length,
+                () => _opponentIndex = (_opponentIndex + 1) % OpponentCounts.Length);
+
+        return _playAsTagger
+            ? DrawOptionRow(x, y, width, "Runners", RunnerCounts[_runnerIndex].ToString(),
+                () => _runnerIndex = (_runnerIndex - 1 + RunnerCounts.Length) % RunnerCounts.Length,
+                () => _runnerIndex = (_runnerIndex + 1) % RunnerCounts.Length)
+            : DrawOptionRow(x, y, width, "Chasers", ChaserCounts[_chaserIndex].ToString(),
+                () => _chaserIndex = (_chaserIndex - 1 + ChaserCounts.Length) % ChaserCounts.Length,
+                () => _chaserIndex = (_chaserIndex + 1) % ChaserCounts.Length);
+    }
 
     // Tagger-mode-only row: bot co-taggers hunting alongside the player. Player + co-taggers together
     // are ApplyTaggerCount's argument (Play() adds 1 for the player themself).
@@ -280,8 +316,19 @@ public sealed class MainMenuOverlay : MonoBehaviour
     private void Play()
     {
         KeyRebinder.Cancel(); // never leave a rebind listen running behind live gameplay
+        _bootstrap.ApplyMode(_mode);
         _bootstrap.ApplyPlayerRole(_playAsTagger);
-        if (_playAsTagger)
+        if (_mode == GameMode.Tag)
+        {
+            // TAG: exactly one IT and a fixed roster. taggerCount + runnerCount IS the number of agents
+            // AssignRoles keeps in play (it benches the rest), and the player is always one of them —
+            // pinned IT they sit at index 0, pinned Runner they are inserted at the first runner slot.
+            // So Opponents bots + the player = opponents + 1 = 1 IT + opponents runners.
+            int opponents = Mathf.Min(OpponentCounts[_opponentIndex], _bootstrap.RosterSize - 1);
+            _bootstrap.ApplyTaggerCount(1);
+            _bootstrap.ApplyRunnerCount(opponents);
+        }
+        else if (_playAsTagger)
         {
             // The player themself is one of the taggers (AssignRoles inserts them at index 0), so
             // taggerCount = player + selected co-taggers.

@@ -90,6 +90,17 @@ public sealed class TagArenaBootstrap : MonoBehaviour
         _tagConfig.forcePlayerAsRunner = !asTagger;
     }
 
+    /// <summary>Current ruleset — the main menu reads it to show the live value when re-showing (same
+    /// pattern as <see cref="TaggerCount"/>/<see cref="UnlimitedTime"/>).</summary>
+    public GameMode Mode => _tagConfig.mode;
+
+    /// <summary>Switches the ruleset on the shared runtime config. Like <see cref="ApplyTaggerCount"/>
+    /// this needs no rebuild — every mode branch reads the flag fresh (RoundController on StartRound or
+    /// per frame, TagAgent/NetThrower at the moment of a catch), so the caller just follows with
+    /// StartRound(). The player is still BUILT as the raccoon model in Awake; AssignRoles' SetRole then
+    /// swaps them to pest_control on the first frame of a tag-mode round (see TagAgent.SwapModel).</summary>
+    public void ApplyMode(GameMode newMode) => _tagConfig.mode = newMode;
+
     /// <summary>Current unlimited-time (free-roam) state — the main menu reads it to show the live value.</summary>
     public bool UnlimitedTime => _tagConfig.unlimitedTime;
 
